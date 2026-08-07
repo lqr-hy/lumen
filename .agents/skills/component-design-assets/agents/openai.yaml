@@ -1,0 +1,5 @@
+interface:
+  display_name: "组件设计素材"
+  short_description: "从组件 JSON 中提取设计槽位并生成独立画布素材"
+  default_prompt: "使用 $component-design-assets 分析组件 JSON，生成设计能力投影、原型蓝图、独立素材计划和 Props 配置。"
+

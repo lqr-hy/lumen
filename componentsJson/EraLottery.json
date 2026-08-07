@@ -1,0 +1,529 @@
+{
+  "name": "EraLottery",
+  "props": [
+    {
+      "name": "config",
+      "label": "抽奖配置",
+      "useCustomFormController": "EraLottery@LotteryCustomController"
+    },
+    {
+      "name": "freeMode",
+      "label": "自由模式",
+      "des": "组件内部分元素可自由拖拽",
+      "valueTypeMap": {
+        "boolean": {
+          "name": "switch",
+          "valueType": "boolean",
+          "defaultValue": false
+        }
+      }
+    },
+    {
+      "name": "freeStyleConfig",
+      "label": "样式配置",
+      "objectChildrenFlattedDisplay": false,
+      "objectChildrenShape": [
+        {
+          "name": "lotteryHeight",
+          "label": "组件高度",
+          "valueTypeMap": {
+            "number": {
+              "name": "numberInput",
+              "label": "数字(px)",
+              "valueType": "number",
+              "placeholder": "自适应",
+              "min": 0,
+              "step": 1
+            },
+            "string": {
+              "name": "textInput",
+              "label": "字符",
+              "valueType": "string",
+              "placeholder": "自适应"
+            }
+          }
+        },
+        {
+          "name": "bgColor",
+          "label": "背景色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(35, 211, 250, 1)"
+        },
+        {
+          "name": "majorTextColor",
+          "label": "主文字色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(255, 255, 255, 1)"
+        },
+        {
+          "name": "auxiliaryTextColor",
+          "label": "辅文字色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(148, 153, 160, 1)"
+        },
+        {
+          "name": "popBgColor",
+          "label": "弹窗背景色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(255, 255, 255, 0.8)"
+        },
+        {
+          "name": "popFontColor",
+          "label": "弹窗文字色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(255, 255, 255, 0.8)"
+        },
+        {
+          "name": "btnColor",
+          "label": "按钮背景色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(255, 255, 255, 0.2)"
+        },
+        {
+          "name": "btnTextColor",
+          "label": "按钮文字色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(255, 255, 255, 0.2)"
+        },
+        {
+          "name": "draw_one_btn",
+          "label": "抽1次按钮",
+          "objectChildrenFlattedDisplay": false,
+          "objectChildrenShape": [
+            {
+              "name": "width",
+              "label": "宽度",
+              "valueTypeMap": {
+                "number": {
+                  "name": "numberInput",
+                  "valueType": "number",
+                  "min": 0,
+                  "step": 1
+                }
+              }
+            },
+            {
+              "name": "height",
+              "label": "高度",
+              "valueTypeMap": {
+                "number": {
+                  "name": "numberInput",
+                  "valueType": "number",
+                  "min": 0,
+                  "step": 1
+                }
+              }
+            },
+            {
+              "name": "image",
+              "label": "按钮图",
+              "valueTypeMap": {
+                "string": {
+                  "name": "image",
+                  "valueType": "string"
+                }
+              }
+            },
+            {
+              "name": "static_image",
+              "label": "静态兜底图",
+              "valueTypeMap": {
+                "string": {
+                  "name": "image",
+                  "valueType": "string"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "draw_ten_btn",
+          "label": "抽10次按钮",
+          "objectChildrenFlattedDisplay": false,
+          "objectChildrenShape": [
+            {
+              "name": "width",
+              "label": "宽度",
+              "valueTypeMap": {
+                "number": {
+                  "name": "numberInput",
+                  "valueType": "number",
+                  "min": 0,
+                  "step": 1
+                }
+              }
+            },
+            {
+              "name": "height",
+              "label": "高度",
+              "valueTypeMap": {
+                "number": {
+                  "name": "numberInput",
+                  "valueType": "number",
+                  "min": 0,
+                  "step": 1
+                }
+              }
+            },
+            {
+              "name": "image",
+              "label": "按钮图",
+              "valueTypeMap": {
+                "string": {
+                  "name": "image",
+                  "valueType": "string"
+                }
+              }
+            },
+            {
+              "name": "static_image",
+              "label": "静态兜底图",
+              "valueTypeMap": {
+                "string": {
+                  "name": "image",
+                  "valueType": "string"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "thanks_pic",
+          "label": "谢谢参与",
+          "valueTypeMap": {
+            "string": {
+              "name": "image",
+              "valueType": "string"
+            }
+          }
+        },
+        {
+          "name": "open_rewards_carousel",
+          "label": "奖品展示",
+          "valueTypeMap": {
+            "boolean": {
+              "name": "switch",
+              "valueType": "boolean"
+            }
+          },
+          "defaultValue": true
+        },
+        {
+          "name": "open_lottery_animation",
+          "label": "中奖动效",
+          "des": "仅支持svga和apng格式",
+          "valueTypeMap": {
+            "string": {
+              "name": "image",
+              "valueType": "string"
+            }
+          }
+        },
+        {
+          "name": "open_wlist",
+          "label": "开启中奖名单",
+          "valueTypeMap": {
+            "boolean": {
+              "name": "switch",
+              "valueType": "boolean"
+            }
+          },
+          "defaultValue": true
+        },
+        {
+          "name": "open_lottery_ten_btn",
+          "label": "展示抽10次",
+          "valueTypeMap": {
+            "boolean": {
+              "name": "switch",
+              "valueType": "boolean"
+            }
+          },
+          "defaultValue": true
+        },
+        {
+          "name": "open_prize_pool",
+          "label": "展示查看奖池",
+          "valueTypeMap": {
+            "boolean": {
+              "name": "switch",
+              "valueType": "boolean"
+            }
+          },
+          "defaultValue": true
+        },
+        {
+          "name": "lotteryTimesLeftPosition",
+          "visibleInfo": {
+            "visible": false,
+            "hiddenBy": "self"
+          },
+          "valueTypeMap": {
+            "number": null
+          }
+        },
+        {
+          "name": "lotteryTimesTopPosition",
+          "visibleInfo": {
+            "visible": false,
+            "hiddenBy": "self"
+          },
+          "valueTypeMap": {
+            "number": null
+          }
+        },
+        {
+          "name": "oneBtnLeftPosition",
+          "visibleInfo": {
+            "visible": false,
+            "hiddenBy": "self"
+          },
+          "valueTypeMap": {
+            "number": null
+          }
+        },
+        {
+          "name": "oneBtnTopPosition",
+          "visibleInfo": {
+            "visible": false,
+            "hiddenBy": "self"
+          },
+          "valueTypeMap": {
+            "number": null
+          }
+        },
+        {
+          "name": "tenBtnLeftPosition",
+          "visibleInfo": {
+            "visible": false,
+            "hiddenBy": "self"
+          },
+          "valueTypeMap": {
+            "number": null
+          }
+        },
+        {
+          "name": "tenBtnTopPosition",
+          "visibleInfo": {
+            "visible": false,
+            "hiddenBy": "self"
+          },
+          "valueTypeMap": {
+            "number": null
+          }
+        },
+        {
+          "name": "myRecordsLeftPosition",
+          "visibleInfo": {
+            "visible": false,
+            "hiddenBy": "self"
+          },
+          "valueTypeMap": {
+            "number": null
+          }
+        },
+        {
+          "name": "myRecordsTopPosition",
+          "visibleInfo": {
+            "visible": false,
+            "hiddenBy": "self"
+          },
+          "valueTypeMap": {
+            "number": null
+          }
+        },
+        {
+          "name": "customConfig",
+          "useCustomFormController": "EraLottery@ExtendedConfigController"
+        }
+      ]
+    },
+    {
+      "name": "styleConfig",
+      "label": "样式配置",
+      "objectChildrenFlattedDisplay": false,
+      "objectChildrenShape": [
+        {
+          "name": "bgColor",
+          "label": "背景色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(35, 211, 250, 1)"
+        },
+        {
+          "name": "majorTextColor",
+          "label": "主文字色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(255, 255, 255, 1)"
+        },
+        {
+          "name": "auxiliaryTextColor",
+          "label": "辅文字色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(148, 153, 160, 1)"
+        },
+        {
+          "name": "popBgColor",
+          "label": "弹窗背景色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(255, 255, 255, 0.8)"
+        },
+        {
+          "name": "popFontColor",
+          "label": "弹窗文字色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(255, 255, 255, 0.8)"
+        },
+        {
+          "name": "btnColor",
+          "label": "按钮背景色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(255, 255, 255, 0.2)"
+        },
+        {
+          "name": "btnTextColor",
+          "label": "按钮文字色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(255, 255, 255, 0.2)"
+        },
+        {
+          "name": "draw_one_pic",
+          "label": "抽1次",
+          "valueTypeMap": {
+            "string": {
+              "name": "image",
+              "valueType": "string"
+            }
+          }
+        },
+        {
+          "name": "draw_ten_pic",
+          "label": "抽10次",
+          "valueTypeMap": {
+            "string": {
+              "name": "image",
+              "valueType": "string"
+            }
+          }
+        },
+        {
+          "name": "thanks_pic",
+          "label": "谢谢参与",
+          "valueTypeMap": {
+            "string": {
+              "name": "image",
+              "valueType": "string"
+            }
+          }
+        },
+        {
+          "name": "open_wlist",
+          "label": "是否开启中奖名单",
+          "valueTypeMap": {
+            "boolean": {
+              "name": "switch",
+              "valueType": "boolean"
+            }
+          },
+          "defaultValue": true
+        },
+        {
+          "name": "open_lottery_ten_btn",
+          "label": "展示抽10次",
+          "valueTypeMap": {
+            "boolean": {
+              "name": "switch",
+              "valueType": "boolean"
+            }
+          },
+          "defaultValue": true
+        }
+      ]
+    }
+  ],
+  "supportedContainerList": [
+    "H5"
+  ],
+  "slots": [],
+  "label": "轮播抽奖",
+  "framework": "Vue@2",
+  "source": "1",
+  "category": "3",
+  "thumbnail": "https://uat-i0.hdslb.com/bfs/activity-plat/static/6319485c5f03766492e9daedb18d2697/1tORepWC9g.png",
+  "requirements": {
+    "props": [
+      "$EvaLayerId",
+      "$EvaActivatedLayerId",
+      "$EvaUpdateSelfProps"
+    ]
+  }
+}

@@ -1,0 +1,128 @@
+.studio-home {
+  min-height: 100%;
+  padding: 68px 46px 56px;
+  background: #f6f7f9;
+  color: #111827;
+}
+
+.prompt-hero {
+  display: grid;
+  justify-items: center;
+  gap: 42px;
+  margin: 0 auto 92px;
+}
+
+.prompt-hero h1 {
+  margin: 0;
+  color: #171923;
+  font-size: 28px;
+  font-weight: 850;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.prompt-card {
+  width: min(1200px, calc(100vw - 180px));
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.prompt-main {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 18px;
+  min-height: 88px;
+}
+
+.reference-tile {
+  position: relative;
+  display: grid;
+  width: 48px;
+  height: 66px;
+  place-items: center;
+  border: 0;
+  border-radius: 2px;
+  background: #f0f1f3;
+  color: #9aa3ad;
+  overflow: visible;
+}
+
+.reference-tile img {
+  position: absolute;
+  top: 6px;
+  left: 5px;
+  width: 40px;
+  height: 54px;
+  border: 2px solid #fff;
+  border-radius: 3px;
+  object-fit: cover;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.14);
+}
+
+.reference-tile img:nth-child(2) {
+  left: 18px;
+}
+
+.reference-tile img:nth-child(3) {
+  left: 30px;
+}
+
+.reference-tile > svg {
+  transform: rotate(-8deg);
+}
+
+.reference-tile em {
+  position: absolute;
+  right: -10px;
+  bottom: 2px;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 50%;
+  background: #fff;
+  color: #111827;
+  font-style: normal;
+  font-size: 17px;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+}
+
+.prompt-main textarea {
+  width: 100%;
+  min-height: 88px;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: #111827;
+  font-size: 14px;
+  line-height: 1.65;
+  outline: 0;
+  resize: none;
+}
+
+.prompt-main textarea::placeholder {
+  color: #9aa3ad;
+}
+
+.reference-strip {
+  display: flex;
+  gap: 8px;
+  margin: 2px 0 12px 76px;
+}
+
+.reference-strip img {
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+

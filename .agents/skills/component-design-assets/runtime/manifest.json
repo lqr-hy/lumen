@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "triggers": [
+    "组件 json",
+    "component json",
+    "componentsjson",
+    "eralottery",
+    "eratasklist",
+    "thumbnail",
+    "valuetypemap",
+    "素材槽位",
+    "props 配置"
+  ],
+  "tools": [
+    {
+      "name": "component-design-assets.extract-facts",
+      "description": "从组件 JSON 中提取不带业务判断的结构化属性事实。",
+      "module": "runtime/entry.mjs",
+      "export": "extractFacts"
+    },
+    {
+      "name": "component-design-assets.resolve-contract",
+      "description": "使用通用规则、继承层和置信度机制生成组件设计契约。",
+      "module": "runtime/entry.mjs",
+      "export": "resolveContract"
+    }
+  ]
+}

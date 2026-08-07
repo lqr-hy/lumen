@@ -1,0 +1,32 @@
+@media (max-width: 1280px) {
+  .prompt-card {
+    width: min(900px, calc(100vw - 124px));
+  }
+
+  .quick-row {
+    grid-template-columns: repeat(3, minmax(180px, 1fr));
+  }
+}
+
+@media (max-width: 860px) {
+  .app-shell {
+    grid-template-columns: 58px minmax(0, 1fr);
+  }
+
+  .studio-home {
+    padding: 44px 18px;
+  }
+
+  .prompt-card {
+    width: 100%;
+  }
+
+  .prompt-actions {
+    flex-wrap: wrap;
+  }
+
+  .quick-row,
+  .recent-grid {
+    grid-template-columns: 1fr;
+  }
+}

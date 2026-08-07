@@ -1,0 +1,138 @@
+
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.48);
+}
+
+.settings-dialog {
+  width: min(790px, calc(100vw - 32px));
+  overflow: hidden;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.24);
+}
+
+.settings-dialog-header,
+.settings-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 24px;
+}
+
+.settings-dialog-header {
+  border-bottom: 1px solid #f0f1f3;
+}
+
+.settings-dialog-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.settings-dialog-header button {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  background: transparent;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.settings-dialog-body {
+  display: grid;
+  gap: 28px;
+  padding: 26px 32px 18px;
+}
+
+.settings-field {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-field > span {
+  color: #111827;
+  font-weight: 750;
+}
+
+.settings-field em {
+  color: #ef4444;
+  font-style: normal;
+}
+
+.settings-input-wrap,
+.settings-textarea-wrap {
+  position: relative;
+}
+
+.settings-input-wrap input,
+.settings-textarea-wrap textarea {
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  background: #f3f3f5;
+  color: #111827;
+  outline: 0;
+}
+
+.settings-input-wrap input {
+  height: 42px;
+  padding: 0 58px 0 14px;
+}
+
+.settings-textarea-wrap textarea {
+  height: 348px;
+  padding: 16px 16px 56px;
+  resize: none;
+}
+
+.settings-input-wrap small,
+.settings-textarea-wrap small {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.settings-input-wrap small {
+  bottom: 13px;
+}
+
+.settings-textarea-wrap button {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  width: 56px;
+  height: 56px;
+  border: 0;
+  border-radius: 8px;
+  background: #e9eaed;
+  color: #8b95a1;
+  font-size: 24px;
+}
+
+.settings-dialog-footer {
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 6px;
+}
+
+.settings-dialog-footer button {
+  min-width: 80px;
+  height: 36px;
+  border: 0;
+  border-radius: 8px;
+  background: #f3f4f6;
+  color: #111827;
+  font-weight: 750;
+}
+
+.settings-dialog-footer button:last-child {
+  background: #111827;
+  color: #fff;
+}
+

@@ -1,0 +1,247 @@
+{
+  "name": "EvaPage",
+  "props": [
+    {
+      "name": "backgroundType",
+      "label": "背景类型",
+      "des": "H5 不支持视频类型选项",
+      "valueTypeMap": {
+        "string": {
+          "name": "select",
+          "valueType": "string",
+          "defaultValue": "normal",
+          "options": [
+            {
+              "value": "normal",
+              "label": "滚动平铺"
+            },
+            {
+              "value": "fixed",
+              "label": "固定"
+            },
+            {
+              "value": "normalVideo",
+              "label": "滚动平铺视频"
+            },
+            {
+              "value": "fixedVideo",
+              "label": "固定视频"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "backgroundColor",
+      "label": "背景色",
+      "valueTypeMap": {
+        "string": {
+          "name": "color",
+          "valueType": "string"
+        }
+      }
+    },
+    {
+      "name": "backgroundImage",
+      "label": "背景图",
+      "objectChildrenShape": [
+        {
+          "name": "src",
+          "label": "图片地址",
+          "required": true,
+          "valueTypeMap": {
+            "string": {
+              "name": "image",
+              "valueType": "string"
+            }
+          }
+        },
+        {
+          "name": "multiple",
+          "label": "图片倍数",
+          "valueTypeMap": {
+            "number": {
+              "name": "select",
+              "valueType": "number",
+              "options": [
+                {
+                  "label": "1",
+                  "value": 1
+                },
+                {
+                  "label": "2",
+                  "value": 2
+                },
+                {
+                  "label": "3",
+                  "value": 3
+                }
+              ]
+            }
+          },
+          "defaultValue": 2
+        },
+        {
+          "name": "quality",
+          "label": "图片质量",
+          "valueTypeMap": {
+            "number": {
+              "name": "numberInput",
+              "valueType": "number",
+              "max": 100,
+              "min": 60,
+              "step": 5
+            }
+          },
+          "defaultValue": 90
+        }
+      ]
+    },
+    {
+      "name": "backgroundTrailingImage",
+      "label": "尾背景图",
+      "objectChildrenShape": [
+        {
+          "name": "src",
+          "label": "图片地址",
+          "required": true,
+          "valueTypeMap": {
+            "string": {
+              "name": "image",
+              "valueType": "string"
+            }
+          }
+        },
+        {
+          "name": "multiple",
+          "label": "图片倍数",
+          "valueTypeMap": {
+            "number": {
+              "name": "select",
+              "valueType": "number",
+              "options": [
+                {
+                  "label": "1",
+                  "value": 1
+                },
+                {
+                  "label": "2",
+                  "value": 2
+                },
+                {
+                  "label": "3",
+                  "value": 3
+                }
+              ]
+            }
+          },
+          "defaultValue": 2
+        },
+        {
+          "name": "quality",
+          "label": "图片质量",
+          "valueTypeMap": {
+            "number": {
+              "name": "numberInput",
+              "valueType": "number",
+              "max": 100,
+              "min": 60,
+              "step": 5
+            }
+          },
+          "defaultValue": 90
+        }
+      ]
+    },
+    {
+      "name": "backgroundVideo",
+      "label": "背景视频",
+      "objectChildrenShape": [
+        {
+          "name": "src",
+          "label": "视频地址",
+          "required": true,
+          "valueTypeMap": {
+            "string": {
+              "name": "video",
+              "valueType": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "showMaskWhenScroll",
+      "label": "滚动遮罩",
+      "visibleInfo": {
+        "visible": false,
+        "hiddenBy": "self"
+      },
+      "valueTypeMap": {
+        "boolean": {
+          "name": "switch",
+          "valueType": "boolean",
+          "defaultValue": true
+        }
+      }
+    },
+    {
+      "name": "maskColor",
+      "label": "遮罩颜色",
+      "visibleInfo": {
+        "visible": false,
+        "hiddenBy": "self"
+      },
+      "valueTypeMap": {
+        "string": {
+          "name": "color",
+          "valueType": "string",
+          "defaultValue": "rgba(0, 0, 0, 0.5)"
+        }
+      }
+    },
+    {
+      "name": "backgroundPosition",
+      "label": "背景图模式",
+      "valueTypeMap": {
+        "string": {
+          "name": "select",
+          "valueType": "string",
+          "defaultValue": "topCenter",
+          "options": [
+            {
+              "value": "topCenter",
+              "label": "顶部居中裁剪"
+            },
+            {
+              "value": "center",
+              "label": "居中裁剪"
+            }
+          ]
+        }
+      },
+      "visibleInfo": {
+        "visible": false,
+        "hiddenBy": "self"
+      }
+    }
+  ],
+  "slots": [
+    {
+      "name": "children"
+    }
+  ],
+  "label": "页面设置",
+  "framework": "React",
+  "hiddenInCategory": true,
+  "source": "1",
+  "category": "1",
+  "componentJs": "https://s1.hdslb.com/bfs/activity-plat/static/6277ec353371773b1b2c677044fbccd8/EvaPage_7Q0DXxfyRM.js",
+  "componentCss": "https://s1.hdslb.com/bfs/activity-plat/static/6277ec353371773b1b2c677044fbccd8/EvaPage_EXt8Oe0YUF.css",
+  "formControl": "https://s1.hdslb.com/bfs/activity-plat/static/6277ec353371773b1b2c677044fbccd8/EvaPage_bnrSqoMajY.js",
+  "version": "1.1.11",
+  "supportedContainerList": [
+    "PC",
+    "H5"
+  ]
+}

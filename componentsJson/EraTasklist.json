@@ -1,0 +1,190 @@
+{
+  "name": "EraTasklist",
+  "props": [
+    {
+      "name": "tasklist",
+      "useCustomFormController": "EraTasklist@TaskCustomController"
+    },
+    {
+      "name": "style",
+      "label": "样式配置",
+      "objectChildrenFlattedDisplay": false,
+      "objectChildrenShape": [
+        {
+          "name": "width",
+          "label": "宽度",
+          "valueTypeMap": {
+            "number": {
+              "name": "numberInput",
+              "valueType": "number",
+              "min": 0,
+              "step": 1
+            }
+          },
+          "defaultValue": 350
+        },
+        {
+          "name": "height",
+          "label": "高度",
+          "valueTypeMap": {
+            "number": {
+              "name": "numberInput",
+              "valueType": "number",
+              "min": 0,
+              "step": 1
+            }
+          }
+        },
+        {
+          "name": "borderRadius",
+          "label": "圆角",
+          "valueTypeMap": {
+            "array": {
+              "name": "edge",
+              "valueType": "array",
+              "defaultValue": [
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "padding",
+          "label": "内边距",
+          "valueTypeMap": {
+            "array": {
+              "name": "edge",
+              "valueType": "array",
+              "defaultValue": [
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "themeColor",
+          "label": "主题",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(35, 211, 250, 1)"
+        },
+        {
+          "name": "bgColor",
+          "label": "背景",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(0, 20, 60, 1)"
+        },
+        {
+          "name": "mainTxtColor",
+          "label": "主文案",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(255, 255, 255, 1)"
+        },
+        {
+          "name": "desTxtColor",
+          "label": "辅文案",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(148, 153, 160, 1)"
+        },
+        {
+          "name": "btnTxtColor",
+          "label": "按钮文字",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(255, 255, 255, 1)"
+        },
+        {
+          "name": "processActiveColor",
+          "label": "进度点亮颜色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          }
+        },
+        {
+          "name": "processUnActiveColor",
+          "label": "进度未点亮颜色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          }
+        },
+        {
+          "name": "processAwardColor",
+          "label": "进度奖品颜色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          }
+        },
+        {
+          "name": "awardTxtColor",
+          "label": "奖品名称",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(255, 255, 255, 0.8)"
+        },
+        {
+          "name": "awardBgColor",
+          "label": "奖品背景",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "defaultValue": "rgba(255, 255, 255, 0.2)"
+        }
+      ]
+    }
+  ],
+  "framework": "react@16",
+  "slots": [],
+  "label": "任务组件",
+  "source": "1",
+  "category": "2",
+  "supportedContainerList": [
+    "H5"
+  ],
+  "thumbnail": "https://i0.hdslb.com/bfs/activity-plat/static/fbb6ffcfd09815bd66290b6b7bde1196/4GKvYEWJuZ.jpg",
+  "customFormControllerMap": "https://activity.hdslb.com/blackboard/static/fda0a45a32cd715ff274d274b551c43d/gdI71JTPDz.js"
+}

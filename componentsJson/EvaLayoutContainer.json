@@ -1,0 +1,505 @@
+{
+  "name": "EvaLayoutContainer",
+  "props": [
+    {
+      "name": "view",
+      "label": "视图",
+      "defaultValue": "sm",
+      "visibleInfo": {
+        "visible": false,
+        "hiddenBy": "self"
+      },
+      "valueTypeMap": {
+        "string": {
+          "name": "select",
+          "valueType": "string",
+          "options": [
+            {
+              "label": "桌面端",
+              "value": "lg"
+            },
+            {
+              "label": "移动端",
+              "value": "sm"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "size",
+      "label": "尺寸",
+      "objectChildrenFlattedDisplay": true,
+      "objectChildrenShape": [
+        {
+          "name": "width",
+          "label": "宽度",
+          "valueTypeMap": {
+            "number": {
+              "name": "numberInput",
+              "label": "数字(px)",
+              "valueType": "number",
+              "placeholder": "自适应",
+              "min": 0,
+              "step": 1
+            },
+            "string": {
+              "name": "textInput",
+              "label": "字符",
+              "valueType": "string",
+              "placeholder": "自适应"
+            }
+          }
+        },
+        {
+          "name": "height",
+          "label": "高度",
+          "valueTypeMap": {
+            "number": {
+              "name": "numberInput",
+              "label": "数字(px)",
+              "valueType": "number",
+              "placeholder": "自适应",
+              "min": 0,
+              "step": 1
+            },
+            "string": {
+              "name": "textInput",
+              "label": "字符",
+              "valueType": "string",
+              "placeholder": "自适应"
+            }
+          }
+        },
+        {
+          "name": "borderRadius",
+          "label": "圆角",
+          "valueTypeMap": {
+            "array": {
+              "name": "edge",
+              "valueType": "array",
+              "defaultValue": [
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "padding",
+          "label": "内边距",
+          "valueTypeMap": {
+            "array": {
+              "name": "edge",
+              "valueType": "array",
+              "defaultValue": [
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        },
+        {
+          "name": "zIndex",
+          "label": "层级",
+          "des": "数值越大层级越高 控制图层的前后顺序",
+          "valueTypeMap": {
+            "number": {
+              "name": "numberInput",
+              "label": "数字(px)",
+              "valueType": "number",
+              "placeholder": "0",
+              "step": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "layout",
+      "label": "布局",
+      "objectChildrenFlattedDisplay": true,
+      "useCustomFormController": "EvaLayoutContainer@LayoutCustomController",
+      "defaultValue": {
+        "display": "free"
+      }
+    },
+    {
+      "name": "background",
+      "label": "背景",
+      "objectChildrenFlattedDisplay": true,
+      "objectChildrenShape": [
+        {
+          "name": "type",
+          "label": "背景类型",
+          "valueTypeMap": {
+            "string": {
+              "name": "select",
+              "valueType": "string",
+              "defaultValue": "common",
+              "options": [
+                {
+                  "label": "普通背景",
+                  "value": "common"
+                },
+                {
+                  "label": "自动伸展背景(点九背景)",
+                  "value": "pointNine"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "color",
+          "label": "背景颜色",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          },
+          "visibleInfo": {
+            "visible": true,
+            "hiddenBy": "self"
+          }
+        },
+        {
+          "name": "src",
+          "label": "图片地址",
+          "valueTypeMap": {
+            "string": {
+              "name": "image",
+              "valueType": "string"
+            }
+          },
+          "visibleInfo": {
+            "visible": true,
+            "hiddenBy": "self"
+          }
+        },
+        {
+          "name": "multiple",
+          "label": "图片倍数",
+          "valueTypeMap": {
+            "number": {
+              "name": "select",
+              "valueType": "number",
+              "defaultValue": 2,
+              "options": [
+                {
+                  "label": "一倍图",
+                  "value": 1
+                },
+                {
+                  "label": "二倍图",
+                  "value": 2
+                },
+                {
+                  "label": "三倍图",
+                  "value": 3
+                }
+              ]
+            }
+          },
+          "visibleInfo": {
+            "visible": true,
+            "hiddenBy": "self"
+          }
+        },
+        {
+          "name": "quality",
+          "label": "图片质量",
+          "valueTypeMap": {
+            "number": {
+              "name": "numberInput",
+              "valueType": "number",
+              "defaultValue": 90,
+              "max": 100,
+              "min": 60,
+              "step": 5
+            }
+          },
+          "visibleInfo": {
+            "visible": true,
+            "hiddenBy": "self"
+          }
+        },
+        {
+          "name": "size",
+          "label": "填充方式",
+          "valueTypeMap": {
+            "string": {
+              "name": "select",
+              "valueType": "string",
+              "defaultValue": "100% 100%",
+              "options": [
+                {
+                  "label": "拉伸以充满",
+                  "value": "100% 100%"
+                },
+                {
+                  "label": "适合",
+                  "value": "contain"
+                },
+                {
+                  "label": "充满",
+                  "value": "cover"
+                }
+              ]
+            }
+          },
+          "visibleInfo": {
+            "visible": true,
+            "hiddenBy": "self"
+          }
+        },
+        {
+          "name": "stretchArea",
+          "label": "伸展区域",
+          "valueTypeMap": {
+            "string": {
+              "name": "pointNine",
+              "valueType": "object"
+            }
+          },
+          "visibleInfo": {
+            "visible": false,
+            "hiddenBy": "self"
+          }
+        }
+      ]
+    },
+    {
+      "name": "border",
+      "label": "描边",
+      "objectChildrenFlattedDisplay": true,
+      "objectChildrenShape": [
+        {
+          "name": "style",
+          "label": "样式",
+          "valueTypeMap": {
+            "string": {
+              "name": "select",
+              "valueType": "string",
+              "defaultValue": "none",
+              "options": [
+                {
+                  "label": "无",
+                  "value": "none"
+                },
+                {
+                  "label": "实线",
+                  "value": "solid"
+                },
+                {
+                  "label": "虚线",
+                  "value": "dashed"
+                },
+                {
+                  "label": "点线",
+                  "value": "dotted"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "width",
+          "label": "宽度",
+          "defaultValue": 1,
+          "valueTypeMap": {
+            "number": null
+          }
+        },
+        {
+          "name": "color",
+          "label": "颜色",
+          "defaultValue": "rgb(0, 0, 0)",
+          "valueTypeMap": {
+            "string": {
+              "name": "color",
+              "valueType": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "showConditions",
+      "label": "展示条件",
+      "objectChildrenFlattedDisplay": true,
+      "objectChildrenShape": [
+        {
+          "name": "showDimension",
+          "label": "展示维度",
+          "valueTypeMap": {
+            "string": {
+              "name": "select",
+              "valueType": "string",
+              "defaultValue": "mobileType",
+              "options": [
+                {
+                  "label": "设备系统",
+                  "value": "mobileType"
+                },
+                {
+                  "label": "APP列表",
+                  "value": "appList"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "mobileType",
+          "label": "设备系统",
+          "valueTypeMap": {
+            "array": {
+              "name": "multiSelect",
+              "valueType": "array",
+              "options": [
+                {
+                  "value": "ios",
+                  "label": "iOS"
+                },
+                {
+                  "value": "android",
+                  "label": "安卓"
+                },
+                {
+                  "value": "harmony",
+                  "label": "鸿蒙"
+                },
+                {
+                  "value": "pc",
+                  "label": "PC"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "appList",
+          "label": "App列表",
+          "valueTypeMap": {
+            "array": {
+              "name": "multiSelect",
+              "valueType": "array",
+              "options": [
+                {
+                  "value": "iphone",
+                  "label": "粉版iOS"
+                },
+                {
+                  "value": "android",
+                  "label": "粉版Android"
+                },
+                {
+                  "value": "openharmony",
+                  "label": "粉版鸿蒙(纯血)"
+                },
+                {
+                  "value": "iphone_b",
+                  "label": "蓝版iOS"
+                },
+                {
+                  "value": "android_b",
+                  "label": "蓝版Android"
+                },
+                {
+                  "value": "ipad",
+                  "label": "iPad"
+                },
+                {
+                  "value": "android_hd",
+                  "label": "AndroidHD"
+                },
+                {
+                  "value": "ios_comic",
+                  "label": "漫画iOS"
+                },
+                {
+                  "value": "android_comic",
+                  "label": "漫画Android"
+                },
+                {
+                  "value": "ios_missevan",
+                  "label": "猫耳iOS"
+                },
+                {
+                  "value": "android_missevan",
+                  "label": "猫耳Android"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "time",
+      "label": "定时显示",
+      "objectChildrenFlattedDisplay": true,
+      "objectChildrenShape": [
+        {
+          "name": "timeStart",
+          "label": "开始时间",
+          "valueTypeMap": {
+            "number": {
+              "name": "date",
+              "valueType": "number",
+              "showTime": true,
+              "allowClear": true
+            }
+          }
+        },
+        {
+          "name": "timeEnd",
+          "label": "结束时间",
+          "valueTypeMap": {
+            "number": {
+              "name": "date",
+              "valueType": "number",
+              "showTime": true,
+              "allowClear": true
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "slots": [
+    {
+      "name": "children",
+      "excludedComponentList": [
+        "EvaNavigation"
+      ]
+    }
+  ],
+  "supportedContainerList": [
+    "H5",
+    "PC"
+  ],
+  "label": "基础容器",
+  "framework": "React",
+  "source": "1",
+  "category": "1",
+  "thumbnail": "https://i0.hdslb.com/bfs/activity-plat/static/d318ba449333d4b9b26debd5b92003eb/39aW2X3bYN_w202_h162.png",
+  "customFormControllerMap": "https://s1.hdslb.com/bfs/activity-plat/static/6277ec353371773b1b2c677044fbccd8/EvaLayoutContainer_2Yz6AcgEwj.js",
+  "requirements": {
+    "props": [
+      "$EvaMethod",
+      "$EvaActivatedStatus",
+      "$EvaUpdateSelfProps"
+    ]
+  },
+  "componentJs": "https://s1.hdslb.com/bfs/activity-plat/static/6277ec353371773b1b2c677044fbccd8/EvaLayoutContainer_6mJzo5lQhz.js",
+  "componentCss": "https://s1.hdslb.com/bfs/activity-plat/static/6277ec353371773b1b2c677044fbccd8/EvaLayoutContainer_WemV322nB2.css",
+  "formControl": "https://s1.hdslb.com/bfs/activity-plat/static/6277ec353371773b1b2c677044fbccd8/EvaLayoutContainer_jZ3jXrG7Po.js",
+  "version": "1.6.5"
+}

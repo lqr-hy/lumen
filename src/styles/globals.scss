@@ -1,0 +1,21 @@
+@use 'sass:meta';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@include meta.load-css('./base/reset');
+@include meta.load-css('./layout/app-layout-legacy');
+@include meta.load-css('./pages/utility-pages');
+@include meta.load-css('./editor/canvas-legacy');
+@include meta.load-css('./base/responsive-base');
+@include meta.load-css('./layout/app-layout');
+@include meta.load-css('./pages/home');
+@include meta.load-css('./components/prompt-composer');
+@include meta.load-css('./pages/home-sections');
+@include meta.load-css('./editor/editor-shell');
+@include meta.load-css('./editor/chat-panel');
+@include meta.load-css('./editor/canvas-start-prompt');
+@include meta.load-css('./editor/ai-canvas-chat');
+@include meta.load-css('./components/settings-dialog');
+@include meta.load-css('./base/responsive');
