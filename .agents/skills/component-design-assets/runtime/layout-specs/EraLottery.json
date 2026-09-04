@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "componentName": "EraLottery",
+  "source": "component-thumbnail",
+  "thumbnail": "https://uat-i0.hdslb.com/bfs/activity-plat/static/6319485c5f03766492e9daedb18d2697/1tORepWC9g.png",
+  "profiles": {
+    "style-config": {
+      "width": 375,
+      "height": 456,
+      "regions": [
+        { "id": "lottery-header", "role": "抽奖次数与奖池入口", "renderMode": "runtime", "bounds": { "x": 12, "y": 10, "width": 351, "height": 30 } },
+        { "id": "rewards-carousel", "role": "奖品轮播区域", "renderMode": "runtime", "bounds": { "x": 12, "y": 48, "width": 351, "height": 108 } },
+        { "id": "draw-one", "role": "抽一次按钮", "slotId": "style-config-draw-one-pic", "exactText": "抽一次", "bounds": { "x": 16, "y": 168, "width": 160, "height": 48 } },
+        { "id": "draw-ten", "role": "抽十次按钮", "slotId": "style-config-draw-ten-pic", "exactText": "抽10次", "bounds": { "x": 199, "y": 168, "width": 160, "height": 48 } },
+        { "id": "winning-record-link", "role": "我的中奖记录", "renderMode": "runtime", "bounds": { "x": 100, "y": 222, "width": 175, "height": 28 } },
+        { "id": "winner-list", "role": "中奖名单", "renderMode": "runtime", "propBindings": ["styleConfig.open_wlist"], "bounds": { "x": 0, "y": 272, "width": 375, "height": 184 } },
+        { "id": "thanks-state", "role": "谢谢参与状态素材", "slotId": "style-config-thanks-pic", "exactText": "谢谢参与", "visible": false, "bounds": { "x": 112, "y": 326, "width": 150, "height": 56 } }
+      ]
+    },
+    "free-style-config": {
+      "width": 375,
+      "height": 456,
+      "regions": [
+        { "id": "lottery-header", "role": "抽奖次数与奖池入口", "renderMode": "runtime", "propBindings": ["freeStyleConfig.open_prize_pool"], "bounds": { "x": 12, "y": 10, "width": 351, "height": 30 } },
+        { "id": "rewards-carousel", "role": "奖品轮播区域", "renderMode": "runtime", "propBindings": ["freeStyleConfig.open_rewards_carousel"], "bounds": { "x": 12, "y": 48, "width": 351, "height": 108 } },
+        { "id": "draw-one", "role": "抽一次按钮", "slotId": "free-style-config-draw-one-btn-image", "exactText": "抽一次", "bounds": { "x": 16, "y": 168, "width": 160, "height": 48 } },
+        { "id": "draw-ten", "role": "抽十次按钮", "slotId": "free-style-config-draw-ten-btn-image", "exactText": "抽10次", "bounds": { "x": 199, "y": 168, "width": 160, "height": 48 } },
+        { "id": "winning-record-link", "role": "我的中奖记录", "renderMode": "runtime", "bounds": { "x": 100, "y": 222, "width": 175, "height": 28 } },
+        { "id": "winner-list", "role": "中奖名单", "renderMode": "runtime", "propBindings": ["freeStyleConfig.open_wlist"], "bounds": { "x": 0, "y": 272, "width": 375, "height": 184 } },
+        { "id": "thanks-state", "role": "谢谢参与状态素材", "slotId": "free-style-config-thanks-pic", "exactText": "谢谢参与", "visible": false, "bounds": { "x": 112, "y": 326, "width": 150, "height": 56 } }
+      ]
+    }
+  }
+}

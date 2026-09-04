@@ -9,9 +9,8 @@ export function normalizeComponentInstances(document: DesignDocument): DesignDoc
   const componentInstances = { ...(document.componentInstances ?? {}) }
 
   for (const artboard of document.artboards) {
-    const legacyDesigns = artboard.componentDesigns ?? (
-      artboard.componentDesign ? [artboard.componentDesign] : []
-    )
+    const legacyDesigns =
+      artboard.componentDesigns ?? (artboard.componentDesign ? [artboard.componentDesign] : [])
     for (const design of legacyDesigns) {
       const instanceId = design.instanceId
       if (!instanceId || componentInstances[instanceId]) continue
@@ -68,8 +67,9 @@ export function resolveComponentInstance(
 }
 
 export function findInstanceRoot(elements: DesignElement[], instanceId: string) {
-  return elements.find((element) => (
-    element.componentBinding?.instanceId === instanceId &&
-    element.componentBinding.renderMode === 'root'
-  ))
+  return elements.find(
+    (element) =>
+      element.componentBinding?.instanceId === instanceId &&
+      element.componentBinding.renderMode === 'root',
+  )
 }

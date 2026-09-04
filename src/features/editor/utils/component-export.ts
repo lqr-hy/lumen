@@ -12,8 +12,9 @@ export function buildComponentExportPackage(document: DesignDocument, instanceId
   const propsPatch = structuredClone(instance.design.propsPatch)
   const exportedAssets: Array<{
     slotId: string
-    propPath: string
+    propPath?: string
     fallbackPath?: string
+    designOnly?: boolean
     file: string
     checksum: string
     bytes: number
@@ -22,32 +23,27 @@ export function buildComponentExportPackage(document: DesignDocument, instanceId
   for (const task of instance.design.assetTasks) {
     const element = elements.find((item) => item.componentBinding?.slotId === task.slotId)
     if (!element || element.type !== 'image' || !element.src.startsWith('data:')) continue
-    const file = `assets/${assetFileName(task.label || task.slotId, element.src)}`
+    const file = task.designOnly
+      ? `design/background.${extensionForDataUri(element.src)}`
+      : `assets/${assetFileName(task.label || task.slotId, element.src)}`
     const data = decodeDataUri(element.src)
     entries.push({ name: file, data })
-    setNestedValue(propsPatch, task.propPath, file)
+    if (task.propPath) setNestedValue(propsPatch, task.propPath, file)
     if (task.fallbackPath) setNestedValue(propsPatch, task.fallbackPath, file)
     exportedAssets.push({
       slotId: task.slotId,
       propPath: task.propPath,
       fallbackPath: task.fallbackPath,
+      designOnly: task.designOnly,
       file,
       checksum: checksum(data),
       bytes: data.length,
     })
   }
 
-  const shell = elements.find((element) => (
-    element.componentBinding?.renderMode === 'shell' && element.type === 'image'
-  ))
-  let visualShellFile: string | undefined
-  if (shell?.type === 'image' && shell.src.startsWith('data:')) {
-    visualShellFile = `design/visual-shell.${extensionForDataUri(shell.src)}`
-    entries.push({ name: visualShellFile, data: decodeDataUri(shell.src) })
-  }
-
   const manifest = {
     schemaVersion: 3,
+    componentPackId: instance.design.packId,
     componentName: instance.componentName,
     profile: instance.profile,
     instanceId: instance.id,
@@ -57,25 +53,32 @@ export function buildComponentExportPackage(document: DesignDocument, instanceId
     generatedAt: new Date().toISOString(),
     compatibility: {
       propsMode: 'merge-patch',
-      visualShellIsDesignOnly: true,
       runtimeValidated: instance.design.runtimeValidation?.status === 'passed',
     },
-    deliveryStatus: instance.design.runtimeValidation?.status === 'passed'
-      ? 'runtime-verified'
-      : instance.design.runtimeValidation?.status === 'failed'
-        ? 'blocked'
-        : instance.design.qualityReview?.passed === false
-          ? 'diagnostic-only'
-          : 'design-ready',
-    visualShell: visualShellFile ? { file: visualShellFile, usage: 'design-only' } : undefined,
+    deliveryStatus:
+      instance.design.runtimeValidation?.status === 'passed'
+        ? 'runtime-verified'
+        : instance.design.runtimeValidation?.status === 'failed'
+          ? 'blocked'
+          : instance.design.qualityReview?.passed === false
+            ? 'diagnostic-only'
+            : 'design-ready',
     assets: exportedAssets,
     resources: {
-      remoteImages: Array.from(new Set(elements.flatMap((element) => (
-        element.type === 'image' && /^https?:\/\//i.test(element.src) ? [element.src] : []
-      )))),
-      fonts: Array.from(new Set(elements.flatMap((element) => (
-        element.type === 'text' && element.style.fontFamily ? [element.style.fontFamily] : []
-      )))),
+      remoteImages: Array.from(
+        new Set(
+          elements.flatMap((element) =>
+            element.type === 'image' && /^https?:\/\//i.test(element.src) ? [element.src] : [],
+          ),
+        ),
+      ),
+      fonts: Array.from(
+        new Set(
+          elements.flatMap((element) =>
+            element.type === 'text' && element.style.fontFamily ? [element.style.fontFamily] : [],
+          ),
+        ),
+      ),
     },
   }
   entries.unshift(
@@ -85,13 +88,16 @@ export function buildComponentExportPackage(document: DesignDocument, instanceId
     jsonEntry('blueprint.json', instance.design.blueprint),
     jsonEntry('theme.tokens.json', instance.design.blueprint.visualTheme ?? null),
     jsonEntry('quality.review.json', instance.design.qualityReview ?? null),
-    jsonEntry('runtime.validation.json', instance.design.runtimeValidation ?? {
-      status: 'unsupported',
-      consoleErrors: [],
-      unknownProps: [],
-      missingAssets: [],
-      message: '未配置真实组件 Runtime Adapter。',
-    }),
+    jsonEntry(
+      'runtime.validation.json',
+      instance.design.runtimeValidation ?? {
+        status: 'unsupported',
+        consoleErrors: [],
+        unknownProps: [],
+        missingAssets: [],
+        message: '未配置真实组件 Runtime Adapter。',
+      },
+    ),
     jsonEntry('component.structure.json', {
       instance: withoutDesign(instance),
       elements: elements.map((element) => summarizeElementSource(element)),
@@ -145,9 +151,7 @@ export function buildStructuralExportPackage(document: DesignDocument, instanceI
     artboardId: instance.artboardId,
     rootElementId: instance.rootElementId,
     designPaths: instance.designPaths,
-    bounds: root
-      ? { x: root.x, y: root.y, width: root.width, height: root.height }
-      : undefined,
+    bounds: root ? { x: root.x, y: root.y, width: root.width, height: root.height } : undefined,
     generatedAt: new Date().toISOString(),
   }
   return createZip([
@@ -192,7 +196,10 @@ function extensionForDataUri(value: string) {
 }
 
 function sanitizeName(value: string) {
-  return value.trim().replace(/[^a-z0-9\u4e00-\u9fa5_-]+/gi, '-').replace(/^-|-$/g, '')
+  return value
+    .trim()
+    .replace(/[^a-z0-9\u4e00-\u9fa5_-]+/gi, '-')
+    .replace(/^-|-$/g, '')
 }
 
 function setNestedValue(target: Record<string, unknown>, path: string, value: unknown) {

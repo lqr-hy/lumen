@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "id": "campaign-components",
+  "label": "活动业务组件",
+  "source": { "kind": "component-registry" },
+  "surface": {
+    "kind": "mobile",
+    "viewport": { "width": 375, "height": 812 },
+    "autoHeight": true,
+    "layout": { "direction": "vertical", "padding": 16, "gap": 24 }
+  },
+  "skill": {
+    "name": "component-design-assets",
+    "tools": {
+      "extractFacts": "component-design-assets.extract-facts",
+      "resolveContract": "component-design-assets.resolve-contract"
+    }
+  },
+  "components": [
+    {
+      "name": "EraLottery",
+      "label": "轮播抽奖",
+      "file": "EraLottery.json",
+      "kind": "design",
+      "aliases": ["轮播抽奖", "抽奖组件"]
+    },
+    {
+      "name": "EraTasklist",
+      "label": "任务组件",
+      "file": "EraTasklist.json",
+      "kind": "design",
+      "aliases": ["任务组件", "任务列表"]
+    },
+    {
+      "name": "EvaLayoutContainer",
+      "label": "基础容器",
+      "file": "EvaLayoutContainer.json",
+      "kind": "structural",
+      "aliases": ["基础容器", "布局容器"]
+    },
+    {
+      "name": "EvaPage",
+      "label": "页面设置",
+      "file": "EvaPage.json",
+      "kind": "structural",
+      "aliases": ["页面设置", "页面根节点"]
+    }
+  ]
+}

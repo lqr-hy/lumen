@@ -1,0 +1,38 @@
+.responsive-visual-fixture {
+  display: grid;
+  min-width: max-content;
+  min-height: 100vh;
+  gap: 48px;
+  padding: 40px;
+  background: #dfe5ed;
+  color: #172033;
+}
+
+.responsive-visual-fixture > section {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+
+.responsive-visual-fixture > section > header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.responsive-visual-fixture > section > header span {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.responsive-fixture-artboard {
+  position: relative;
+  overflow: hidden;
+  background: #f3f5f8;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.08);
+}
+
+.responsive-fixture-artboard .design-element {
+  pointer-events: none;
+}

@@ -1,35 +1,31 @@
 import { routeAgentIntent, validateAgentIntent } from './intent-router.mjs'
+import { createRuntimePluginRegistry, requirePluginPlan } from './plugins/plugin-registry.mjs'
+import { createDefaultRuntimePlugins } from './plugins/campaign-component-plugin.mjs'
 
-const IMAGE_OUTPUT_PATTERN =
-  /(?:生成|制作|输出|绘制|渲染|产出).{0,20}(?:完整|整张|一张)?(?:图片|设计图|设计稿|视觉稿|效果图|海报|页面|界面|ui|模块|区块)|(?:图片|设计图|设计稿|视觉稿|效果图|海报|页面|界面|ui|模块|区块).{0,20}(?:生成|制作|输出|放到|放入|添加到)(?:画布)?|(?:生成|制作|输出|放到|放入|添加).{0,24}(?:到|入)?画布|(?:生成|制作|输出|绘制|渲染|产出|新增|添加).{0,28}(?:素材|按钮|背景图|画板|面板|页面|界面|ui|模块|区块)|(?:素材|按钮|背景图|页面|界面|ui|模块|区块).{0,20}(?:生成|制作|输出|新增|添加|放到|放入)/i
-const ASSET_SET_PATTERN =
-  /(?:独立|单独|分别|逐个|每个).{0,24}(?:图片|素材|按钮|背景|装饰|元素)|(?:图片|素材|按钮|背景|装饰|元素).{0,24}(?:独立|单独|分别|逐个|拆分|切出|分开)|按钮素材|素材槽位|多素材/i
-const COMPONENT_DESIGN_PATTERN =
-  /(?:组件|component).{0,20}(?:json|设计|素材|props|配置|原型)|(?:componentsjson|component json|valuetypemap|素材槽位)|\bEra[A-Z][A-Za-z0-9_-]*\b/i
-const COMPONENT_SELECTOR_PATTERN =
-  /(?:[A-Za-z][A-Za-z0-9_-]*\.json\b|\bEra[A-Z][A-Za-z0-9_-]*\b|componentsJson\/[A-Za-z0-9_.-]+\.json\b)/i
-const COMPONENT_ACTION_PATTERN =
-  /(?:生成|设计|制作|输出|创建|规划|解析).{0,32}(?:组件|component|\bEra[A-Z][A-Za-z0-9_-]*\b)|(?:组件|component|\bEra[A-Z][A-Za-z0-9_-]*\b).{0,32}(?:生成|设计|制作|输出|创建|配置|预览|素材|props)/i
-const DESIGN_REVISION_PATTERN =
-  /(?:完善|优化|美化|丰富|改进|修改|调整|重做|重构|重新实现|重新设计|补齐|补全|按.{0,12}(?:建议|方案).{0,8}(?:修改|执行|实现)).{0,36}(?:设计稿|视觉稿|效果图|页面|界面|ui|组件|背景|外壳|整体|当前|这个)|(?:设计稿|视觉稿|效果图|页面|界面|ui|组件|背景|外壳|整体|当前|这个).{0,36}(?:完善|优化|美化|丰富|改进|修改|调整|重做|重构|重新实现|重新设计|补齐|补全)/i
-const SHORT_REVISION_PATTERN = /^(?:请)?(?:完善|优化|美化|改进|修改|调整|重做|重构|重新实现|重新设计|补齐|补全|按(?:这个|上述|上面|建议|方案)(?:修改|执行|实现)?)(?:一下)?[吧。！!\s]*$/i
-const ADVICE_REQUEST_PATTERN = /(?:怎么|如何|怎样|为什么|分析一下|是否|能否|可以吗|怎么办|缺少什么|还缺什么|(?:给|提供|说说|先).{0,8}(?:建议|方案|思路)|(?:建议|方案|思路).{0,8}(?:是什么|有哪些|怎么))/i
-const PAGE_DESIGN_PATTERN = /(?:完整|整张|整个|活动|落地|长图|多组件|组合).{0,12}(?:页面|界面|ui|设计稿|视觉稿)|(?:页面|界面|ui|设计稿|视觉稿).{0,20}(?:完整|整张|整个|活动|落地|长图|多组件|组合|组件)/i
-
-const CONTINUE_PATTERN = /^(?:请)?(?:继续|开始|执行|接着做|继续执行|开始生成|生成吧|就这样|允许|确认|确认执行|重试|再试一次)[吧。！!\s]*$/i
-const REFERENCE_UPDATE_PATTERN = /(?:这|此)(?:张|个)?才是|替换|更新|重新上传|正确的|作为.{0,8}(?:原型|kv)|(?:这是|用这张).{0,8}(?:原型|kv)/i
-
-export function planAgentTurn(session, payload, providedIntent) {
+export function planAgentTurn(session, payload, providedIntent, options = {}) {
+  const pluginRegistry = createRuntimePluginRegistry(
+    options.plugins === undefined ? createDefaultRuntimePlugins() : options.plugins,
+  )
   const prompt = String(payload.question || '').trim()
-  rememberComponentRequest(session, prompt, payload.history)
-  const referenceUpdate = mergeReferences(session, payload.uploads ?? [], prompt)
-  const intent = providedIntent ?? routeAgentIntent({ prompt, session, editScope: payload.editScope })
+  rememberStructuredComponentReferences(session, payload.componentReferences, prompt)
+  const intent =
+    providedIntent ?? routeAgentIntent({ prompt, session, editScope: payload.editScope })
   if (!validateAgentIntent(intent)) throw new TypeError('Agent Intent 不符合版本 1 协议。')
+  const referenceUpdate = mergeReferences(session, payload.uploads ?? [], prompt, {
+    // Any explicit image in the current turn is a new reference set. Do not
+    // merge it with a previous turn's KV/prototype/visual references.
+    replace:
+      Array.isArray(payload.uploads) &&
+      payload.uploads.some(
+        (upload) => typeof upload?.data === 'string' && upload.data.startsWith('data:image/'),
+      ),
+    referenceBindings: intent.referenceBindings,
+  })
   session.lastIntent = intent
   if (
     payload.editScope?.type === 'component-instance' &&
     payload.editScope.locked === true &&
-    (DESIGN_REVISION_PATTERN.test(prompt) || SHORT_REVISION_PATTERN.test(prompt))
+    ['revise-component', 'regenerate-slot'].includes(intent.action)
   ) {
     touch(session)
     return {
@@ -51,63 +47,158 @@ export function planAgentTurn(session, payload, providedIntent) {
     session.taskKind = 'component-slot-edit'
     session.editScope = { ...payload.editScope }
     session.status = 'ready'
-    beginRun(session, createComponentSlotEditPlan())
+    beginRun(session, requirePluginPlan(pluginRegistry, 'component-slot-edit'))
     clearFailure(session)
     touch(session)
     return { action: 'run', reason: 'component-slot-edit' }
+  }
+  if (intent.action === 'regenerate-slots') {
+    if (payload.editScope?.type !== 'component-region-batch') {
+      throw new TypeError('regenerate-slots 缺少有效的批量组件素材范围。')
+    }
+    session.goal = prompt
+    session.taskKind = 'component-slot-batch-edit'
+    session.editScope = structuredClone(payload.editScope)
+    session.status = 'ready'
+    beginRun(session, requirePluginPlan(pluginRegistry, 'component-slot-batch-edit'))
+    clearFailure(session)
+    touch(session)
+    return { action: 'run', reason: 'component-slot-batch-edit' }
   }
   if (intent.action === 'revise-page-shell') {
     session.goal = prompt
     session.taskKind = 'page-shell-edit'
     session.editScope = { ...payload.editScope }
     session.status = 'ready'
-    beginRun(session, createPageShellEditPlan())
+    beginRun(session, requirePluginPlan(pluginRegistry, 'page-shell-edit'))
     clearFailure(session)
     touch(session)
     return { action: 'run', reason: 'page-shell-edit' }
   }
+  if (intent.action === 'revise-design') {
+    if (
+      !['generic-node', 'multi-node', 'text-range', 'image-region'].includes(
+        payload.editScope?.type,
+      )
+    ) {
+      throw new TypeError('revise-design 缺少有效的 SelectionScope。')
+    }
+    session.goal = prompt
+    session.taskKind = 'design-patch'
+    session.editScope = { ...payload.editScope }
+    session.status = 'ready'
+    beginRun(session, createDesignPatchPlan())
+    clearFailure(session)
+    touch(session)
+    return { action: 'run', reason: 'generic-design-patch' }
+  }
+  if (intent.action === 'revise-ui-structure') {
+    session.goal = prompt
+    session.taskKind = 'design-spec-patch'
+    session.status = 'ready'
+    beginRun(session, createDesignSpecPatchPlan())
+    clearFailure(session)
+    touch(session)
+    return { action: 'run', reason: 'design-spec-structure-patch' }
+  }
   const designRevision = ['revise-page', 'revise-component'].includes(intent.action)
   const explicitGeneration = [
-    'create-page', 'create-component', 'create-assets', 'create-image', 'revise-page', 'revise-component',
+    'create-ui',
+    'create-page',
+    'create-component',
+    'create-assets',
+    'create-image',
+    'revise-page',
+    'revise-component',
   ].includes(intent.action)
   const continuation = intent.action === 'continue'
-  const correction = referenceUpdate.changed && REFERENCE_UPDATE_PATTERN.test(prompt)
 
   if (explicitGeneration) {
     session.goal = prompt
-    const componentInstanceRevision = designRevision && payload.editScope?.type === 'component-instance'
+    if (
+      !['create-page', 'create-component', 'revise-page', 'revise-component'].includes(
+        intent.action,
+      )
+    ) {
+      clearComponentTaskContext(session)
+    }
+    const componentInstanceRevision =
+      designRevision && payload.editScope?.type === 'component-instance'
     if (componentInstanceRevision) {
       session.componentRequest ||= payload.editScope.componentName
       session.editScope = { ...payload.editScope }
     } else {
       delete session.editScope
     }
-    session.taskKind = intent.taskKind === 'chat' || intent.taskKind === 'unknown'
-      ? (componentInstanceRevision ? 'component-design' : 'design-image')
-      : intent.taskKind
+    session.taskKind =
+      intent.taskKind === 'chat' || intent.taskKind === 'unknown'
+        ? componentInstanceRevision
+          ? 'component-design'
+          : 'design-image'
+        : intent.taskKind
+    session.outputKind = intent.outputKind
+    session.designArchetype = intent.designArchetype
+    session.surfaceKind = intent.surfaceKind
+    if (session.taskKind === 'design-image') delete session.blueprint
+    if (session.taskKind !== 'generic-ui') delete session.genericUiSchema
     session.status = 'ready'
-    beginRun(session, createTaskPlan(session.taskKind))
+    if (['component-design', 'page-design'].includes(session.taskKind)) {
+      session.pendingTask = createPendingTask(session, session.taskKind, prompt, 'running')
+    }
+    beginRun(session, createTaskPlan(session.taskKind, pluginRegistry))
     clearFailure(session)
     touch(session)
     return { action: 'run', reason: 'explicit-generation' }
   }
 
   if (continuation) {
-    recoverGoalFromHistory(session, payload.history)
-    if (isPageDesignRequest(session.goal, session.componentRequest)) {
-      session.taskKind = 'page-design'
-    }
-    if (session.goal && ['ready', 'failed', 'collecting', 'completed', 'cancelled', 'awaiting-confirmation', 'waiting-user'].includes(session.status)) {
-      const resumingBlueprintConfirmation = session.status === 'awaiting-confirmation' && session.taskKind === 'page-design'
-      if (
-        session.componentRequest &&
-        session.taskKind !== 'component-slot-edit' &&
-        session.taskKind !== 'page-design'
-      ) {
-        session.taskKind = 'component-design'
-      }
+    if (
+      session.pendingTask &&
+      ['component-design', 'page-design'].includes(session.pendingTask.kind)
+    ) {
+      const resumingBlueprintConfirmation =
+        session.status === 'awaiting-confirmation' && session.pendingTask.kind === 'page-design'
+      session.goal =
+        session.pendingTask.goal ||
+        `生成 ${session.pendingTask.componentReferences.map((item) => item.componentName).join('、')} 设计稿`
+      session.taskKind = session.pendingTask.kind
+      session.componentReferences = session.pendingTask.componentReferences.map((item) => ({
+        ...item,
+      }))
+      session.componentRequest = session.componentReferences
+        .map((item) => item.componentName)
+        .join(' ')
+      session.pendingTask = createPendingTask(session, session.taskKind, session.goal, 'running')
       session.status = 'ready'
-      resumeRun(session, createTaskPlan(session.taskKind))
+      resumeRun(session, createTaskPlan(session.taskKind, pluginRegistry))
+      if (resumingBlueprintConfirmation) resetPageConfirmationSteps(session)
+      clearFailure(session)
+      touch(session)
+      return { action: 'run', reason: 'resume-pending-task' }
+    }
+    if (session.taskKind === 'component-design' && session.status === 'completed') {
+      touch(session)
+      return {
+        action: 'reply',
+        text: '当前没有等待执行的组件任务，请先通过 @ 选择组件并说明设计目标。',
+      }
+    }
+    if (
+      session.goal &&
+      [
+        'ready',
+        'failed',
+        'collecting',
+        'completed',
+        'cancelled',
+        'awaiting-confirmation',
+        'waiting-user',
+      ].includes(session.status)
+    ) {
+      const resumingBlueprintConfirmation =
+        session.status === 'awaiting-confirmation' && session.taskKind === 'page-design'
+      session.status = 'ready'
+      resumeRun(session, createTaskPlan(session.taskKind, pluginRegistry))
       if (resumingBlueprintConfirmation) resetPageConfirmationSteps(session)
       clearFailure(session)
       touch(session)
@@ -120,51 +211,78 @@ export function planAgentTurn(session, payload, providedIntent) {
     }
   }
 
-  const taskReferenceUpdate = referenceUpdate.changed && session.goal && /原型|\bkv\b|主视觉|参考图/i.test(prompt)
-  if (correction || taskReferenceUpdate) {
-    if (
-      session.componentRequest &&
-      session.taskKind !== 'component-slot-edit' &&
-      session.taskKind !== 'page-design'
-    ) {
-      session.taskKind = 'component-design'
-    }
-    session.status = session.goal ? 'ready' : 'collecting'
-    if (session.goal) beginRun(session, createTaskPlan(session.taskKind))
-    clearFailure(session)
-    touch(session)
-    return {
-      action: 'reply',
-      text: session.goal
-        ? `${referenceUpdate.summary}，任务已更新并可以继续执行。`
-        : `${referenceUpdate.summary}。请继续说明需要完成的设计目标。`,
-    }
-  }
-
   touch(session)
   return { action: 'chat' }
 }
 
+function clearComponentTaskContext(session) {
+  delete session.componentReferences
+  delete session.componentRequest
+  delete session.pendingTask
+  delete session.componentDesign
+  delete session.pageDesign
+  delete session.blueprint
+  delete session.confirmedPageRunId
+}
+
+function rememberStructuredComponentReferences(session, references, prompt) {
+  if (!Array.isArray(references) || !references.length) return
+  const normalized = references
+    .filter((item) => item?.packId && item?.componentName)
+    .map((item) => ({
+      packId: String(item.packId),
+      componentName: String(item.componentName),
+      label: String(item.label || item.componentName),
+    }))
+  if (!normalized.length) return
+  session.componentReferences = normalized
+  session.componentRequest = normalized.map((item) => item.componentName).join(' ')
+  session.pendingTask = createPendingTask(
+    session,
+    normalized.length > 1 ? 'page-design' : 'component-design',
+    prompt,
+    'prepared',
+  )
+}
+
+function createPendingTask(session, kind, goal, status) {
+  const now = new Date().toISOString()
+  return {
+    id: session.pendingTask?.id || `pending-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    kind,
+    status,
+    componentReferences: (session.componentReferences ?? []).map((item) => ({ ...item })),
+    goal,
+    createdAt: session.pendingTask?.createdAt || now,
+    updatedAt: now,
+  }
+}
+
 function resetPageConfirmationSteps(session) {
-  const withoutGeneratedComponents = session.plan.filter((step) => ![
-    'page.generate-component',
-  ].includes(step.tool))
-  const confirmationIndex = withoutGeneratedComponents.findIndex((step) => step.tool === 'page.confirm-blueprint')
-  session.plan = withoutGeneratedComponents.map((step, index) => index >= confirmationIndex
-    ? {
-        id: step.id,
-        title: step.title,
-        tool: step.tool,
-        status: 'pending',
-        input: step.input,
-      }
-    : step)
+  const withoutGeneratedComponents = session.plan.filter(
+    (step) => !['page.generate-component'].includes(step.tool),
+  )
+  const confirmationIndex = withoutGeneratedComponents.findIndex(
+    (step) => step.tool === 'source.confirm' || step.tool === 'page.confirm-blueprint',
+  )
+  if (confirmationIndex < 0) return
+  session.plan = withoutGeneratedComponents.map((step, index) =>
+    index >= confirmationIndex
+      ? {
+          id: step.id,
+          title: step.title,
+          tool: step.tool,
+          status: 'pending',
+          input: step.input,
+        }
+      : step,
+  )
 }
 
 export function createImagePlan() {
   return [
     createStep('prepare-references', '准备参考图', 'reference.prepare'),
-    createStep('create-blueprint', '规划设计结构', 'design.blueprint'),
+    createStep('create-generation-brief', '建立图片生成契约', 'design.brief'),
     createStep('generate-design', '生成设计图', 'design.generate'),
     createStep('review-artifact', '审查设计制品', 'artifact.review'),
     createStep('refine-design', '修正设计制品', 'design.refine'),
@@ -182,83 +300,39 @@ export function createAssetSetPlan() {
   ]
 }
 
-export function createComponentDesignPlan() {
-  return [
-    createStep('prepare-references', '准备设计参考', 'reference.prepare'),
-    createStep('resolve-component', '解析组件设计契约', 'component.resolve'),
-    createStep('create-component-blueprint', '生成组件原型结构', 'component.blueprint'),
-    createStep('plan-component-assets', '规划组件素材槽位', 'component.plan-assets'),
-    createStep('generate-component-assets', '生成组件独立素材', 'component.generate-assets'),
-    createStep('validate-component-assets', '验证组件独立素材', 'component.validate-assets'),
-    createStep('compose-component-preview', '合成组件设计预览', 'component.compose'),
-    createStep('present-component', '交付组件设计到画布', 'canvas.present-component'),
-  ]
-}
-
-export function createComponentSlotEditPlan() {
-  return [
-    createStep('prepare-references', '准备局部设计参考', 'reference.prepare'),
-    createStep('regenerate-component-slot', '重新生成组件素材', 'component.regenerate-slot'),
-    createStep('validate-component-slot', '验证组件素材', 'component.validate-slot'),
-    createStep('present-component-slot', '替换组件素材', 'canvas.present-slot'),
-  ]
-}
-
-export function createPageShellEditPlan() {
-  return [
-    createStep('prepare-references', '准备页面视觉参考', 'reference.prepare'),
-    createStep('regenerate-page-shell', '重新生成页面视觉外壳', 'page.regenerate-shell'),
-    createStep('validate-page-shell', '验证页面视觉外壳', 'page.validate-shell'),
-    createStep('present-page-shell', '替换页面视觉外壳', 'canvas.present-page-shell'),
-  ]
-}
-
-export function createPageDesignPlan() {
-  return [
-    createStep('prepare-references', '准备页面设计参考', 'reference.prepare'),
-    createStep('resolve-page-components', '解析页面组件', 'page.resolve-components'),
-    createStep('create-page-blueprint', '规划页面结构', 'page.blueprint'),
-    createStep('confirm-page-blueprint', '确认页面结构', 'page.confirm-blueprint'),
-    createStep('extract-page-theme', '提取页面 KV 主题', 'page.extract-theme'),
-    createStep('generate-page-shell', '生成页面视觉外壳', 'page.generate-shell'),
-    createStep('review-page', '审查完整页面', 'page.review'),
-    createStep('present-page', '交付完整页面到画布', 'canvas.present-page'),
-  ]
-}
-
-function createTaskPlan(taskKind) {
-  if (taskKind === 'page-shell-edit') return createPageShellEditPlan()
-  if (taskKind === 'component-slot-edit') return createComponentSlotEditPlan()
-  if (taskKind === 'page-design') return createPageDesignPlan()
-  if (taskKind === 'component-design') return createComponentDesignPlan()
+function createTaskPlan(taskKind, pluginRegistry) {
+  if (taskKind === 'design-spec-patch') return createDesignSpecPatchPlan()
+  if (taskKind === 'design-patch') return createDesignPatchPlan()
+  const pluginPlan = pluginRegistry.resolvePlan(taskKind)
+  if (pluginPlan) return pluginPlan
+  if (
+    [
+      'page-shell-edit',
+      'component-slot-edit',
+      'component-slot-batch-edit',
+      'page-design',
+      'component-design',
+    ].includes(taskKind)
+  ) {
+    return requirePluginPlan(pluginRegistry, taskKind)
+  }
   return taskKind === 'asset-set' ? createAssetSetPlan() : createImagePlan()
 }
 
-function isPageDesignRequest(prompt, componentRequest) {
-  const value = `${prompt}\n${componentRequest || ''}`
-  return PAGE_DESIGN_PATTERN.test(value) && COMPONENT_SELECTOR_PATTERN.test(value)
+export function createDesignSpecPatchPlan() {
+  return [
+    createStep('plan-design-spec-patch', '规划页面结构修改', 'design.spec-patch.plan'),
+    createStep('validate-design-spec-patch', '校验页面结构修改', 'design.spec-patch.validate'),
+    createStep('present-design-spec-patch', '应用页面结构修改', 'canvas.present-spec-patch'),
+  ]
 }
 
-function isComponentSlotEdit(editScope, prompt) {
-  return Boolean(
-    editScope?.type === 'component-region' &&
-    typeof editScope.elementId === 'string' &&
-    typeof editScope.slotId === 'string' &&
-    typeof editScope.propPath === 'string' &&
-    /重新|再生成|重做|替换|改成|改为|调整|换成|换个|风格|颜色|素材|按钮|图标|背景/i.test(prompt),
-  )
-}
-
-function isExecutableDesignRevision(session, editScope, prompt) {
-  if (
-    ADVICE_REQUEST_PATTERN.test(prompt) ||
-    (!DESIGN_REVISION_PATTERN.test(prompt) && !SHORT_REVISION_PATTERN.test(prompt))
-  ) return false
-  return Boolean(
-    session.goal ||
-    session.componentRequest ||
-    editScope?.type === 'component-instance',
-  )
+export function createDesignPatchPlan() {
+  return [
+    createStep('plan-design-patch', '规划局部修改', 'design.patch.plan'),
+    createStep('validate-design-patch', '校验局部修改', 'design.patch.validate'),
+    createStep('present-design-patch', '应用局部修改', 'canvas.present-patch'),
+  ]
 }
 
 function createStep(id, title, tool) {
@@ -280,15 +354,24 @@ function resumeRun(session, expectedPlan) {
     beginRun(session, expectedPlan)
     return
   }
-  session.plan = session.plan.map((step) => (
-    step.status === 'failed' || step.status === 'running' || step.status === 'cancelled' || step.partialFailure
-      ? { ...step, status: 'pending', error: undefined, partialFailure: undefined, outputHash: undefined }
-      : step
-  ))
+  session.plan = session.plan.map((step) =>
+    step.status === 'failed' ||
+    step.status === 'running' ||
+    step.status === 'cancelled' ||
+    step.partialFailure
+      ? {
+          ...step,
+          status: 'pending',
+          error: undefined,
+          partialFailure: undefined,
+          outputHash: undefined,
+        }
+      : step,
+  )
   if (session.taskKind === 'page-design') session.confirmedPageRunId = session.runId
 }
 
-function mergeReferences(session, uploads, prompt) {
+function mergeReferences(session, uploads, prompt, options = {}) {
   let changed = false
   const updatedRoles = []
   const candidates = []
@@ -296,9 +379,15 @@ function mergeReferences(session, uploads, prompt) {
     const upload = uploads[index]
     if (typeof upload?.data !== 'string' || !upload.data.startsWith('data:image/')) continue
     const name = String(upload.name || `参考图 ${index + 1}`)
-    let role = inferUploadRole(name, String(upload.context || ''), prompt)
-    // 设计任务中未标注名称的用户图片默认作为 KV，避免随机文件名被误判为无主题参考。
-    if (role === 'unknown' && isVisualDesignPrompt(prompt)) role = 'kv'
+    const structuredRole = options.referenceBindings?.find(
+      (item) => item?.uploadIndex === index,
+    )?.role
+    // UI 已明确选择的图片角色随 upload 一起传入；优先级高于根据文件名/提示词推断，
+    // 否则用户选了 KV/原型后，进入会话合并时会被丢失。
+    const explicitRole = structuredRole || upload.role
+    const role = ['kv', 'prototype', 'visual', 'edit-base'].includes(explicitRole)
+      ? explicitRole
+      : inferUploadRole(name, String(upload.context || ''), prompt)
     const candidate = {
       id: `reference-${Date.now()}-${index}`,
       name,
@@ -314,6 +403,17 @@ function mergeReferences(session, uploads, prompt) {
     if (!candidates.some((item) => item.data === candidate.data)) candidates.push(candidate)
   }
 
+  if (options.replace) {
+    const nextData = new Set(candidates.map((candidate) => candidate.data))
+    if (
+      session.references.length !== candidates.length ||
+      session.references.some((reference) => !nextData.has(reference.data))
+    ) {
+      session.references = []
+      changed = true
+    }
+  }
+
   for (const candidate of candidates) {
     const existing = session.references.find((reference) => reference.data === candidate.data)
     if (existing) {
@@ -325,7 +425,9 @@ function mergeReferences(session, uploads, prompt) {
       continue
     }
     if (candidate.role === 'kv' || candidate.role === 'prototype') {
-      session.references = session.references.filter((reference) => reference.role !== candidate.role)
+      session.references = session.references.filter(
+        (reference) => reference.role !== candidate.role,
+      )
     }
     session.references.push(candidate)
     changed = true
@@ -337,10 +439,6 @@ function mergeReferences(session, uploads, prompt) {
       ? `已更新${Array.from(new Set(updatedRoles)).join('和')}`
       : '已保存新的参考图',
   }
-}
-
-function isVisualDesignPrompt(prompt) {
-  return /(?:生成|设计|制作|输出|绘制|完善|优化).{0,40}(?:页面|界面|ui|设计稿|视觉稿|组件|素材|图片)|(?:页面|界面|ui|设计稿|视觉稿|组件|素材|图片).{0,40}(?:生成|设计|制作|输出)/i.test(prompt)
 }
 
 function inferReferenceRole(value) {
@@ -383,46 +481,6 @@ function getMentionContext(prompt, name) {
     if (index >= 0) return prompt.slice(Math.max(0, index - 80), index + label.length + 80)
   }
   return ''
-}
-
-function recoverGoalFromHistory(session, history = []) {
-  if (session.goal) return
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const item = history[index]
-    if (
-      item?.role === 'user' &&
-      (
-        IMAGE_OUTPUT_PATTERN.test(String(item.text || '')) ||
-        COMPONENT_ACTION_PATTERN.test(String(item.text || ''))
-      )
-    ) {
-      session.goal = String(item.text).trim()
-      session.taskKind = isPageDesignRequest(session.goal, session.componentRequest)
-        ? 'page-design'
-        : COMPONENT_DESIGN_PATTERN.test(session.goal) || session.componentRequest
-        ? 'component-design'
-        : ASSET_SET_PATTERN.test(session.goal)
-          ? 'asset-set'
-          : 'design-image'
-      session.status = 'ready'
-      return
-    }
-  }
-}
-
-function rememberComponentRequest(session, prompt, history = []) {
-  if (COMPONENT_SELECTOR_PATTERN.test(prompt)) {
-    session.componentRequest = prompt
-    return
-  }
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const item = history[index]
-    const text = String(item?.text || '').trim()
-    if (item?.role === 'user' && COMPONENT_SELECTOR_PATTERN.test(text)) {
-      session.componentRequest = text
-      return
-    }
-  }
 }
 
 function clearFailure(session) {

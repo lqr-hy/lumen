@@ -1,44 +1,57 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { formatSkillInvocation, formatSkillsForSystemPrompt } from '@earendil-works/pi-agent-core'
 import { createRuntimeError } from './providers.mjs'
+import {
+  configureComponentPackRuntime,
+  loadComponentFromPrompt as loadComponentFromPackPrompt,
+  loadComponentsFromPrompt as loadComponentsFromPackPrompt,
+  resolveComponentReference as resolvePackComponentReference,
+  resolveComponentPackSkillNames,
+} from './component-packs.mjs'
+import { configureUserExtensions, listEnabledUserSkillRoots } from './user-extensions.mjs'
 
 let runtimeConfig = {
   appRoot: process.cwd(),
   resourcesPath: process.resourcesPath || process.cwd(),
+  userDataPath: process.cwd(),
   isPackaged: false,
 }
 let cachedSkills
+const MAX_SKILL_BYTES = 64 * 1024
+const MAX_SKILL_RESOURCE_BYTES = 32 * 1024
 
 export function configureSkillRuntime(config = {}) {
   runtimeConfig = {
     appRoot: config.appRoot || runtimeConfig.appRoot,
     resourcesPath: config.resourcesPath || runtimeConfig.resourcesPath,
+    userDataPath: config.userDataPath || runtimeConfig.userDataPath,
     isPackaged: Boolean(config.isPackaged),
   }
   cachedSkills = undefined
+  configureComponentPackRuntime(runtimeConfig)
+  configureUserExtensions(runtimeConfig)
 }
 
 export async function listSkills(options = {}) {
   if (cachedSkills && !options.refresh) return cachedSkills
-  const root = getSkillsRoot()
-  let entries = []
-  try {
-    entries = await fs.readdir(root, { withFileTypes: true })
-  } catch (error) {
-    if (error?.code === 'ENOENT') return []
-    throw error
-  }
-
   const skills = []
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name.startsWith('.')) continue
-    const skillRoot = path.join(root, entry.name)
+  const roots = [
+    ...(await listBuiltInSkillRoots()).map((root) => ({ root, source: 'built-in' })),
+    ...(await listEnabledUserSkillRoots()).map((root) => ({ root, source: 'user' })),
+  ]
+  for (const item of roots) {
+    const folderName = path.basename(item.root)
     try {
-      skills.push(await readSkill(skillRoot, entry.name))
+      if (skills.some((skill) => skill.name === folderName)) {
+        console.warn('[runtime] duplicate user skill ignored', { folder: folderName })
+        continue
+      }
+      skills.push(await readSkill(item.root, folderName, item.source))
     } catch (error) {
       console.warn('[runtime] skill ignored', {
-        folder: entry.name,
+        folder: folderName,
         reason: error instanceof Error ? error.message : String(error),
       })
     }
@@ -55,10 +68,47 @@ export async function listPublicSkills() {
     description: skill.description,
     triggers: skill.runtime?.triggers ?? [],
     tools: (skill.runtime?.tools ?? []).map((tool) => tool.name),
+    source: skill.source,
+    enabled: true,
+    executable: Boolean(skill.runtime),
   }))
 }
 
-export async function resolveSkillNames(question, requestedNames = []) {
+export async function buildSkillCatalogPrompt() {
+  const skills = await listSkills()
+  return formatSkillsForSystemPrompt(skills.map(toPiSkill))
+}
+
+export async function activateSkill(name, instructions = '') {
+  const skill = await findSkill(name)
+  return {
+    name: skill.name,
+    content: formatSkillInvocation(toPiSkill(skill), instructions),
+    tools: (skill.runtime?.tools ?? []).map((tool) => tool.name),
+  }
+}
+
+export async function readSkillResource(name, relativePath) {
+  const skill = await findSkill(name)
+  const normalized = String(relativePath || '').replace(/^\.\//, '')
+  if (!/^(?:references|assets)\//.test(normalized)) {
+    throw createRuntimeError(
+      'SKILL_RESOURCE_FORBIDDEN',
+      'Skill 只能读取 references 或 assets 目录。',
+    )
+  }
+  const target = resolveInside(skill.root, normalized)
+  const stat = await fs.stat(target)
+  if (!stat.isFile() || stat.size > MAX_SKILL_RESOURCE_BYTES) {
+    throw createRuntimeError('SKILL_RESOURCE_INVALID', 'Skill 资源不是文件或超过 32KB。')
+  }
+  if (!/\.(?:md|txt|json|ya?ml)$/i.test(target)) {
+    throw createRuntimeError('SKILL_RESOURCE_UNSUPPORTED', '当前只允许读取文本型 Skill 资源。')
+  }
+  return { name, path: normalized, content: await fs.readFile(target, 'utf8') }
+}
+
+export async function resolveSkillNames(question, requestedNames = [], componentReferences = []) {
   const skills = await listSkills()
   const byName = new Map(skills.map((skill) => [skill.name, skill]))
   const selected = []
@@ -82,43 +132,17 @@ export async function resolveSkillNames(question, requestedNames = []) {
       selected.push(skill.name)
     }
   }
-  return selected.slice(0, 4)
-}
-
-export async function stageSkills(jobDirectory, skillNames = []) {
-  if (!skillNames.length) return []
-  const skills = await listSkills()
-  const byName = new Map(skills.map((skill) => [skill.name, skill]))
-  const destinationRoot = path.join(jobDirectory, 'skills')
-  await fs.mkdir(destinationRoot, { recursive: true })
-  const staged = []
-
-  for (const name of skillNames) {
-    const skill = byName.get(name)
-    if (!skill) throw createRuntimeError('SKILL_NOT_FOUND', `未找到 Skill：${name}`)
-    const destination = path.join(destinationRoot, name)
-    await fs.cp(skill.root, destination, { recursive: true, force: true, dereference: false })
-    staged.push({
-      name,
-      description: skill.description,
-      root: destination,
-      skillFile: path.join(destination, 'SKILL.md'),
-    })
+  for (const packSkillName of await resolveComponentPackSkillNames(question)) {
+    if (byName.has(packSkillName) && !selected.includes(packSkillName)) selected.push(packSkillName)
   }
-  return staged
-}
-
-export function buildSkillPrompt(stagedSkills = []) {
-  if (!stagedSkills.length) return ''
-  return [
-    '【本任务必须使用的项目 Skill】',
-    ...stagedSkills.flatMap((skill, index) => [
-      `${index + 1}. ${skill.name}`,
-      `必须先完整读取：${skill.skillFile}`,
-      '按照 SKILL.md 的渐进式说明按需读取 references，并优先使用其 scripts 或 Runtime Tools。',
-    ]),
-    'Skill 是任务执行规范；不得只复述 Skill 内容，必须按其中流程完成实际任务。',
-  ].join('\n')
+  if (
+    componentReferences.length &&
+    byName.has('component-design-assets') &&
+    !selected.includes('component-design-assets')
+  ) {
+    selected.push('component-design-assets')
+  }
+  return selected.slice(0, 4)
 }
 
 export async function executeSkillTool(toolName, input) {
@@ -146,155 +170,40 @@ export function getSkillsRoot() {
     : path.join(runtimeConfig.appRoot, '.agents', 'skills')
 }
 
-export function getComponentsJsonRoot() {
-  return runtimeConfig.isPackaged
-    ? path.join(runtimeConfig.resourcesPath, 'componentsJson')
-    : path.join(runtimeConfig.appRoot, 'componentsJson')
+export function invalidateSkillCache() {
+  cachedSkills = undefined
 }
 
-export async function loadComponentFromPrompt(prompt) {
-  const candidates = await loadComponentsFromPrompt(prompt)
-  if (candidates.length !== 1) {
-    throw createRuntimeError('COMPONENT_MATCH_AMBIGUOUS', '提示词匹配到多个组件，请明确指定一个组件名称。')
+async function listBuiltInSkillRoots() {
+  const root = getSkillsRoot()
+  try {
+    return (await fs.readdir(root, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map((entry) => path.join(root, entry.name))
+  } catch (error) {
+    if (error?.code === 'ENOENT') return []
+    throw error
   }
-  return candidates[0]
+}
+
+export async function loadComponentFromPrompt(prompt, options = {}) {
+  return loadComponentFromPackPrompt(prompt, options)
 }
 
 export async function loadComponentsFromPrompt(prompt, options = {}) {
-  const root = getComponentsJsonRoot()
-  let entries
-  try {
-    entries = await fs.readdir(root, { withFileTypes: true })
-  } catch {
-    throw createRuntimeError('COMPONENT_REGISTRY_MISSING', '应用中没有可用的组件 JSON 目录。')
-  }
-  const normalizedPrompt = String(prompt || '').toLowerCase()
-  const candidates = []
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.json')) continue
-    const filePath = path.join(root, entry.name)
-    try {
-      const source = await fs.readFile(filePath, 'utf8')
-      const component = JSON.parse(source)
-      const componentName = String(component?.name || path.basename(entry.name, '.json'))
-      const aliases = [componentName, entry.name, path.basename(entry.name, '.json')]
-        .map((value) => value.toLowerCase())
-      if (aliases.some((alias) => normalizedPrompt.includes(alias))) {
-        candidates.push({ component, source, fileName: entry.name })
-      }
-    } catch (error) {
-      console.warn('[runtime] component json ignored', {
-        file: entry.name,
-        reason: error instanceof Error ? error.message : String(error),
-      })
-    }
-  }
-  if (!candidates.length) {
-    const available = entries
-      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.json'))
-      .map((entry) => path.basename(entry.name, '.json'))
-    throw createRuntimeError(
-      'COMPONENT_NOT_FOUND',
-      `请明确指定组件名称。当前可用组件：${available.join('、') || '无'}。`,
-    )
-  }
-  return Promise.all(candidates.map(async (selected) => {
-    const structural = isStructuralComponent(selected.component)
-    if (!selected.component.thumbnail && !(options.allowStructuralComponents && structural)) {
-      throw createRuntimeError(
-        'COMPONENT_THUMBNAIL_MISSING',
-        `${selected.component.name} 缺少 thumbnail，无法可靠生成组件原型。`,
-      )
-    }
-    const thumbnailUpload = selected.component.thumbnail
-      ? await loadTrustedComponentThumbnail(selected.component.thumbnail, selected.component.name)
-      : undefined
-    return { ...selected, thumbnailUpload }
-  }))
+  return loadComponentsFromPackPrompt(prompt, options)
 }
 
-function isStructuralComponent(component) {
-  const name = String(component?.name || '')
-  const label = String(component?.label || '')
-  return /page|layout|container|页面|容器|布局/i.test(`${name} ${label}`)
+export async function resolveComponentReference(reference, options = {}) {
+  return resolvePackComponentReference(reference, options)
 }
 
-async function loadTrustedComponentThumbnail(value, componentName) {
-  let url
-  try {
-    url = new URL(value)
-  } catch {
-    throw createRuntimeError('COMPONENT_THUMBNAIL_INVALID', `${componentName} 的 thumbnail URL 无效。`)
-  }
-  if (!isTrustedThumbnailUrl(url)) {
-    throw createRuntimeError(
-      'COMPONENT_THUMBNAIL_UNTRUSTED',
-      `${componentName} 的 thumbnail 不在允许的图片域中。`,
-    )
-  }
-
-  let response
-  try {
-    response = await fetch(url, { signal: AbortSignal.timeout(15_000) })
-  } catch (error) {
-    throw createRuntimeError(
-      'COMPONENT_THUMBNAIL_LOAD_FAILED',
-      `${componentName} 的 thumbnail 下载失败：${error instanceof Error ? error.message : String(error)}`,
-    )
-  }
-  if (!response.ok) {
-    throw createRuntimeError(
-      'COMPONENT_THUMBNAIL_LOAD_FAILED',
-      `${componentName} 的 thumbnail 下载失败：HTTP ${response.status}。`,
-    )
-  }
-  if (!isTrustedThumbnailUrl(new URL(response.url))) {
-    throw createRuntimeError(
-      'COMPONENT_THUMBNAIL_UNTRUSTED',
-      `${componentName} 的 thumbnail 重定向到了非可信图片域。`,
-    )
-  }
-  const bytes = Buffer.from(await response.arrayBuffer())
-  if (!bytes.length || bytes.length > 8 * 1024 * 1024) {
-    throw createRuntimeError('COMPONENT_THUMBNAIL_INVALID', `${componentName} 的 thumbnail 大小无效。`)
-  }
-  const mime = normalizeThumbnailMime(response.headers.get('content-type'), url.pathname)
-  return {
-    type: 'file',
-    name: `${componentName}-thumbnail.${extensionForThumbnailMime(mime)}`,
-    mime,
-    role: 'prototype',
-    data: `data:${mime};base64,${bytes.toString('base64')}`,
-  }
-}
-
-function isTrustedThumbnailUrl(url) {
-  const hostname = url.hostname.toLowerCase()
-  return url.protocol === 'https:' && (
-    hostname === 'bilibili.com' ||
-    hostname.endsWith('.bilibili.com') ||
-    hostname === 'hdslb.com' ||
-    hostname.endsWith('.hdslb.com')
-  )
-}
-
-function normalizeThumbnailMime(contentType, pathname) {
-  const value = String(contentType || '').split(';')[0].trim().toLowerCase()
-  if (['image/png', 'image/jpeg', 'image/webp'].includes(value)) return value
-  const extension = path.extname(pathname).toLowerCase()
-  if (extension === '.jpg' || extension === '.jpeg') return 'image/jpeg'
-  if (extension === '.webp') return 'image/webp'
-  return 'image/png'
-}
-
-function extensionForThumbnailMime(mime) {
-  if (mime === 'image/jpeg') return 'jpg'
-  if (mime === 'image/webp') return 'webp'
-  return 'png'
-}
-
-async function readSkill(skillRoot, folderName) {
+async function readSkill(skillRoot, folderName, source = 'built-in') {
   const skillFile = path.join(skillRoot, 'SKILL.md')
+  const skillStat = await fs.stat(skillFile)
+  if (!skillStat.isFile() || skillStat.size > MAX_SKILL_BYTES) {
+    throw new Error('SKILL.md 不是文件或超过 64KB。')
+  }
   const content = await fs.readFile(skillFile, 'utf8')
   const frontmatter = parseSkillFrontmatter(content)
   if (frontmatter.name !== folderName) {
@@ -303,7 +212,10 @@ async function readSkill(skillRoot, folderName) {
   const runtimeManifestPath = path.join(skillRoot, 'runtime', 'manifest.json')
   let runtime
   try {
-    runtime = validateRuntimeManifest(JSON.parse(await fs.readFile(runtimeManifestPath, 'utf8')), skillRoot)
+    runtime = validateRuntimeManifest(
+      JSON.parse(await fs.readFile(runtimeManifestPath, 'utf8')),
+      skillRoot,
+    )
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error
   }
@@ -312,7 +224,24 @@ async function readSkill(skillRoot, folderName) {
     description: frontmatter.description,
     root: skillRoot,
     skillFile,
+    content,
     runtime,
+    source,
+  }
+}
+
+async function findSkill(name) {
+  const skill = (await listSkills()).find((item) => item.name === name)
+  if (!skill) throw createRuntimeError('SKILL_NOT_FOUND', `未找到 Skill：${name}`)
+  return skill
+}
+
+function toPiSkill(skill) {
+  return {
+    name: skill.name,
+    description: skill.description,
+    content: skill.content,
+    filePath: skill.skillFile,
   }
 }
 
@@ -337,23 +266,25 @@ function validateRuntimeManifest(manifest, skillRoot) {
   const triggers = Array.isArray(manifest.triggers)
     ? manifest.triggers.filter((item) => typeof item === 'string' && item.trim()).slice(0, 32)
     : []
-  const tools = Array.isArray(manifest.tools) ? manifest.tools.map((tool) => {
-    if (
-      !tool ||
-      typeof tool.name !== 'string' ||
-      typeof tool.module !== 'string' ||
-      typeof tool.export !== 'string'
-    ) {
-      throw new Error('Skill runtime tool 配置错误。')
-    }
-    resolveInside(skillRoot, tool.module)
-    return {
-      name: tool.name,
-      description: typeof tool.description === 'string' ? tool.description : '',
-      module: tool.module,
-      export: tool.export,
-    }
-  }) : []
+  const tools = Array.isArray(manifest.tools)
+    ? manifest.tools.map((tool) => {
+        if (
+          !tool ||
+          typeof tool.name !== 'string' ||
+          typeof tool.module !== 'string' ||
+          typeof tool.export !== 'string'
+        ) {
+          throw new Error('Skill runtime tool 配置错误。')
+        }
+        resolveInside(skillRoot, tool.module)
+        return {
+          name: tool.name,
+          description: typeof tool.description === 'string' ? tool.description : '',
+          module: tool.module,
+          export: tool.export,
+        }
+      })
+    : []
   return { version: manifest.version || 1, triggers, tools }
 }
 

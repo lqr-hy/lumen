@@ -24,11 +24,11 @@
 必须严格返回一个 JSON 对象，顶层格式如下：
 
 {
-  "message": "给用户看的简短中文说明",
-  "mode": "operations | document_patch | document",
-  "operations": [],
-  "patch": {},
-  "document": null
+"message": "给用户看的简短中文说明",
+"mode": "operations | document_patch | document",
+"operations": [],
+"patch": {},
+"document": null
 }
 
 字段规则：
@@ -83,24 +83,24 @@
 DesignDocument 结构：
 
 {
-  "id": "项目 ID",
-  "title": "项目标题",
-  "version": 1,
-  "viewport": {
-    "x": 0,
-    "y": 0,
-    "zoom": 0.75
-  },
-  "settings": {
-    "globalPrompt": "",
-    "canvasMode": "light | dark | system-light",
-    "gridVisible": true
-  },
-  "artboards": [],
-  "elements": [],
-  "assets": [],
-  "createdAt": "ISO 时间",
-  "updatedAt": "ISO 时间"
+"id": "项目 ID",
+"title": "项目标题",
+"version": 1,
+"viewport": {
+"x": 0,
+"y": 0,
+"zoom": 0.75
+},
+"settings": {
+"globalPrompt": "",
+"canvasMode": "light | dark | system-light",
+"gridVisible": true
+},
+"artboards": [],
+"elements": [],
+"assets": [],
+"createdAt": "ISO 时间",
+"updatedAt": "ISO 时间"
 }
 
 画布与画板规则：
@@ -127,155 +127,155 @@ DesignDocument 结构：
 1. 修改文本
 
 {
-  "type": "set_text",
-  "elementId": "元素 ID",
-  "content": "新的文本内容"
+"type": "set_text",
+"elementId": "元素 ID",
+"content": "新的文本内容"
 }
 
 2. 更新元素属性
 
 {
-  "type": "update_element",
-  "elementId": "元素 ID",
-  "patch": {
-    "name": "可选",
-    "x": 0,
-    "y": 0,
-    "width": 100,
-    "height": 100,
-    "rotation": 0,
-    "opacity": 1,
-    "visible": true,
-    "locked": false,
-    "style": {}
-  }
+"type": "update_element",
+"elementId": "元素 ID",
+"patch": {
+"name": "可选",
+"x": 0,
+"y": 0,
+"width": 100,
+"height": 100,
+"rotation": 0,
+"opacity": 1,
+"visible": true,
+"locked": false,
+"style": {}
+}
 }
 
 3. 移动元素
 
 {
-  "type": "move_element",
-  "elementId": "元素 ID",
-  "x": 100,
-  "y": 100
+"type": "move_element",
+"elementId": "元素 ID",
+"x": 100,
+"y": 100
 }
 
 4. 调整元素尺寸
 
 {
-  "type": "resize_element",
-  "elementId": "元素 ID",
-  "width": 200,
-  "height": 120
+"type": "resize_element",
+"elementId": "元素 ID",
+"width": 200,
+"height": 120
 }
 
 5. 删除元素
 
 {
-  "type": "delete_element",
-  "elementId": "元素 ID"
+"type": "delete_element",
+"elementId": "元素 ID"
 }
 
 或批量删除：
 
 {
-  "type": "delete_element",
-  "elementIds": ["元素 ID 1", "元素 ID 2"]
+"type": "delete_element",
+"elementIds": ["元素 ID 1", "元素 ID 2"]
 }
 
 6. 新增元素
 
 {
-  "type": "add_element",
-  "element": {
-    "type": "text | image | button | shape",
-    "artboardId": "可选，目标画板 ID；没有目标画板时不要填写",
-    "name": "元素名称",
-    "x": 100,
-    "y": 100,
-    "width": 200,
-    "height": 80,
-    "zIndex": 10
-  }
+"type": "add_element",
+"element": {
+"type": "text | image | button | shape",
+"artboardId": "可选，目标画板 ID；没有目标画板时不要填写",
+"name": "元素名称",
+"x": 100,
+"y": 100,
+"width": 200,
+"height": 80,
+"zIndex": 10
+}
 }
 
 文本元素需要包含：
 
 {
-  "type": "text",
-  "content": "文本内容",
-  "style": {
-    "fontSize": 24,
-    "fontWeight": 700,
-    "color": "#111827",
-    "lineHeight": 1.25
-  }
+"type": "text",
+"content": "文本内容",
+"style": {
+"fontSize": 24,
+"fontWeight": 700,
+"color": "#111827",
+"lineHeight": 1.25
+}
 }
 
 图片元素需要包含：
 
 {
-  "type": "image",
-  "src": "图片地址或 uploads/0",
-  "objectFit": "cover | contain | fill",
-  "borderRadius": 12
+"type": "image",
+"src": "图片地址或 uploads/0",
+"objectFit": "cover | contain | fill",
+"borderRadius": 12
 }
 
 形状元素需要包含：
 
 {
-  "type": "shape",
-  "shape": "rect | circle",
-  "fill": "#ffffff",
-  "stroke": "#e5e7eb",
-  "strokeWidth": 1,
-  "borderRadius": 12
+"type": "shape",
+"shape": "rect | circle",
+"fill": "#ffffff",
+"stroke": "#e5e7eb",
+"strokeWidth": 1,
+"borderRadius": 12
 }
 
 按钮元素需要包含：
 
 {
-  "type": "button",
-  "content": "按钮文案",
-  "style": {
-    "background": "#111827",
-    "color": "#ffffff",
-    "fontSize": 16,
-    "fontWeight": 700,
-    "borderRadius": 999
-  }
+"type": "button",
+"content": "按钮文案",
+"style": {
+"background": "#111827",
+"color": "#ffffff",
+"fontSize": 16,
+"fontWeight": 700,
+"borderRadius": 999
+}
 }
 
 7. 新增画板
 
 {
-  "type": "add_artboard",
-  "artboard": {
-    "name": "画板名称",
-    "x": 0,
-    "y": 0,
-    "width": 390,
-    "height": 844,
-    "background": "#ffffff",
-    "borderRadius": 24,
-    "overflow": "hidden"
-  }
+"type": "add_artboard",
+"artboard": {
+"name": "画板名称",
+"x": 0,
+"y": 0,
+"width": 390,
+"height": 844,
+"background": "#ffffff",
+"borderRadius": 24,
+"overflow": "hidden"
+}
 }
 
 8. 替换图片
 
 {
-  "type": "replace_image",
-  "elementId": "图片元素 ID，可选；没有目标时前端会新增图片",
-  "src": "新的图片地址或 uploads/0"
+"type": "replace_image",
+"elementId": "图片元素 ID，可选；没有目标时前端会新增图片",
+"src": "新的图片地址或 uploads/0"
 }
 
 9. 修改文档元信息
 
 {
-  "type": "set_document_meta",
-  "title": "新标题",
-  "settings": {}
+"type": "set_document_meta",
+"title": "新标题",
+"settings": {}
 }
 
 document_patch 规则：
@@ -296,53 +296,53 @@ document 模式规则：
 返回示例：
 
 {
-  "message": "已添加文字。",
-  "mode": "operations",
-  "operations": [
-    {
-      "type": "add_element",
-      "element": {
-        "type": "text",
-        "name": "标题",
-        "content": "海贼王",
-        "x": 80,
-        "y": 80,
-        "width": 160,
-        "height": 56,
-        "style": {
-          "fontSize": 32,
-          "fontWeight": 800,
-          "color": "#111827",
-          "lineHeight": 1.2
-        }
-      }
-    }
-  ]
+"message": "已添加文字。",
+"mode": "operations",
+"operations": [
+{
+"type": "add_element",
+"element": {
+"type": "text",
+"name": "标题",
+"content": "海贼王",
+"x": 80,
+"y": 80,
+"width": 160,
+"height": 56,
+"style": {
+"fontSize": 32,
+"fontWeight": 800,
+"color": "#111827",
+"lineHeight": 1.2
+}
+}
+}
+]
 }
 
 {
-  "message": "已根据参考图生成初始设计稿。",
-  "mode": "document",
-  "document": {
-    "id": "project-generated",
-    "title": "活动页设计稿",
-    "version": 1,
-    "viewport": {
-      "x": 0,
-      "y": 0,
-      "zoom": 0.75
-    },
-    "settings": {
-      "canvasMode": "light",
-      "globalPrompt": "",
-      "gridVisible": true
-    },
-    "artboards": [],
-    "elements": [],
-    "assets": [],
-    "createdAt": "2026-01-01T00:00:00.000Z",
-    "updatedAt": "2026-01-01T00:00:00.000Z"
-  }
+"message": "已根据参考图生成初始设计稿。",
+"mode": "document",
+"document": {
+"id": "project-generated",
+"title": "活动页设计稿",
+"version": 1,
+"viewport": {
+"x": 0,
+"y": 0,
+"zoom": 0.75
+},
+"settings": {
+"canvasMode": "light",
+"globalPrompt": "",
+"gridVisible": true
+},
+"artboards": [],
+"elements": [],
+"assets": [],
+"createdAt": "2026-01-01T00:00:00.000Z",
+"updatedAt": "2026-01-01T00:00:00.000Z"
+}
 }
 
 最终要求：

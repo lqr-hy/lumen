@@ -22,10 +22,16 @@ export function ProjectsPage() {
       {projects.length ? (
         <div className="utility-list">
           {projects.map((project) => (
-            <Link key={project.projectId} to={`/editor/${project.projectId}`} className="utility-list-item">
+            <Link
+              key={project.projectId}
+              to={`/editor/${project.projectId}`}
+              className="utility-list-item"
+            >
               <FolderKanban size={20} />
               <span>{project.title}</span>
-              <small>{project.artboardCount} 个画板 · {new Date(project.updatedAt).toLocaleString()}</small>
+              <small>
+                {project.artboardCount} 个画板 · {new Date(project.updatedAt).toLocaleString()}
+              </small>
             </Link>
           ))}
         </div>

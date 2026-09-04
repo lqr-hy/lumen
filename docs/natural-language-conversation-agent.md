@@ -1,241 +1,154 @@
-# 自然语言 Conversation Agent 技术方案
+# Pi 原生会话与设计工作流技术方案
 
 ## 1. 目标
 
-聊天入口不再要求用户记忆“生成组件、添加到画布、继续”等固定句式。模型根据当前会话、画布、选择、参考图、组件 JSON 和最近 Artifact 判断用户目标；本地 Runtime 负责执行受控工具并验证结果。
-
-核心原则：
+应用只保留一条生产调用链：
 
 ```text
-自然语言由模型理解
-执行行为由 Tool Registry 约束
-组件字段由 JSON 契约约束
-画布结果由本地后置条件验证
-模型不可直接写 DesignDocument
+Renderer
+  -> Electron IPC
+  -> RuntimeContextAssembler
+  -> Pi Agent
+     -> 普通文本回复
+     -> skill_activate / skill_read_resource
+     -> studio_run_design_workflow
+  -> Design Workflow Graph
+  -> Tool Registry
+  -> Artifact / DesignDocument / Canvas ACK
 ```
 
-## 2. 运行架构
+Pi Agent 负责理解自然语言和选择高层工具；领域工作流负责可靠执行。应用不再维护 Conversation
+Decision JSON、NextAction JSON、模型驱动 ReAct Loop、正则意图降级或 CLI 文件协议。
+
+## 2. Pi Agent 职责
+
+Pi Agent 接收 RuntimeContext、Skill Catalog 和 Pi Messages，并执行以下决策：
+
+- 普通咨询直接回复。
+- 任务匹配 Skill 时调用 `skill_activate`。
+- 需要 Skill 附件时调用 `skill_read_resource`。
+- 用户要求实际生成或修改时调用 `studio_run_design_workflow`。
+- 目标不明确时直接追问，不调用写工具。
+
+模型不能直接构造 DesignDocument、Props Patch、Artifact 或 Canvas ACK，也不能声明未发生的画布写入。
+
+## 3. RuntimeContext
+
+`electron/runtime/pi/context-runtime.mjs` 统一提供：
+
+- Session ID、Project ID、任务状态和组件目标。
+- 当前画板 ID、尺寸和放置模式。
+- CanvasSnapshot：节点数、组件数、Page Shell 状态、选择和截断状态。
+- EditScope：组件实例、Slot、元素和页面外壳。
+- 引用图名称、角色和 MIME，不在 System Prompt 中放 Base64。
+- 已选 Skill 名称。最近对话只保留在 Pi Messages，不在 RuntimeContext 中重复注入。
+
+RuntimeContext 是 Pi 会话决策的唯一项目上下文入口。
+
+## 3.1 上下文预算与压缩
+
+`electron/runtime/pi/context-policy.mjs` 通过 Pi Agent 的 `transformContext` 接入
+`estimateContextTokens`、`shouldCompact` 和 `generateSummary`：
+
+- System Prompt 不重复写入当前用户消息或最近历史。
+- 达到模型窗口减去 24000 Token 预留量时压缩旧 Turn。
+- 默认保留最近约 20000 Token 的完整 Turn。
+- 摘要保留设计目标、DesignSpec/组件、画板、选择、引用职责、交付和错误。
+- 大型 Tool Result 在进入模型前截断，摘要失败时退化为确定性裁剪。
+
+压缩只影响本次模型上下文，不修改 DesignDocument、领域 Session 或聊天 UI 中的原始记录。
+
+## 4. 高层工具契约
+
+Pi Agent 只暴露三个工具：
 
 ```text
-Chat UI
-  -> ConversationContextAssembler
-  -> ConversationAgent Decision
-  -> Decision Schema Validator
-  -> ReAct NextAction Decision
-  -> Ready Tool Graph / Tool Registry
-  -> 单工具 Runtime Executor
-  -> 结构化 Observation / Checkpoint
-  -> Deliverable IPC -> Renderer Canvas Postcondition -> ACK Observation
-  -> ReAct NextAction Decision（循环）
-  -> Canvas Postcondition
-  -> Chat Delivery
+skill_activate
+skill_read_resource
+studio_run_design_workflow
 ```
 
-正则路由器仅作为以下场景的 fallback：模型不可用、输出不符合 Schema、明确的安全命令。它不再是正常聊天的主路由。
-
-## 3. Conversation Context
-
-发送给决策模型的是摘要，不传完整 DesignDocument 或 Base64：
-
-```ts
-interface ConversationContext {
-  message: string
-  recentHistory: Array<{ role: 'user' | 'agent'; text: string }>
-  session: {
-    status: string
-    taskKind?: string
-    goal?: string
-    componentRequest?: string
-    completedComponent?: string
-    failedStep?: string
-  }
-  canvas?: {
-    artboardId: string
-    width: number
-    height: number
-    placementMode?: string
-  }
-  selection?: {
-    type: string
-    componentName?: string
-    instanceId?: string
-    slotId?: string
-  }
-  references: Array<{ name: string; role: string; mime: string }>
-  capabilities: string[]
-}
-```
-
-## 4. Decision 协议
-
-```ts
-interface ConversationDecision {
-  version: 1
-  mode: 'reply' | 'execute' | 'clarify'
-  action:
-    | 'chat'
-    | 'continue'
-    | 'create-artboard'
-    | 'create-page'
-    | 'create-component'
-    | 'create-assets'
-    | 'create-image'
-    | 'revise-page'
-    | 'revise-page-shell'
-    | 'revise-component'
-    | 'regenerate-slot'
-  taskKind: string
-  confidence: number
-  reason: string
-  target?: { type?: string; id?: string; componentName?: string }
-  response?: string
-}
-```
-
-- `reply`：普通问答，不执行工具。
-- `execute`：进入现有受控 Planner/Tool Registry。
-- `clarify`：目标冲突或置信度不足时追问。
-- 模型不得声明工具已经完成，只能选择动作。
-
-## 5. Provider 协议
-
-新增 `decide_agent_action` Runtime 请求。Codex CLI 只写入 `agent-decision.json`；Responses API、Claude Code 和 Copilot 可返回纯 JSON 或 Markdown JSON 代码块。Runtime 统一提取并校验 Decision；失败后记录降级原因并调用确定性 fallback。
-
-决策请求不加载设计 Skill，不传图片二进制，只传参考图名称和角色摘要，控制延迟与上下文体积。
-
-## 6. ReAct NextAction 协议
-
-Conversation Decision 进入 `execute` 后，不再默认顺序跑完整 Recipe。固定 Plan 仅用于表达 Runtime 依赖图、恢复点和最终必需步骤；每轮 Runtime 计算 `readySteps`，模型只能从就绪步骤或只读 Inspect 工具中选择一个动作。
-
-```ts
-interface AgentNextAction {
-  version: 1
-  mode: 'tool' | 'clarify' | 'finish'
-  tool?: {
-    stepId: string
-    name: string
-    arguments?: Record<string, unknown>
-  }
-  response?: string
-  confidence: number
-  reason: string
-}
-```
-
-- `tool`：每轮只执行一个工具；计划工具的 `stepId/name` 必须与 `readySteps` 完全一致。
-- `clarify`：只有缺少用户才能提供的信息时暂停，Session 进入 `waiting-user`。
-- `finish`：只有 `readySteps` 为空时生效；否则 Runtime 强制执行首个就绪步骤。
-- 模型不可编造工具、覆盖计划参数或直接修改 `DesignDocument`。
-
-Codex CLI 使用 `decide_agent_next_action` 并写入 `agent-next-action.json`。其他 Provider 可以返回纯 JSON 或 Markdown JSON 代码块；非法结果自动降级到首个就绪步骤。
-
-## 7. Observation 与恢复
-
-每次工具执行都会写入结构化 Observation：
-
-```ts
-interface AgentObservation {
-  id: string
-  stepId: string
-  tool: string
-  status: 'success' | 'partial' | 'failed'
-  summary: string
-  data?: {
-    keys: string[]
-    artifactCount?: number
-    componentName?: string
-    componentCount?: number
-    failed?: boolean
-    targetArtboardId?: string
-  }
-  errorCode?: string
-  retryable?: boolean
-  createdAt: string
-}
-```
-
-工具失败时，ReAct 模式不立即结束任务：失败先成为 Observation，下一轮模型可以检查状态、重试就绪工具或向用户澄清。同一工具、参数和错误最多允许两次失败；第二次失败后 Runtime 强制终止，避免无限循环。
-
-当前只读 Inspect 工具：
+`studio_run_design_workflow` 接受受限 action：
 
 ```text
-agent.inspect-state
-canvas.inspect
-artifact.inspect
+continue
+create-artboard
+create-page
+create-component
+create-assets
+create-image
+revise-page
+revise-page-shell
+revise-component
+regenerate-slot
 ```
 
-Inspect 工具不接受写操作，不改变画布和组件配置，并作为 transient Step 持久化，恢复固定依赖图时会自动忽略。
+Tool Call 被转换为 `workflowDecision`，包含 action、taskKind、组件目标和来源。领域执行器不再请求
+模型补充 Decision，也不会切换到旧 Runtime。
 
-## 8. 循环边界
+## 5. 确定性 Workflow Graph
 
-- ReAct 任务最多 20 次工具迭代；模型决策不可扩展预算。
-- 相同工具、输入和错误最多失败两次。
-- ReAct 模式的单次工具调用不在工具内部隐式重试，恢复策略由下一轮决定。
-- 模型不可跳过未完成的必需步骤，`finish` 不是成功依据。
-- App 重启后，`running` 任务转为可恢复的 `failed`，不会显示不存在的后台重试。
-- 模型决策不可用时降级为确定性的首个就绪步骤，现有固定 Plan 仍可完整执行。
+`runDesignWorkflow()` 根据 action 创建或恢复领域 Run。`workflow-graph.mjs` 只计算依赖图中可执行的
+Ready Step，执行器按图选择第一个就绪步骤。页面中的独立组件 Step 可以处于同一 Ready 集合，但
+写入仍采用顺序 ACK，保证画布状态一致。
 
-页面中的多个 `page.generate-component` 是同级就绪节点，模型可以根据 Observation 选择下一个组件；`page.review` 只有全部组件节点完成后才会进入就绪集合。单个组件失败可形成 partial delivery，不会清除其他已完成组件检查点。
+领域执行器保留：
 
-页面组件工具完成后通过带确认的 Deliverable IPC 增量交付：Electron 发送组件设计、素材、`pageSectionId` 和 Blueprint bounds；Renderer 转换 SVG、首次插入或按 `pageSectionId` 原位替换，并验证 root、instance、目标画板和元素数量。Renderer ACK 成功后 Step 才能完成，ACK 失败或 30 秒超时会形成可恢复的失败 Observation。最终页面交付按 `pageSectionId` 复用已写入实例，只补齐 page-shell、页面元数据和最终状态，不重复创建组件。
+- Page、Component、Asset、Slot 和 Page Shell Plan。
+- Blueprint 确认和继续恢复。
+- Tool Registry 白名单。
+- Step Checkpoint 和 Artifact 外置存储。
+- 工具超时、最多两次工具级重试和取消信号。
+- Observation、失败状态和 Repair 失效传播。
+- 页面组件和 Page Shell 增量 Deliverable。
+- Renderer Canvas ACK 与后置条件校验。
 
-`page.generate-shell` 使用同一 ACK 协议在组件生成前写入页面视觉外壳；Repair 保留 page-shell elementId，最终页面交付原位更新外壳，画板中始终只有一个 page-shell。
+它不再保留：
 
-Renderer 每轮开始时发送不含 Base64 的 CanvasSnapshot，包含画板尺寸、节点类型、DesignRole、组件绑定、bounds、选择和计数。每次 ACK 再返回本次实际写入的节点摘要，Runtime 合并到 Session；`canvas.inspect`、Conversation Context 和 ReAct Context 均读取最新快照。
+- Conversation Agent。
+- `decide_agent_action`。
+- `decide_agent_next_action`。
+- Inspect Tool 插队。
+- 模型控制循环次数和失败恢复。
+- 首个 Ready Step 的“模型失败 fallback”概念。
 
-## 9. 执行与后置条件
+## 6. 页面与组件交付
 
-组件结果只有满足以下条件才能回复“已添加到画布”：
+页面组件生成完成后立即发送 `page-component` Deliverable。Renderer 按 Blueprint bounds 写入实例，
+返回 artboardId、rootElementId、instanceId、pageSectionId 和节点计数。Page Shell 使用相同 ACK 协议。
 
-1. `applyComponentDesign` 返回实例 ID。
-2. `componentInstances` 存在该 ID。
-3. 根 Section 存在且属于目标画板。
-4. 视觉外壳或可编辑区域至少存在一项。
+只有 ACK 成功后 Step 才完成。最终页面汇总复用增量写入的实例；Repair 使用相同 pageSectionId 或
+elementId 原位替换，不能产生重复组件或重复 Page Shell。
 
-页面结果必须验证 Page Shell、组件实例数量和目标画板。验证失败时聊天显示结构化错误，不得把 Provider 文案当作成功结果。
+## 7. Session 与恢复
 
-## 10. 与现有 Agent 的迁移
+Pi SQLite 镜像保存模型消息和 Tool Call/Result；领域 Session 保存 Goal、Plan、Observation、
+CanvasSnapshot、Checkpoint 和 Artifact 引用。应用重启后 `running` 统一转为 interrupted/failed，
+用户调用 `continue` 后从最后有效 Checkpoint 恢复，不声称后台仍在运行。
 
-### 已实施（P0）
+## 8. 错误与安全
 
-- Conversation Context Assembler。
-- Codex `decide_agent_action` 结构化决策协议。
-- Responses API、Claude Code、Copilot 的 Decision JSON 文本兼容。
-- 模型决策优先，正则 fallback。
-- `reply / execute / clarify`。
-- 组件和页面画布写入后置条件。
-- Decision 单元测试与现有 Agent 全量回归。
-- `decide_agent_next_action` ReAct 协议。
-- Ready Tool Graph 和单工具循环执行。
-- 成功、部分成功、失败 Observation。
-- Inspect 工具、20 次循环限制和相同失败两次限制。
-- `waiting-user` 暂停与继续恢复。
-- 模型不可用时首个就绪步骤 fallback。
-- 页面组件 Deliverable IPC 和 Renderer ACK。
-- 按 Blueprint bounds 增量定位组件。
-- Repair 按 `pageSectionId` 原位替换。
-- Canvas 后置条件作为下一轮 ReAct Observation。
-- 最终页面交付复用增量实例，避免重复节点。
-- page-shell 在组件生成前增量写入、Repair 原位替换并最终去重。
-- Renderer CanvasSnapshot 初始摘要和 ACK 后节点增量同步。
-- `canvas.inspect`、Conversation Agent 和 ReAct 共用最新画布快照。
+- Provider 失败返回结构化错误，不调用旧 Runtime。
+- Tool 参数必须通过 TypeBox 和应用白名单校验。
+- Skill 只能读取自身 `references/` 和文本型 `assets/`。
+- 不向 Pi Agent 注册 Bash、任意文件、任意 URL 或凭证读取工具。
+- Key 不进入 Renderer、RuntimeContext、Session 和日志。
+- Props Patch 只允许设计契约中的图片、颜色、尺寸、位置和显隐字段。
 
-### 后续（P1）
+## 9. 验收标准
 
-- “这个、刚才那个、右边空画板”等实体解析与置信度。
-- Artifact 跨轮复用和显式归属校验。
-- 运行期间用户手动编辑、选择变化主动推送到正在运行的 Agent，而不只在请求开始和 Deliverable ACK 时同步。
+1. 普通咨询不进入领域工作流。
+2. 生成或修改请求必须产生 Pi Tool Call。
+3. 每个领域 Step 由 Workflow Graph 确定，不发生二次模型 Decision 请求。
+4. 页面和组件只有 Canvas ACK 成功后才能回复完成。
+5. 工具瞬时失败在工具层重试，最终失败可通过 `continue` 从 Checkpoint 恢复。
+6. 生产代码中不存在 Conversation Agent、NextAction 或 Legacy Runtime 引用。
 
-### 后续（P2）
+专项测试：
 
-- 删除大部分 generation/page/component 正则。
-- 将固定 `createTaskPlan()` 进一步降为声明式依赖图，不再维护手写顺序 Recipe。
-- 为超大画布增加分页式 `canvas.inspect-region` 和按组件查询，替代 80 节点摘要上限。
-
-## 11. 降级与安全
-
-- 模型请求失败或 JSON 非法：使用 `intent-router.mjs`。
-- 置信度低于阈值：澄清，不执行破坏性操作。
-- Props 仍只允许组件设计契约中的图片、颜色、尺寸、位置和显隐字段。
-- 任何会话不得恢复其他会话的组件 Artifact。
-- “新增画板”必须由 Decision 明确返回 `create-artboard`。
+```bash
+npm run test:pi-runtime
+npm run test:agent-upgrades
+npm run test:agent-reliability
+npm run test:page-agent
+```

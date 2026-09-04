@@ -498,8 +498,8 @@
       "$EvaUpdateSelfProps"
     ]
   },
-  "componentJs": "https://s1.hdslb.com/bfs/activity-plat/static/6277ec353371773b1b2c677044fbccd8/EvaLayoutContainer_6mJzo5lQhz.js",
-  "componentCss": "https://s1.hdslb.com/bfs/activity-plat/static/6277ec353371773b1b2c677044fbccd8/EvaLayoutContainer_WemV322nB2.css",
-  "formControl": "https://s1.hdslb.com/bfs/activity-plat/static/6277ec353371773b1b2c677044fbccd8/EvaLayoutContainer_jZ3jXrG7Po.js",
+  "componentJs": "https://s1.hdslb.com/bfs/activity-plat/static/10613/11875/11876/cdc19f701f98475d2e815e921da304be/EvaLayoutContainer_t7d28W5JDQ.js",
+  "componentCss": "https://s1.hdslb.com/bfs/activity-plat/static/10613/11875/11876/cdc19f701f98475d2e815e921da304be/EvaLayoutContainer_NACRZJSH0B.css",
+  "formControl": "https://s1.hdslb.com/bfs/activity-plat/static/10613/11875/11876/cdc19f701f98475d2e815e921da304be/EvaLayoutContainer_PYdmRk2e7W.js",
   "version": "1.6.5"
 }

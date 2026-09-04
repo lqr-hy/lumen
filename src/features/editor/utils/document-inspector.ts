@@ -18,13 +18,17 @@ export function createInspectorSnapshot(
     }
   } else if (scope === 'artboard') {
     const artboard = document.artboards.find((item) => item.id === activeArtboardId)
-    value = artboard ? {
-      artboard,
-      elements: document.elements.filter((element) => element.artboardId === artboard.id),
-      componentInstances: Object.fromEntries(Object.entries(
-        document.componentInstances ?? {},
-      ).filter(([, instance]) => instance.artboardId === artboard.id)),
-    } : null
+    value = artboard
+      ? {
+          artboard,
+          elements: document.elements.filter((element) => element.artboardId === artboard.id),
+          componentInstances: Object.fromEntries(
+            Object.entries(document.componentInstances ?? {}).filter(
+              ([, instance]) => instance.artboardId === artboard.id,
+            ),
+          ),
+        }
+      : null
   }
 
   return summarizeDataUris(value, document)
@@ -36,16 +40,18 @@ export function stringifyInspectorSnapshot(value: unknown) {
 
 function summarizeDataUris(value: unknown, document: DesignDocument): unknown {
   const assetsBySource = new Map(document.assets.map((asset) => [asset.src, asset]))
-  return JSON.parse(JSON.stringify(value, (_key, item) => {
-    if (typeof item !== 'string' || !item.startsWith('data:')) return item
-    const asset = assetsBySource.get(item)
-    const match = /^data:([^;,]+)[^,]*,(.*)$/s.exec(item)
-    return {
-      src: asset ? `asset://${asset.id}` : 'asset://embedded',
-      mime: match?.[1] ?? 'application/octet-stream',
-      size: formatBytes(estimateDataUriBytes(item)),
-    }
-  }))
+  return JSON.parse(
+    JSON.stringify(value, (_key, item) => {
+      if (typeof item !== 'string' || !item.startsWith('data:')) return item
+      const asset = assetsBySource.get(item)
+      const match = /^data:([^;,]+)[^,]*,(.*)$/s.exec(item)
+      return {
+        src: asset ? `asset://${asset.id}` : 'asset://embedded',
+        mime: match?.[1] ?? 'application/octet-stream',
+        size: formatBytes(estimateDataUriBytes(item)),
+      }
+    }),
+  )
 }
 
 function estimateDataUriBytes(value: string) {

@@ -56,13 +56,17 @@ try {
     'theme.tokens.json',
     'quality.review.json',
     'runtime.validation.json',
-    'design/visual-shell.png',
     'assets/抽一次.png',
-  ]) assert.ok(archiveText.includes(file), `ZIP 缺少 ${file}`)
+    'design/background.png',
+  ])
+    assert.ok(archiveText.includes(file), `ZIP 缺少 ${file}`)
   assert.ok(archiveText.includes('styleConfig.drawOne.image'))
   assert.ok(archiveText.includes('assets/抽一次.png'))
+  assert.ok(archiveText.includes('design/background.png'))
+  assert.ok(archiveText.includes('"designOnly":true') || archiveText.includes('"designOnly": true'))
   assert.ok(archiveText.includes('sha256:'))
   assert.ok(archiveText.includes('"schemaVersion": 3'))
+  assert.ok(archiveText.includes('"componentPackId": "campaign-components"'))
   assert.equal(archiveText.includes('data:image/png;base64'), false, '导出 JSON 不得残留 Data URI')
 
   const snapshot = createInspectorSnapshot(document, 'document', [], 'artboard-1')
@@ -89,25 +93,43 @@ try {
     'components/instance-1/component.zip',
     'previews/page@1x.png',
     'previews/page@2x.png',
-  ]) assert.ok(pageArchiveText.includes(file), `页面开发包缺少 ${file}`)
-  assert.ok(pageArchiveText.includes('component-section-export'), '页面开发包没有写入 Page Blueprint')
+  ])
+    assert.ok(pageArchiveText.includes(file), `页面开发包缺少 ${file}`)
+  assert.ok(
+    pageArchiveText.includes('component-section-export'),
+    '页面开发包没有写入 Page Blueprint',
+  )
   assert.ok(pageArchiveText.includes('sha256:'), '页面素材清单缺少 SHA-256 内容校验和')
   assert.ok(pageArchiveText.includes('"schemaVersion": 3'), '页面开发包 Schema 没有升级')
-  assert.ok(pageArchiveText.includes('"deliveryStatus": "design-ready"'), '未接 Runtime 时应标记 design-ready')
+  assert.ok(
+    pageArchiveText.includes('"deliveryStatus": "design-ready"'),
+    '未接 Runtime 时应标记 design-ready',
+  )
   assert.ok(pageArchiveText.includes('"deliverable": false'), '未接 Runtime 时不得标记开发验证完成')
-  assert.equal(pageArchiveText.includes('data:image/png;base64'), false, '页面 JSON 不得残留 Data URI')
+  assert.equal(
+    pageArchiveText.includes('data:image/png;base64'),
+    false,
+    '页面 JSON 不得残留 Data URI',
+  )
 
-  console.log(JSON.stringify({
-    childSelectionResolution: true,
-    zipPackage: true,
-    relativePropsAssets: true,
-    visualShellExport: true,
-    inspectorDataUriSummary: true,
-    pageDeliveryPackage: true,
-    pageQualityReview: true,
-    pagePreviews: true,
-    pageAssetChecksums: true,
-  }, null, 2))
+  console.log(
+    JSON.stringify(
+      {
+        childSelectionResolution: true,
+        zipPackage: true,
+        relativePropsAssets: true,
+        componentVisualShellRemoved: true,
+        inspectorDataUriSummary: true,
+        pageDeliveryPackage: true,
+        pageQualityReview: true,
+        pagePreviews: true,
+        pageAssetChecksums: true,
+        designOnlyBackgroundExport: true,
+      },
+      null,
+      2,
+    ),
+  )
 } finally {
   await rm(outputDirectory, { recursive: true, force: true })
 }
@@ -116,10 +138,10 @@ function createDocument() {
   const image = 'data:image/png;base64,aGVsbG8='
   const design = {
     instanceId: 'instance-1',
+    packId: 'campaign-components',
     componentName: 'EraLottery',
     profile: 'style-config',
     sourceHash: 'test',
-    visualShell: { role: 'component-shell', generated: true },
     blueprint: {
       version: 1,
       componentName: 'EraLottery',
@@ -130,15 +152,26 @@ function createDocument() {
       propertyValues: {},
       diagnostics: [],
     },
-    assetTasks: [{
-      id: 'task-1',
-      slotId: 'draw-one',
-      label: '抽一次',
-      propPath: 'styleConfig.drawOne.image',
-      role: 'button',
-      targetSize: { width: 100, height: 48 },
-      transparent: true,
-    }],
+    assetTasks: [
+      {
+        id: 'task-1',
+        slotId: 'draw-one',
+        label: '抽一次',
+        propPath: 'styleConfig.drawOne.image',
+        role: 'button',
+        targetSize: { width: 100, height: 48 },
+        transparent: true,
+      },
+      {
+        id: 'task-background',
+        slotId: 'component-decorative-background',
+        label: '组件装饰背景',
+        role: 'decorative-background',
+        targetSize: { width: 375, height: 300 },
+        transparent: false,
+        designOnly: true,
+      },
+    ],
     propsPatch: { styleConfig: { drawOne: { image } } },
     unresolved: [],
     diagnostics: [],
@@ -147,41 +180,58 @@ function createDocument() {
     id: 'document-1',
     title: 'Export Test',
     version: 1,
-    artboards: [{
-      id: 'artboard-1',
-      name: '页面',
-      x: 0,
-      y: 0,
-      width: 375,
-      height: 812,
-      background: '#fff',
-      pageDesign: {
-        blueprint: {
-          version: 1,
-          width: 375,
-          estimatedHeight: 812,
-          sections: [{
-            id: 'component-section-export',
-            role: '抽奖组件',
-            kind: 'component-instance',
-            bounds: { x: 0, y: 0, width: 375, height: 300 },
-            source: 'component-thumbnail',
-            component: { componentName: 'EraLottery', profile: 'style-config' },
-          }],
-          constraints: [],
-        },
-        qualityReview: {
-          passed: true,
-          scores: { structure: 1, theme: 0.8, readability: 1, completeness: 1, developmentReadiness: 0.8 },
-          issues: [],
-          repairCount: 0,
+    artboards: [
+      {
+        id: 'artboard-1',
+        name: '页面',
+        x: 0,
+        y: 0,
+        width: 375,
+        height: 812,
+        background: '#fff',
+        pageDesign: {
+          blueprint: {
+            version: 1,
+            width: 375,
+            estimatedHeight: 812,
+            sections: [
+              {
+                id: 'component-section-export',
+                role: '抽奖组件',
+                kind: 'component-instance',
+                bounds: { x: 0, y: 0, width: 375, height: 300 },
+                source: 'component-thumbnail',
+                component: { componentName: 'EraLottery', profile: 'style-config' },
+              },
+            ],
+            constraints: [],
+          },
+          qualityReview: {
+            passed: true,
+            scores: {
+              structure: 1,
+              theme: 0.8,
+              readability: 1,
+              completeness: 1,
+              developmentReadiness: 0.8,
+            },
+            issues: [],
+            repairCount: 0,
+          },
         },
       },
-    }],
+    ],
     elements: [
       componentElement('root-element', 'section', 'root', undefined, undefined),
-      componentElement('shell-element', 'image', 'shell', undefined, image),
       componentElement('slot-element', 'image', 'generated-asset', 'draw-one', image),
+      componentElement(
+        'background-element',
+        'image',
+        'generated-asset',
+        'component-decorative-background',
+        image,
+        true,
+      ),
     ],
     assets: [{ id: 'asset-1', type: 'image', name: '抽一次', src: image }],
     componentInstances: {
@@ -199,7 +249,7 @@ function createDocument() {
   }
 }
 
-function componentElement(id, type, renderMode, slotId, src) {
+function componentElement(id, type, renderMode, slotId, src, designOnly = false) {
   return {
     id,
     artboardId: 'artboard-1',
@@ -221,7 +271,7 @@ function componentElement(id, type, renderMode, slotId, src) {
       renderMode,
       rootElementId: 'root-element',
       propPaths: [],
-      bindings: slotId ? { image: 'styleConfig.drawOne.image' } : {},
+      bindings: slotId && !designOnly ? { image: 'styleConfig.drawOne.image' } : {},
     },
   }
 }

@@ -1,0 +1,31 @@
+{
+  "id": "bili-live-ranking",
+  "name": "Bilibili 直播热榜",
+  "version": "1.0.0",
+  "description": "高饱和品牌红、白色粗体与直播榜单活动氛围。",
+  "colors": {
+    "primary": "#ed255f",
+    "secondary": "#ff5b87",
+    "background": "#d9164f",
+    "surface": "#ffffff",
+    "text": "#ffffff",
+    "accent": "#ffd2df"
+  },
+  "typography": {
+    "headingWeight": 800,
+    "bodyWeight": 500
+  },
+  "surfaces": {
+    "radius": 12,
+    "borderStyle": "highlight"
+  },
+  "imagery": {
+    "style": "bold-brand-campaign",
+    "keywords": ["直播榜单", "高饱和", "品牌红", "白色粗体"]
+  },
+  "constraints": [
+    "禁止回退为蓝紫糖果主题",
+    "保持红白高对比",
+    "装饰不得遮挡业务内容"
+  ]
+}

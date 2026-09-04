@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "triggers": [
+    "完整页面",
+    "页面设计稿",
+    "活动页面",
+    "h5 页面",
+    "后台页面",
+    "page design"
+  ],
+  "tools": [
+    {
+      "name": "page-visual-direction.compile",
+      "description": "将页面目标、VisualTheme 和页面结构编译为页面外壳与内嵌组件的视觉分层契约。",
+      "module": "runtime/entry.mjs",
+      "export": "compilePageVisualDirection"
+    }
+  ]
+}

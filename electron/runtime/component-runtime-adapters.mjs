@@ -1,7 +1,11 @@
 const adapters = new Map()
 
 export function registerComponentRuntimeAdapter(adapter) {
-  if (!adapter?.id || typeof adapter.supports !== 'function' || typeof adapter.render !== 'function') {
+  if (
+    !adapter?.id ||
+    typeof adapter.supports !== 'function' ||
+    typeof adapter.render !== 'function'
+  ) {
     throw new TypeError('Component Runtime Adapter 必须提供 id、supports 和 render。')
   }
   adapters.set(adapter.id, adapter)
@@ -9,11 +13,18 @@ export function registerComponentRuntimeAdapter(adapter) {
 }
 
 export function listComponentRuntimeAdapters() {
-  return Array.from(adapters.values()).map((adapter) => ({ id: adapter.id, mode: adapter.mode ?? 'custom' }))
+  return Array.from(adapters.values()).map((adapter) => ({
+    id: adapter.id,
+    mode: adapter.mode ?? 'custom',
+  }))
 }
 
 export function registerHtmlBundleRuntimeAdapter(options) {
-  if (!options?.id || typeof options.supports !== 'function' || typeof options.createHtml !== 'function') {
+  if (
+    !options?.id ||
+    typeof options.supports !== 'function' ||
+    typeof options.createHtml !== 'function'
+  ) {
     throw new TypeError('HTML Bundle Adapter 必须提供 id、supports 和 createHtml。')
   }
   return registerComponentRuntimeAdapter({
@@ -25,9 +36,9 @@ export function registerHtmlBundleRuntimeAdapter(options) {
 }
 
 export async function validateComponentRuntime(input) {
-  const adapter = Array.from(adapters.values()).find((candidate) => (
-    candidate.supports(input.componentName, input.sourceHash)
-  ))
+  const adapter = Array.from(adapters.values()).find((candidate) =>
+    candidate.supports(input.componentName, input.sourceHash),
+  )
   if (!adapter) {
     return {
       status: 'unsupported',
@@ -58,9 +69,10 @@ function normalizeRuntimeResult(result, adapterId, designSnapshot) {
   const unknownProps = stringArray(result?.unknownProps)
   const missingAssets = stringArray(result?.missingAssets)
   const failed = result?.status === 'failed' || consoleErrors.length || missingAssets.length
-  const comparison = designSnapshot && result?.layout
-    ? compareRuntimeLayout(designSnapshot, result.layout, result.appliedProps)
-    : undefined
+  const comparison =
+    designSnapshot && result?.layout
+      ? compareRuntimeLayout(designSnapshot, result.layout, result.appliedProps)
+      : undefined
   return {
     status: failed ? 'failed' : 'passed',
     adapterId,
@@ -69,11 +81,12 @@ function normalizeRuntimeResult(result, adapterId, designSnapshot) {
     unknownProps,
     missingAssets,
     ...(comparison ? { comparison } : {}),
-    message: typeof result?.message === 'string' && result.message.trim()
-      ? result.message
-      : failed
-        ? '组件 Runtime 验证发现错误。'
-        : '组件 Runtime 验证通过。',
+    message:
+      typeof result?.message === 'string' && result.message.trim()
+        ? result.message
+        : failed
+          ? '组件 Runtime 验证发现错误。'
+          : '组件 Runtime 验证通过。',
   }
 }
 
@@ -81,12 +94,14 @@ export function compareRuntimeLayout(design, runtime, appliedProps = []) {
   const size = dimensionSimilarity(design, runtime)
   const designRegions = Array.isArray(design?.regions) ? design.regions : []
   const runtimeRegions = new Map(
-    (Array.isArray(runtime?.regions) ? runtime.regions : []).map((region) => [region.id, region.bounds]),
+    (Array.isArray(runtime?.regions) ? runtime.regions : []).map((region) => [
+      region.id,
+      region.bounds,
+    ]),
   )
-  const regionScores = designRegions.map((region) => rectangleSimilarity(
-    region.bounds,
-    runtimeRegions.get(region.id),
-  ))
+  const regionScores = designRegions.map((region) =>
+    rectangleSimilarity(region.bounds, runtimeRegions.get(region.id)),
+  )
   const structure = regionScores.length
     ? regionScores.reduce((total, score) => total + score, 0) / regionScores.length
     : 0
@@ -108,14 +123,23 @@ export function compareRuntimeLayout(design, runtime, appliedProps = []) {
 
 function dimensionSimilarity(design, runtime) {
   if (!design?.width || !design?.height || !runtime?.width || !runtime?.height) return 0
-  return Math.min(design.width, runtime.width) / Math.max(design.width, runtime.width) *
-    Math.min(design.height, runtime.height) / Math.max(design.height, runtime.height)
+  return (
+    ((Math.min(design.width, runtime.width) / Math.max(design.width, runtime.width)) *
+      Math.min(design.height, runtime.height)) /
+    Math.max(design.height, runtime.height)
+  )
 }
 
 function rectangleSimilarity(left, right) {
   if (!left || !right) return 0
-  const intersectionWidth = Math.max(0, Math.min(left.x + left.width, right.x + right.width) - Math.max(left.x, right.x))
-  const intersectionHeight = Math.max(0, Math.min(left.y + left.height, right.y + right.height) - Math.max(left.y, right.y))
+  const intersectionWidth = Math.max(
+    0,
+    Math.min(left.x + left.width, right.x + right.width) - Math.max(left.x, right.x),
+  )
+  const intersectionHeight = Math.max(
+    0,
+    Math.min(left.y + left.height, right.y + right.height) - Math.max(left.y, right.y),
+  )
   const intersection = intersectionWidth * intersectionHeight
   const union = left.width * left.height + right.width * right.height - intersection
   return union > 0 ? intersection / union : 0
@@ -131,6 +155,11 @@ function stringArray(value) {
 
 async function renderHtmlBundleInSandbox(options, input) {
   const { BrowserWindow } = await import('electron')
+  const [{ default: fs }, { default: os }, { default: path }] = await Promise.all([
+    import('node:fs/promises'),
+    import('node:os'),
+    import('node:path'),
+  ])
   const width = Math.max(1, Math.round(input.designSnapshot?.width || options.width || 375))
   const height = Math.max(1, Math.round(input.designSnapshot?.height || options.height || 812))
   const window = new BrowserWindow({
@@ -146,16 +175,18 @@ async function renderHtmlBundleInSandbox(options, input) {
     },
   })
   const consoleErrors = []
+  let documentDirectory
   window.webContents.on('console-message', (_event, details) => {
     if (details.level === 'error') consoleErrors.push(details.message)
   })
   try {
     const html = await options.createHtml(input)
-    if (typeof html !== 'string' || !html.includes('<')) throw new Error('Adapter 没有返回有效 HTML。')
-    await withSandboxTimeout(
-      window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`),
-      options.timeoutMs ?? 15_000,
-    )
+    if (typeof html !== 'string' || !html.includes('<'))
+      throw new Error('Adapter 没有返回有效 HTML。')
+    documentDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'component-runtime-adapter-'))
+    const documentPath = path.join(documentDirectory, 'index.html')
+    await fs.writeFile(documentPath, html, { encoding: 'utf8', mode: 0o600 })
+    await withSandboxTimeout(window.loadFile(documentPath), options.timeoutMs ?? 15_000)
     const runtime = await window.webContents.executeJavaScript(`(() => {
       const root = document.querySelector('[data-component-root]') || document.body
       const bounds = root.getBoundingClientRect()
@@ -181,12 +212,15 @@ async function renderHtmlBundleInSandbox(options, input) {
     }
   } finally {
     if (!window.isDestroyed()) window.destroy()
+    if (documentDirectory) await fs.rm(documentDirectory, { recursive: true, force: true })
   }
 }
 
 function withSandboxTimeout(promise, timeoutMs) {
   return Promise.race([
     promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`组件 Sandbox 超过 ${timeoutMs}ms。`)), timeoutMs)),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`组件 Sandbox 超过 ${timeoutMs}ms。`)), timeoutMs),
+    ),
   ])
 }

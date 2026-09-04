@@ -1,4 +1,3 @@
-import { fetchEventSource } from '@microsoft/fetch-event-source'
 import { createBlankDocument } from '../editor/data/sample-document'
 import type { GenerationMeta } from '../editor/types'
 import type {
@@ -10,10 +9,6 @@ import type {
   RuntimeImageArtifact,
 } from './types'
 
-const COPILOT_API_URL =
-  import.meta.env.VITE_COPILOT_API_URL ||
-  'https://copilot.bilibili.co/api/v1/prediction/e3558bcf-64ee-4522-85a5-e07ccfc7d99f'
-
 export async function generateDesign(request: GenerateRequest): Promise<GenerateResult> {
   const title = request.prompt.trim() ? request.prompt.trim().slice(0, 24) : 'AI 生成设计稿'
   const document = createBlankDocument(title)
@@ -24,94 +19,105 @@ export async function applyChatEdit(
   request: ChatEditRequest,
   callbacks: ChatEditCallbacks = {},
 ): Promise<ChatEditResult> {
-  const usesRuntime = Boolean(window.aiCampaignRuntime)
-
-  if (usesRuntime) {
-    const result = await readRuntimeStream(request, callbacks)
-    if (result.awaitingConfirmation?.type === 'blueprint-confirmation') {
-      return {
-        kind: 'confirmation',
-        document: request.document,
-        message: result.text.trim() || result.awaitingConfirmation.message,
-        source: 'runtime',
-        confirmation: result.awaitingConfirmation,
-      }
+  const result = await readRuntimeStream(request, callbacks)
+  if (result.awaitingConfirmation?.type === 'blueprint-confirmation') {
+    return {
+      kind: 'confirmation',
+      document: request.document,
+      message: result.text.trim() || result.awaitingConfirmation.message,
+      source: 'runtime',
+      confirmation: result.awaitingConfirmation,
     }
-    if (result.pageDesign && Array.isArray(result.pageComponents) && result.pageShellArtifact) {
-      const [pageShell, pageComponents] = await Promise.all([
-        rasterizeArtifact(result.pageShellArtifact, 'asset'),
-        Promise.all(result.pageComponents.map(async (component) => ({
+  }
+  if (result.genericUiSchema) {
+    return {
+      kind: 'generic-ui',
+      document: request.document,
+      message: result.text.trim() || '已生成可编辑通用 UI 设计稿。',
+      source: 'runtime',
+      genericUiSchema: result.genericUiSchema,
+    }
+  }
+  if (result.canvasDelivered) {
+    return {
+      kind: 'text',
+      document: request.document,
+      message: result.text.trim() || '设计结果已添加到画布。',
+      source: 'runtime',
+    }
+  }
+  if (result.pageDesign && Array.isArray(result.pageComponents) && result.pageShellArtifact) {
+    const [pageShell, pageComponents] = await Promise.all([
+      rasterizeArtifact(result.pageShellArtifact, 'asset'),
+      Promise.all(
+        result.pageComponents.map(async (component) => ({
           index: component.index,
           pageSectionId: component.pageSectionId,
           componentDesign: component.componentDesign,
-          images: await Promise.all((component.artifacts ?? []).map((artifact) => (
-            rasterizeArtifact(artifact, 'asset')
-          ))),
-          visualShell: component.visualShellArtifact
-            ? await rasterizeArtifact(component.visualShellArtifact, 'asset')
-            : undefined,
-        }))),
-      ])
-      return {
-        kind: 'page',
-        document: request.document,
-        message: result.text.trim() || '完整页面已生成并转换为可编辑组件图层。',
-        source: 'runtime',
-        pageDesign: result.pageDesign,
-        pageComponents,
-        pageShell,
-      }
+          images: await Promise.all(
+            (component.artifacts ?? []).map((artifact) => rasterizeArtifact(artifact, 'asset')),
+          ),
+        })),
+      ),
+    ])
+    return {
+      kind: 'page',
+      document: request.document,
+      message: result.text.trim() || '完整页面已生成并转换为可编辑组件图层。',
+      source: 'runtime',
+      pageDesign: result.pageDesign,
+      pageComponents,
+      pageShell,
     }
-    if (result.editScope?.type === 'component-region' && result.artifact) {
-      const image = await rasterizeArtifact(result.artifact, 'asset')
-      return {
-        kind: 'component-slot',
-        document: request.document,
-        message: result.text.trim() || '组件素材已重新生成并替换。',
-        source: 'runtime',
-        image,
-        images: [image],
-        editScope: result.editScope,
-      }
+  }
+  if (result.editScope?.type === 'component-region' && result.artifact) {
+    const image = await rasterizeArtifact(result.artifact, 'asset')
+    return {
+      kind: 'component-slot',
+      document: request.document,
+      message: result.text.trim() || '组件素材已重新生成并替换。',
+      source: 'runtime',
+      image,
+      images: [image],
+      editScope: result.editScope,
+      genericUiSchema: result.genericUiSchema,
     }
-    if (result.editScope?.type === 'page-shell' && result.artifact) {
-      const image = await rasterizeArtifact(result.artifact, 'asset')
-      return {
-        kind: 'page-shell',
-        document: request.document,
-        message: result.text.trim() || '页面视觉外壳已重新生成并替换。',
-        source: 'runtime',
-        image,
-        images: [image],
-        editScope: result.editScope,
-      }
+  }
+  if (result.editScope?.type === 'page-shell' && result.artifact) {
+    const image = await rasterizeArtifact(result.artifact, 'asset')
+    return {
+      kind: 'page-shell',
+      document: request.document,
+      message: result.text.trim() || '页面视觉外壳已重新生成并替换。',
+      source: 'runtime',
+      image,
+      images: [image],
+      editScope: result.editScope,
     }
-    if (result.componentDesign) {
-      const [images, visualShell] = await Promise.all([
-        Promise.all((result.artifacts ?? []).map((artifact) => rasterizeArtifact(artifact, 'asset'))),
-        result.visualShellArtifact
-          ? rasterizeArtifact(result.visualShellArtifact, 'asset')
-          : Promise.resolve(undefined),
-      ])
-      return {
-        kind: 'component',
-        document: request.document,
-        message: `已将 ${result.componentDesign.componentName} 组件设计添加到画布，包含视觉外壳、可编辑图层和 Props Patch。`,
-        source: 'runtime',
-        images,
-        visualShell,
-        componentDesign: result.componentDesign,
-      }
+  }
+  if (result.componentDesign) {
+    const images = await Promise.all(
+      (result.artifacts ?? []).map((artifact) => rasterizeArtifact(artifact, 'asset')),
+    )
+    return {
+      kind: 'component',
+      document: request.document,
+      message: `已将 ${result.componentDesign.componentName} 组件设计添加到画布，包含可编辑图层、必要图片素材和 Props Patch。`,
+      source: 'runtime',
+      images,
+      componentDesign: result.componentDesign,
     }
-    const artifacts = result.artifacts?.length
-        ? result.artifacts
-        : result.artifact
-          ? [result.artifact]
-          : []
-    if (artifacts.length) {
-      const isAssetSet = Boolean(result.artifacts?.length)
-      const generationMeta = !isAssetSet && request.canvasTarget?.placementMode
-        ? {
+  }
+  const artifacts = result.artifacts?.length
+    ? result.artifacts
+    : result.artifact
+      ? [result.artifact]
+      : []
+  if (artifacts.length) {
+    const isAssetSet = Boolean(result.artifacts?.length)
+    const generationMeta =
+      !isAssetSet && request.canvasTarget?.placementMode
+        ? ({
             sessionId: request.sessionId || 'runtime-session',
             prompt: request.prompt,
             provider: request.provider || 'codex',
@@ -121,50 +127,34 @@ export async function applyChatEdit(
             refined: result.refined ?? false,
             blueprint: result.blueprint,
             qualityReview: result.qualityReview,
-          } satisfies Omit<GenerationMeta, 'parentArtboardId'>
+          } satisfies Omit<GenerationMeta, 'parentArtboardId'>)
         : undefined
-      const images = await Promise.all(
-        artifacts.map((artifact) => rasterizeArtifact(
-          artifact,
-          isAssetSet ? 'asset' : 'design',
-          generationMeta,
-        )),
-      )
-      return {
-        kind: 'image',
-        document: request.document,
-        message: result.text.trim() || '已生成设计图并放入画布。',
-        source: 'runtime',
-        image: images[0],
-        images,
-      }
-    }
-
-    const message = extractResponseText(result.text)
-    if (!message) throw new Error('AI 返回为空，请查看 Runtime 日志。')
+    const images = await Promise.all(
+      artifacts.map((artifact) =>
+        rasterizeArtifact(artifact, isAssetSet ? 'asset' : 'design', generationMeta),
+      ),
+    )
     return {
-      kind: 'text',
+      kind: 'image',
       document: request.document,
-      message,
+      message: result.text.trim() || '已生成设计图并放入画布。',
       source: 'runtime',
+      image: images[0],
+      images,
     }
   }
 
-  const rawText = await readCopilotStream(request, callbacks)
-  const message = extractResponseText(rawText)
-  if (!message) throw new Error('AI 返回为空，请查看网络响应。')
+  const message = extractResponseText(result.text)
+  if (!message) throw new Error('AI 返回为空，请查看 Runtime 日志。')
   return {
     kind: 'text',
     document: request.document,
     message,
-    source: 'copilot',
+    source: 'runtime',
   }
 }
 
-async function readRuntimeStream(
-  request: ChatEditRequest,
-  callbacks: ChatEditCallbacks,
-) {
+async function readRuntimeStream(request: ChatEditRequest, callbacks: ChatEditCallbacks) {
   const runtime = window.aiCampaignRuntime
   if (!runtime) throw new Error('Runtime 不可用。')
 
@@ -180,6 +170,14 @@ async function readRuntimeStream(
     if (data.streamId !== streamId) return
     void handleIncrementalDeliverable(runtime, data.deliverable, callbacks)
   })
+  const removeCanvasTargetListener = runtime.onCanvasTargetRequest((data) => {
+    if (data.streamId !== streamId) return
+    void handleCanvasTargetRequest(runtime, data.request, callbacks)
+  })
+  const removeCanvasSnapshotListener = runtime.onCanvasSnapshotRequest((data) => {
+    if (data.streamId !== streamId) return
+    void handleCanvasSnapshotRequest(runtime, data.request, callbacks)
+  })
 
   try {
     const result = await runtime.startStream({
@@ -192,47 +190,144 @@ async function readRuntimeStream(
       imageProvider: request.imageProvider || 'biliImage',
       imageModel: request.imageModel || 'gpt-image-2',
       skillNames: request.skillNames ?? [],
+      stylePackId: request.stylePackId,
       question: request.prompt.trim(),
       history: request.history ?? [],
+      componentReferences: request.componentReferences ?? [],
       uploads: buildAgentUploads(request),
       canvasTarget: request.canvasTarget,
+      canvasContext: createCanvasContext(request),
       canvasSnapshot: createCanvasSnapshot(request),
       editScope: request.editScope,
+      componentRegionAction: request.componentRegionAction,
       blueprintOverride: request.blueprintOverride,
-      enableVisionReview: request.enableVisionReview ?? false,
+      visualBrief: request.visualBrief,
+      enableVisionReview: request.enableVisionReview ?? true,
     })
     if (result.error) throw new Error(result.error.message || 'Runtime 请求失败。')
     return {
       text: result.text || '',
       artifact: result.artifact,
       artifacts: result.artifacts,
-      visualShellArtifact: result.visualShellArtifact,
       blueprint: result.blueprint,
       qualityReview: result.qualityReview,
       refined: result.refined,
+      canvasDelivered: result.canvasDelivered,
       componentDesign: result.componentDesign,
       pageDesign: result.pageDesign,
       pageComponents: result.pageComponents,
       pageShellArtifact: result.pageShellArtifact,
       awaitingConfirmation: result.awaitingConfirmation,
       editScope: result.editScope,
+      genericUiSchema: result.genericUiSchema,
     }
   } finally {
     removeTokenListener()
     removeErrorListener()
     removeAgentEventListener()
     removeDeliverableListener()
+    removeCanvasTargetListener()
+    removeCanvasSnapshotListener()
+  }
+}
+
+function createCanvasContext(request: ChatEditRequest): import('./types').CanvasContext {
+  const selectedElementIds = (request.selectedElementIds ?? []).filter((id) =>
+    request.document.elements.some((element) => element.id === id),
+  )
+  return {
+    documentRevision: request.document.version,
+    activeArtboardId: request.activeArtboardId,
+    selectedArtboardId: request.selectedArtboardId,
+    selectedElementIds,
+    artboards: request.document.artboards.map((artboard) => ({
+      id: artboard.id,
+      name: artboard.name,
+      width: artboard.width,
+      height: artboard.height,
+      empty: !request.document.elements.some((element) => element.artboardId === artboard.id),
+      hasDesignSpec: Boolean(artboard.designSpec),
+    })),
+  }
+}
+
+async function handleCanvasSnapshotRequest(
+  runtime: NonNullable<typeof window.aiCampaignRuntime>,
+  request: import('./types').CanvasSnapshotRequest,
+  callbacks: ChatEditCallbacks,
+) {
+  try {
+    const resolution = callbacks.onCanvasSnapshotRequest
+      ? await callbacks.onCanvasSnapshotRequest(request)
+      : {
+          status: 'failed' as const,
+          reason: 'Renderer 没有注册画板快照处理器。',
+          errorCode: 'CANVAS_SNAPSHOT_HANDLER_MISSING',
+        }
+    await runtime.ackCanvasSnapshot(request.id, resolution)
+  } catch (error) {
+    await runtime.ackCanvasSnapshot(request.id, {
+      status: 'failed',
+      reason: error instanceof Error ? error.message : '画板快照生成失败。',
+      errorCode: 'CANVAS_SNAPSHOT_RENDERER_FAILED',
+    })
+  }
+}
+
+async function handleCanvasTargetRequest(
+  runtime: NonNullable<typeof window.aiCampaignRuntime>,
+  request: import('./types').CanvasTargetRequest,
+  callbacks: ChatEditCallbacks,
+) {
+  try {
+    const resolution = callbacks.onCanvasTargetRequest
+      ? await callbacks.onCanvasTargetRequest(request)
+      : {
+          status: 'failed' as const,
+          reason: 'Renderer 没有注册目标画板处理器。',
+          errorCode: 'CANVAS_TARGET_HANDLER_MISSING',
+        }
+    await runtime.ackCanvasTarget(request.id, resolution)
+  } catch (error) {
+    await runtime.ackCanvasTarget(request.id, {
+      status: 'failed',
+      reason: error instanceof Error ? error.message : '目标画板解析失败。',
+      errorCode: 'CANVAS_TARGET_RENDERER_FAILED',
+    })
   }
 }
 
 function createCanvasSnapshot(request: ChatEditRequest) {
-  const artboardId = request.canvasTarget?.artboardId
+  const requestedTargetIds = [
+    ...(request.selectedElementIds ?? []),
+    ...(request.editScope?.targetElementIds ?? []),
+    ...(request.editScope && 'elementId' in request.editScope && request.editScope.elementId
+      ? [request.editScope.elementId]
+      : []),
+    ...(request.editScope?.type === 'multi-node' ? request.editScope.elementIds : []),
+  ].filter((id, index, list) => typeof id === 'string' && id && list.indexOf(id) === index)
+  const targetElement = request.document.elements.find((element) =>
+    requestedTargetIds.includes(element.id),
+  )
+  // For edits, the frozen scope is authoritative. canvasTarget can be stale after
+  // a new artboard is created or a previous run is resumed.
+  const artboardId =
+    request.editScope?.artboardId ||
+    targetElement?.artboardId ||
+    request.canvasTarget?.artboardId ||
+    request.selectedArtboardId ||
+    request.activeArtboardId
   const artboard = request.document.artboards.find((item) => item.id === artboardId)
   if (!artboard) return undefined
   const elements = request.document.elements.filter((element) => element.artboardId === artboard.id)
-  const componentInstances = Object.values(request.document.componentInstances ?? {}).filter((instance) => (
-    instance.artboardId === artboard.id
-  ))
+  const requiredElementIds = new Set([...requestedTargetIds])
+  const snapshotElements = [
+    ...elements.filter((element) => requiredElementIds.has(element.id)),
+    ...elements.filter((element) => !requiredElementIds.has(element.id)).slice(0, 80),
+  ].filter((element, index, list) => list.findIndex((item) => item.id === element.id) === index)
+  const componentInstances = Object.values(request.document.componentInstances ?? {}).filter(
+    (instance) => instance.artboardId === artboard.id,
+  )
   return {
     artboardId: artboard.id,
     width: artboard.width,
@@ -240,23 +335,59 @@ function createCanvasSnapshot(request: ChatEditRequest) {
     elementCount: elements.length,
     componentCount: componentInstances.length,
     hasPageShell: elements.some((element) => element.designRole === 'page-shell'),
-    selectedElementIds: (request.selectedElementIds ?? []).filter((id) => (
-      elements.some((element) => element.id === id)
-    )),
-    elements: elements.slice(0, 80).map((element) => ({
+    documentRevision: request.document.version,
+    designSpec: artboard.designSpec,
+    selectedElementIds: (request.selectedElementIds ?? []).filter((id) =>
+      elements.some((element) => element.id === id),
+    ),
+    elements: snapshotElements.slice(0, 80 + requiredElementIds.size).map((element) => ({
       id: element.id,
       type: element.type,
       name: element.name,
       designRole: element.designRole,
+      designBlockId: element.designBlockId,
       parentId: element.parentId,
       componentName: element.componentBinding?.componentName,
       instanceId: element.componentBinding?.instanceId,
       pageSectionId: element.componentBinding?.pageSectionId,
       renderMode: element.componentBinding?.renderMode,
+      componentImageBinding: Boolean(element.componentBinding?.bindings.image),
       bounds: { x: element.x, y: element.y, width: element.width, height: element.height },
+      properties: summarizePatchProperties(element),
     })),
-    truncated: elements.length > 80,
+    truncated: snapshotElements.length < elements.length,
   }
+}
+
+function summarizePatchProperties(element: import('../editor/types').DesignElement) {
+  const common = {
+    layoutSizing: element.layoutSizing,
+    layoutConstraints: element.layoutConstraints,
+    cornerRadii: element.cornerRadii,
+    opacity: element.opacity,
+  }
+  if (element.type === 'text') return { ...common, content: element.content, style: element.style }
+  if (element.type === 'button')
+    return { ...common, content: element.content, style: element.style }
+  if (element.type === 'shape')
+    return {
+      ...common,
+      shape: element.shape,
+      fill: element.fill,
+      stroke: element.stroke,
+      strokeWidth: element.strokeWidth,
+      borderRadius: element.borderRadius,
+    }
+  if (element.type === 'image')
+    return {
+      ...common,
+      objectFit: element.objectFit,
+      objectPosition: element.objectPosition,
+      borderRadius: element.borderRadius,
+    }
+  if (element.type === 'section')
+    return { ...common, label: element.label, autoLayout: element.autoLayout }
+  return common
 }
 
 async function handleIncrementalDeliverable(
@@ -265,26 +396,7 @@ async function handleIncrementalDeliverable(
   callbacks: ChatEditCallbacks,
 ) {
   try {
-    const converted = deliverable.kind === 'page-shell'
-      ? {
-          ...deliverable,
-          pageShell: await rasterizeArtifact(deliverable.pageShellArtifact, 'asset'),
-        }
-      : {
-          ...deliverable,
-          component: {
-            index: deliverable.component.index,
-            pageSectionId: deliverable.component.pageSectionId,
-            bounds: deliverable.component.bounds,
-            componentDesign: deliverable.component.componentDesign,
-            images: await Promise.all((deliverable.component.artifacts ?? []).map((artifact) => (
-              rasterizeArtifact(artifact, 'asset')
-            ))),
-            visualShell: deliverable.component.visualShellArtifact
-              ? await rasterizeArtifact(deliverable.component.visualShellArtifact, 'asset')
-              : undefined,
-          },
-        }
+    const converted = await convertRawDeliverable(deliverable)
     const observation = callbacks.onDeliverable
       ? await callbacks.onDeliverable(converted)
       : {
@@ -302,104 +414,206 @@ async function handleIncrementalDeliverable(
   }
 }
 
+async function convertRawDeliverable(
+  deliverable: RawIncrementalDeliverable,
+): Promise<import('./types').IncrementalCanvasDeliverable> {
+  if (deliverable.kind === 'page-shell') {
+    return {
+      ...deliverable,
+      pageShell: await rasterizeArtifact(deliverable.pageShellArtifact, 'asset'),
+    }
+  }
+  if (deliverable.kind === 'page-component') {
+    return {
+      ...deliverable,
+      component: {
+        index: deliverable.component.index,
+        pageSectionId: deliverable.component.pageSectionId,
+        bounds: deliverable.component.bounds,
+        componentDesign: deliverable.component.componentDesign,
+        images: await Promise.all(
+          (deliverable.component.artifacts ?? []).map((artifact) =>
+            rasterizeArtifact(artifact, 'asset'),
+          ),
+        ),
+      },
+    }
+  }
+  if (deliverable.kind === 'image' || deliverable.kind === 'asset-set') {
+    return {
+      ...deliverable,
+      images: await Promise.all(
+        deliverable.artifacts.map((artifact) =>
+          rasterizeArtifact(artifact, deliverable.kind === 'image' ? 'design' : 'asset'),
+        ),
+      ),
+    }
+  }
+  if (deliverable.kind === 'component') {
+    return {
+      ...deliverable,
+      images: await Promise.all(
+        deliverable.artifacts.map((artifact) => rasterizeArtifact(artifact, 'asset')),
+      ),
+    }
+  }
+  if (deliverable.kind === 'component-slot' || deliverable.kind === 'page-shell-edit') {
+    return {
+      ...deliverable,
+      image: await rasterizeArtifact(deliverable.artifact, 'asset'),
+    }
+  }
+  if (deliverable.kind === 'component-slot-batch') {
+    return {
+      ...deliverable,
+      items: await Promise.all(
+        deliverable.items.map(async (item) => ({
+          ...item,
+          image: await rasterizeArtifact(item.artifact, 'asset'),
+        })),
+      ),
+    }
+  }
+  if (deliverable.kind === 'design-patch') {
+    return {
+      ...deliverable,
+      images: Object.fromEntries(
+        await Promise.all(
+          Object.entries(deliverable.imageArtifacts).map(async ([id, artifact]) => [
+            id,
+            await rasterizeArtifact(artifact, 'asset'),
+          ]),
+        ),
+      ),
+    }
+  }
+  return deliverable
+}
+
 type RawIncrementalDeliverable = {
   id: string
   sessionId: string
   runId: string
   stepId: string
   target?: ChatEditRequest['canvasTarget']
-} & ({
-  kind: 'page-component'
-  component: {
-    index?: number
-    pageSectionId?: string
-    bounds?: { x: number; y: number; width: number; height: number }
-    componentDesign: import('../editor/types').ComponentDesignMeta
-    artifacts: RuntimeImageArtifact[]
-    visualShellArtifact?: RuntimeImageArtifact
-  }
-} | {
-  kind: 'page-shell'
-  blueprint: import('../editor/types').PageCompositionBlueprint
-  pageShellArtifact: RuntimeImageArtifact
-})
-
-function buildChatQuestion(request: ChatEditRequest) {
-  const history = (request.history ?? [])
-    .slice(-12)
-    .map((message) => `${message.role === 'user' ? '用户' : '助手'}：${message.text}`)
-    .join('\n')
-
-  return [
-    '你是 AI Campaign Page Studio 的助手。请像正常聊天一样直接回答，不要返回 JSON、DesignDocument 或 operations。',
-    history ? `最近对话：\n${history}` : '',
-    request.referenceImages?.length
-      ? `本次附带 ${request.referenceImages.length} 张图片，请结合图片内容回答。`
-      : '',
-    `用户：${request.prompt.trim()}`,
-  ].filter(Boolean).join('\n\n')
-}
-
-async function readCopilotStream(request: ChatEditRequest, callbacks: ChatEditCallbacks) {
-  let rawText = ''
-  await fetchEventSource(COPILOT_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream, application/json, text/plain',
-    },
-    body: JSON.stringify({
-      question: buildChatQuestion(request),
-      stream: true,
-      streaming: true,
-      uploads: buildUploads(request.referenceImages, request.referenceImageNames),
-    }),
-    openWhenHidden: true,
-    onmessage(event) {
-      rawText += `${event.data}\n`
-      const token = extractResponseText(event.data)
-      if (token) callbacks.onToken?.(token)
-    },
-    onerror(error) {
-      throw error
-    },
-  })
-  return rawText
-}
-
-function buildAgentUploads(request: ChatEditRequest) {
-  const uploads = new Map<string, ReturnType<typeof createUpload>>()
-  for (const message of request.history ?? []) {
-    for (const image of message.referenceImages ?? []) {
-      uploads.set(image.src, createUpload(image.src, image.name, message.text))
+} & (
+  | {
+      kind: 'page-component'
+      component: {
+        index?: number
+        pageSectionId?: string
+        bounds?: { x: number; y: number; width: number; height: number }
+        componentDesign: import('../editor/types').ComponentDesignMeta
+        artifacts: RuntimeImageArtifact[]
+      }
     }
-  }
+  | {
+      kind: 'generic-ui'
+      uiSchema: import('../editor/types').GenericUiSchema
+    }
+  | {
+      kind: 'generic-ui-section'
+      uiSchema: import('../editor/types').GenericUiSchema
+      section: { index: number; id: string; kind: string; label: string }
+      deliveredBlockIds: string[]
+    }
+  | {
+      kind: 'generic-ui-finalize'
+      uiSchema: import('../editor/types').GenericUiSchema
+      expectedBlockIds: string[]
+      failedSectionIndexes: number[]
+    }
+  | {
+      kind: 'generic-ui-runtime'
+      sceneGraph: import('../editor/scene/scene-graph').SceneGraph
+      runtimeDraft?: { version: 1; title: string; viewport: { width: number; height: number } }
+      expectedNodeCount: number
+    }
+  | {
+      kind: 'design-patch'
+      patch: import('./types').DesignPatch
+      imageArtifacts: Record<string, RuntimeImageArtifact>
+    }
+  | {
+      kind: 'design-spec-patch'
+      patch: import('./types').DesignSpecPatch
+      baseDesignSpec: import('../editor/types').DesignSpec
+      nextDesignSpec: import('../editor/types').DesignSpec
+    }
+  | {
+      kind: 'page-shell'
+      blueprint: import('../editor/types').PageCompositionBlueprint
+      pageShellArtifact: RuntimeImageArtifact
+    }
+  | {
+      kind: 'image'
+      artifacts: RuntimeImageArtifact[]
+    }
+  | {
+      kind: 'asset-set'
+      artifacts: RuntimeImageArtifact[]
+    }
+  | {
+      kind: 'component'
+      componentDesign: import('../editor/types').ComponentDesignMeta
+      artifacts: RuntimeImageArtifact[]
+      editScope?: import('./types').SelectionScope
+    }
+  | {
+      kind: 'component-slot'
+      artifact: RuntimeImageArtifact
+      editScope: import('./types').SelectionScope
+    }
+  | {
+      kind: 'component-slot-batch'
+      items: Array<{
+        artifact: RuntimeImageArtifact
+        editScope: import('./types').ComponentRegionEditScope
+      }>
+      editScope: import('./types').ComponentRegionBatchEditScope
+    }
+  | {
+      kind: 'page-shell-edit'
+      artifact: RuntimeImageArtifact
+      editScope: import('./types').SelectionScope
+    }
+  | {
+      kind: 'page-finalize'
+      blueprint: import('../editor/types').PageCompositionBlueprint
+      expectedComponentCount: number
+      expectedPageSectionIds: string[]
+    }
+)
+
+export function buildAgentUploads(request: ChatEditRequest) {
+  const uploads = new Map<string, ReturnType<typeof createUpload>>()
+  // 历史消息中的图片只用于聊天记录展示。本轮 Agent 只能收到用户当前明确激活的附件。
   for (let index = 0; index < (request.referenceImages?.length ?? 0); index += 1) {
     const src = request.referenceImages?.[index]
     if (!src) continue
     const name = request.referenceImageNames?.[index] || `参考图 ${index + 1}`
-    uploads.set(src, createUpload(src, name, request.prompt))
+    uploads.set(
+      src,
+      createUpload(src, name, request.prompt, request.referenceImageRoles?.[index]),
+    )
   }
   return Array.from(uploads.values())
 }
 
-function createUpload(data: string, name: string, context = '') {
+function createUpload(
+  data: string,
+  name: string,
+  context = '',
+  role?: import('./types').ReferenceImageRole,
+) {
   return {
     data,
     type: 'file',
     name: normalizeFileName(name, getImageExtension(data)),
     mime: getImageMime(data),
     context,
+    ...(role ? { role } : {}),
   }
-}
-
-function buildUploads(images: string[] = [], imageNames: string[] = []) {
-  return images.map((data, index) => ({
-    data,
-    type: 'file',
-    name: normalizeFileName(imageNames[index] || `reference-${index + 1}`, getImageExtension(data)),
-    mime: getImageMime(data),
-  }))
 }
 
 function normalizeFileName(name: string, extension: string) {
@@ -428,16 +642,21 @@ function extractResponseText(raw: string): string {
     return value
   }
 
-  const lines = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-  const extracted = lines.map((line) => {
-    const payload = line.startsWith('data:') ? line.slice(5).trim() : line
-    if (payload === '[DONE]') return ''
-    try {
-      return findText(JSON.parse(payload))
-    } catch {
-      return payload
-    }
-  }).filter(Boolean)
+  const lines = value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const extracted = lines
+    .map((line) => {
+      const payload = line.startsWith('data:') ? line.slice(5).trim() : line
+      if (payload === '[DONE]') return ''
+      try {
+        return findText(JSON.parse(payload))
+      } catch {
+        return payload
+      }
+    })
+    .filter(Boolean)
 
   return extracted.join('') || value
 }
@@ -517,8 +736,9 @@ function loadImage(src: string) {
 }
 
 function createId(prefix: string) {
-  const suffix = typeof crypto !== 'undefined' && 'randomUUID' in crypto
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const suffix =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`
   return `${prefix}-${suffix}`
 }

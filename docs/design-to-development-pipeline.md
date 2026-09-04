@@ -154,7 +154,7 @@ page.resolve-components
 page.blueprint
 page.generate-shell
 component.resolve[]
-component.blueprint[]
+component.plan[]
 component.generate-assets[]
 component.compose[]
 page.compose
@@ -223,7 +223,7 @@ page-package.zip
 | --- | --- | --- | --- |
 | P0.1 | Reference Contract 与扩展 Visual Theme | KV 职责明确，颜色/字体/表面/效果可复用 | 已实现 |
 | P0.2 | Page Blueprint 与多组件实例计划 | 一轮任务能规划多个组件实例和页面 Section | 已实现动态 Section 子任务与可编辑页面组合 |
-| P0.3 | Quality Review 与 Repair Loop | 有结构化评分，失败自动修订且不写入坏结果 | 页面/组件确定性门禁已实现，Vision Review 待实现 |
+| P0.3 | Quality Review 与 Repair Loop | 有结构化评分，失败自动修订且不写入坏结果 | 页面/组件确定性门禁与 Renderer PNG Vision Review 已实现 |
 | P1.1 | Runtime Adapter 与验证协议 | 支持真实 Adapter；缺 Bundle 时诚实返回 unsupported | Adapter 框架已实现，待业务 Bundle |
 | P1.2 | 设计稿/Runtime 截图对比 | 输出结构、像素和 Props 生效诊断 | 尺寸/Region/Props 协议已实现，像素对比待真实截图 |
 | P1.3 | 可编辑图层增强 | 常用文字、形状、渐变和装饰不再被整体扁平化 | Text/Shape/Props 已实现，复杂装饰待拆层 |
@@ -251,7 +251,7 @@ page-package.zip
 
 ### P3.2 Vision Review 与局部 Repair
 
-- 已实现页面评审快照合成、Codex Vision Review 协议和 targetId Repair；待使用真实 KV 数据集标定阈值。
+- 已实现 Renderer 导出级 PNG 画板快照、Vision Review 协议和 targetId Repair；截图或远程评审失败时降级本地门禁。待使用真实 KV 数据集标定阈值。
 - Review Issue 必须携带 `scope + targetId + repairPrompt`。
 - 页面问题只重生成 page-shell；组件问题只恢复对应组件 Step；Slot 问题只替换原图片节点。
 

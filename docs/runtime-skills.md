@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-为 Electron 开发环境和 DMG 提供统一的 Skill Runtime，使项目能够持续增加 Skill，而不需要为每个 Skill 修改打包路径、Codex Job 注入逻辑或公共状态协议。
+为 Electron 开发环境和 DMG 提供统一的 Pi Skill Runtime，使设计风格、组件知识和工作流规范可以持续沉淀，而不修改 Provider 或公共状态协议。
 
 Skill 分为两部分：
 
@@ -75,22 +75,16 @@ process.resourcesPath/componentsJson
 
 选择结果会写入 Agent Session。用户发送“继续”“重试”时，即使本轮没有再次命中触发词，也会沿用上一轮已选择的 Skill；用户显式传入新的 `skillNames` 时，以本轮选择结果为准。
 
-## 6. Codex Job 注入
+## 6. Pi 渐进式激活
 
-选中的 Skill 会被复制到当前隔离 Job：
+System Prompt 只注入 Skill Catalog 的名称、简介和位置。显式选择或触发词命中只确定候选 Skill，
+完整正文统一由模型调用 `skill_activate` 按需加载。引用资料通过
+`skill_read_resource` 按需读取，并且只能访问当前 Skill 的 `references` 或文本型 `assets`。
 
-```text
-<job>/skills/<skill-name>/
-```
+`SKILL.md` 最大 64KB，单个 references/assets 文本资源最大 32KB，防止一次 Tool Result 占满模型上下文。
 
-Runtime 在任务 Prompt 前添加强制说明：
-
-- 先完整读取 `SKILL.md`。
-- 按需读取 references。
-- 优先使用 scripts 或 Runtime Tools。
-- 必须实际执行，不得只复述 Skill。
-
-任务结束后，Job 与暂存 Skill 一起清理。Session 仅保存 Skill 名称，不保存安装绝对路径。
+不复制 Skill，不创建 Job 目录，不让模型直接读取文件系统。Session 只保存 Skill 名称和脱敏后的
+Tool Observation。
 
 ## 7. Runtime Tool Manifest
 
@@ -129,7 +123,7 @@ Electron 使用 `executeSkillTool(toolName, input)`：
 4. 调用 manifest 指定导出。
 5. 将结果作为 Agent Observation 返回。
 
-因此 DMG 不依赖用户安装 `node`。Skill 中的 CLI scripts 主要用于开发、调试和 Codex 环境；正式 Agent Loop 优先调用 Runtime Tool。
+因此 DMG 不依赖用户安装 `node`。Skill 中的 CLI scripts 只用于开发和调试；正式 Agent Loop 调用 Runtime Tool。
 
 ### 8.1 Planner 接入条件
 
@@ -172,8 +166,9 @@ Loop 会把 `step.input` 作为结构化输入传给 Runtime Tool，并把返回
 Renderer agent_run
   -> resolveSkillNames
   -> Agent Session 保存 skillNames
-  -> Planner 生成 Step
-  -> Loop 执行内置 Tool 或 Skill Runtime Tool
-  -> Codex Provider 暂存所选 Skill 到 Job
+  -> Pi Agent 注入 Skill Catalog / 按需激活所选 Skill
+  -> skill_activate / skill_read_resource
+  -> studio_run_design_workflow
+  -> Planner 执行领域 Tool 或 Skill Runtime Tool
   -> Observation / Artifact / Agent Event
 ```

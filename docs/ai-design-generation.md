@@ -1,6 +1,6 @@
 # AI 设计稿生成闭环技术方案
 
-> 实现状态：Blueprint、SVG/位图确定性审查、双模型路由、OpenAI Images 兼容生图、生成元数据和 1x/2x 导出已经接入。视觉模型审查和任意区域蒙版编辑仍为后续能力。
+> 实现状态：普通图片已切换为 Runtime 本地 GenerationBrief；业务组件组合页面仍保留 Page Blueprint。SVG/位图确定性审查、双模型路由、图片 Provider、生成元数据和 1x/2x 导出已经接入。
 
 ## 1. 目标
 
@@ -9,8 +9,8 @@
 首阶段交付范围：
 
 1. 参考图按 KV、原型、视觉参考等角色进入 Session。
-2. 生成设计稿前先产生结构化 `DesignBlueprint`。
-3. 根据 Blueprint 生成完整页面或局部模块 SVG/位图。
+2. Runtime 在本地建立 `GenerationBrief`，不请求推理模型规划普通图片。
+3. 根据 Brief 生成完整页面图片、局部模块或独立素材。
 4. Runtime 对 SVG/位图执行确定性质量审查。
 5. 审查失败时携带问题列表自动修正一次。
 6. 通过审查后写入画布，并保存生成来源。
@@ -22,7 +22,7 @@
 
 ```text
 reference.prepare
-  -> design.blueprint
+  -> design.brief
   -> design.generate
   -> artifact.review
   -> design.refine（审查通过时直接透传，失败时最多重生成一次）
@@ -32,25 +32,16 @@ reference.prepare
 
 独立素材仍使用现有多 Artifact 流程，不与整页流程混用。
 
-## 3. DesignBlueprint
+## 3. GenerationBrief
 
 ```ts
-interface DesignBlueprint {
+interface GenerationBrief {
   version: 1
-  mode: 'new-artboard' | 'append-section' | 'duplicate-variant' | 'asset-board'
-  canvas: { width: number; estimatedHeight: number }
-  theme: { colors: string[]; visualStyle: string; typography?: string[] }
-  sections: Array<{
-    id: string
-    type: string
-    purpose: string
-    estimatedHeight: number
-    source: 'prototype' | 'prompt' | 'existing-canvas'
-  }>
-  constraints: {
-    prototypeIsStructureSource: boolean
-    forbiddenAdditions: string[]
-  }
+  goal: string
+  outputKind: 'full-image' | 'section' | 'asset'
+  target: { width: number; height: number; placementMode: string }
+  references: Array<{ id: string; name: string; role: string; responsibility: string }>
+  constraints: string[]
 }
 ```
 
@@ -58,9 +49,10 @@ interface DesignBlueprint {
 
 - 原型图存在时，它是页面模块和顺序的唯一结构来源。
 - KV 只影响色彩、材质、装饰、字体气质和视觉层级，不增加业务模块。
-- `append-section` 的 Blueprint 只能描述本次新增模块，不能重复整页结构。
-- Blueprint 保存到 Agent Session，继续、失败重试和生成变体可以复用。
-- Blueprint 是生成约束，不直接转换为 DesignDocument 或 H5 节点。
+- `append-section` 只描述本次新增模块，不能重复整页结构。
+- Brief 保存到 Agent Session，继续、失败重试和生成变体可以复用。
+- Brief 是确定性生成契约，不直接转换为 DesignDocument 节点。
+- Page Blueprint 仅保留给明确指定多个业务组件的组合页面。
 
 ## 4. 图片质量审查
 
@@ -76,7 +68,7 @@ interface DesignBlueprint {
 | 内容量 | SVG 过小，疑似空白占位；或超过 8MB |
 | 结构模式 | `append-section` 输出异常超长，疑似误生成完整页面 |
 
-审查输出包含 `passed`、问题列表以及宽高、可见节点、文本节点和字节数。存在 error 时，`design.refine` 将 Blueprint、原任务和问题列表重新交给 Provider，只允许自动修正一次。第二次仍有 error 时任务失败，不把问题制品放入画布。
+审查输出包含 `passed`、问题列表以及宽高、可见节点、文本节点和字节数。存在 error 时，`design.refine` 将 GenerationBrief、原任务和问题列表重新交给 Provider，只允许自动修正一次。第二次仍有 error 时任务失败，不把问题制品放入画布。
 
 位图额外检查 MIME 白名单、Base64、字节上限和宽高安全范围。当前位图主题相似度由 Provider 契约暂记为稳定分数，不能替代后续像素级 Vision Review。
 
@@ -139,7 +131,7 @@ type EditScope =
 
 区域编辑必须提供当前区域截图或可编辑结构，禁止在没有输入制品的情况下声称“只改局部且其他像素不变”。
 
-组件设计已实现受约束的 Slot 局部编辑。画布选中带 `ComponentBinding` 的图片 Region 后，Renderer 会提交 `ComponentEditScope`，Planner 执行：
+组件设计已实现受约束的 Slot 局部编辑。画布选中带 `ComponentBinding` 的图片 Region 后，Renderer 会提交 `SelectionScope(type=component-region)`，Planner 执行：
 
 ```text
 reference.prepare
@@ -149,6 +141,8 @@ reference.prepare
 ```
 
 成功素材在原 elementId 上替换，并同步图片 Prop 与 fallback Prop；其他 Region 不变。该能力针对明确的组件图片 Slot，不等同于任意整页图片的像素级蒙版编辑。
+
+普通节点、多节点、组件实例和 Page Shell 也已使用同一 `SelectionScope`，详见 `selection-scoped-ai-editing.md`。
 
 ## 8. 验收标准
 

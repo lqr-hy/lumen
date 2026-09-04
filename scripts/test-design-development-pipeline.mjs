@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import {
-  configureSkillRuntime,
-  loadComponentsFromPrompt,
-} from '../electron/runtime/skills.mjs'
+import { configureSkillRuntime, loadComponentsFromPrompt } from '../electron/runtime/skills.mjs'
 import {
   createPageCompositionBlueprint,
   validatePageCompositionBlueprint,
@@ -30,14 +27,23 @@ try {
   const components = await loadComponentsFromPrompt(
     '使用 EraLottery.json 和 EraTasklist.json 生成一个活动页面',
   )
-  assert.deepEqual(components.map((item) => item.component.name).sort(), ['EraLottery', 'EraTasklist'])
+  assert.deepEqual(components.map((item) => item.component.name).sort(), [
+    'EraLottery',
+    'EraTasklist',
+  ])
 
   const structuralComponents = await loadComponentsFromPrompt(
     '使用 EvaPage.json、EvaLayoutContainer.json、EraLottery.json 生成页面',
     { allowStructuralComponents: true },
   )
-  assert(structuralComponents.some((item) => item.component.name === 'EvaPage' && !item.thumbnailUpload), 'EvaPage 应作为无 thumbnail 的页面根节点加载')
-  assert(structuralComponents.some((item) => item.component.name === 'EvaLayoutContainer'), 'EvaLayoutContainer 应作为容器节点加载')
+  assert(
+    structuralComponents.some((item) => item.component.name === 'EvaPage' && !item.thumbnailUpload),
+    'EvaPage 应作为无 thumbnail 的页面根节点加载',
+  )
+  assert(
+    structuralComponents.some((item) => item.component.name === 'EvaLayoutContainer'),
+    'EvaLayoutContainer 应作为容器节点加载',
+  )
 
   const visualTheme = {
     source: 'kv',
@@ -57,13 +63,33 @@ try {
     components.map((item) => ({ componentName: item.component.name, estimatedHeight: 480 })),
     visualTheme,
     {
-      pageRoot: { componentName: 'EvaPage', designPaths: ['backgroundColor', 'backgroundImage.src'] },
-      containers: [{ componentName: 'EvaLayoutContainer', designPaths: ['size.width', 'background.color'] }],
+      pageRoot: {
+        componentName: 'EvaPage',
+        designPaths: ['backgroundColor', 'backgroundImage.src'],
+      },
+      containers: [
+        { componentName: 'EvaLayoutContainer', designPaths: ['size.width', 'background.color'] },
+      ],
     },
   )
   assert.equal(structuredBlueprint.pageRoot.componentName, 'EvaPage')
   assert.equal(structuredBlueprint.containers[0].componentName, 'EvaLayoutContainer')
   assert.equal(validatePageCompositionBlueprint(structuredBlueprint).length, 0)
+  const gridBlueprint = createPageCompositionBlueprint(
+    components.map((item) => ({ componentName: item.component.name, estimatedHeight: 320 })),
+    visualTheme,
+    {
+      surface: {
+        kind: 'desktop-web',
+        viewport: { width: 1200, height: 800 },
+        layout: { direction: 'grid', columns: 2, padding: 24, gap: 16 },
+      },
+    },
+  )
+  assert.equal(gridBlueprint.width, 1200)
+  assert.equal(gridBlueprint.sections[0].bounds.width, 568)
+  assert.equal(gridBlueprint.sections[1].bounds.x, 608)
+  assert.equal(validatePageCompositionBlueprint(gridBlueprint).length, 0)
 
   const unsupported = await validateComponentRuntime({
     componentName: 'EraLottery',
@@ -109,15 +135,21 @@ try {
   assert.deepEqual(comparison.scores, { size: 1, structure: 1, props: 1 })
   unregister()
 
-  console.log(JSON.stringify({
-    multiComponentResolution: components.length,
-    pageBlueprint: true,
-    structuralNodes: true,
-    uniqueComponentSections: true,
-    unsupportedRuntimeIsExplicit: true,
-    runtimeAdapterRegistry: true,
-    runtimeDesignComparison: true,
-  }, null, 2))
+  console.log(
+    JSON.stringify(
+      {
+        multiComponentResolution: components.length,
+        pageBlueprint: true,
+        structuralNodes: true,
+        uniqueComponentSections: true,
+        unsupportedRuntimeIsExplicit: true,
+        runtimeAdapterRegistry: true,
+        runtimeDesignComparison: true,
+      },
+      null,
+      2,
+    ),
+  )
 } finally {
   globalThis.fetch = originalFetch
 }

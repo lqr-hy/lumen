@@ -5,20 +5,30 @@
 .prompt-composer-main {
   position: relative;
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr) 42px;
-  grid-template-areas: "reference content content";
-  gap: 14px;
+  grid-template-columns: 62px minmax(0, 1fr);
+  grid-template-areas:
+    'reference content'
+    'actions actions';
   align-items: stretch;
-  min-height: 142px;
-  padding: 18px 16px 16px 18px;
-  border: 1px solid #e7e9ee;
-  border-radius: 22px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.94)),
-    #fff;
+  gap: 12px;
+  min-height: 138px;
+  padding: 14px;
+  border: 1px solid #e1e5eb;
+  border-radius: 14px;
+  background: #fff;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 16px 34px rgba(15, 23, 42, 0.06);
+    0 10px 26px rgba(15, 23, 42, 0.06);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.prompt-composer-main:focus-within {
+  border-color: #b9c2cf;
+  box-shadow:
+    0 0 0 3px rgba(15, 23, 42, 0.035),
+    0 12px 28px rgba(15, 23, 42, 0.07);
 }
 
 .prompt-reference-stack {
@@ -71,7 +81,8 @@
   top: 0;
   left: 0;
   z-index: calc(10 + var(--reference-index));
-  transform: translateX(min(calc(var(--reference-index) * 4px), 14px)) rotate(calc(-7deg + min(var(--reference-index), 4) * 2.5deg));
+  transform: translateX(min(calc(var(--reference-index) * 4px), 14px))
+    rotate(calc(-7deg + min(var(--reference-index), 4) * 2.5deg));
   transition:
     transform 160ms ease,
     box-shadow 160ms ease,
@@ -92,10 +103,10 @@
   opacity: 0.48;
 }
 
-.prompt-reference-deck.expanded .prompt-reference-item,
-.prompt-reference-deck.expanded .prompt-reference-add-button {
+.prompt-reference-deck.expanded .prompt-reference-item {
   z-index: calc(10 + var(--reference-index));
-  transform: translateX(calc(var(--reference-index) * 58px)) rotate(calc(-7deg + var(--reference-index) * 3deg));
+  transform: translateX(calc(var(--reference-index) * 58px))
+    rotate(calc(-7deg + var(--reference-index) * 3deg));
   transition:
     transform 160ms ease,
     box-shadow 160ms ease,
@@ -117,6 +128,40 @@
   background: transparent;
   overflow: hidden;
   box-shadow: none;
+}
+
+.prompt-reference-role {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  left: 2px;
+  z-index: 3;
+  width: calc(100% - 4px);
+  height: 18px;
+  padding: 0 4px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.84);
+  color: #fff;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 16px;
+  outline: 0;
+  text-overflow: ellipsis;
+}
+
+.prompt-reference-role[data-role='kv'] {
+  background: rgba(109, 40, 217, 0.92);
+}
+
+.prompt-reference-role[data-role='prototype'] {
+  background: rgba(3, 105, 161, 0.92);
+}
+
+.prompt-reference-role[data-role='edit-base'] {
+  background: rgba(180, 83, 9, 0.92);
 }
 
 .prompt-reference-upload > em {
@@ -166,6 +211,8 @@
   border-radius: 4px;
   background: #f0f1f3;
   box-shadow: none;
+  transform: translateX(calc(var(--reference-index) * 58px))
+    rotate(calc(-7deg + var(--reference-index) * 3deg));
 }
 
 .prompt-reference-delete {
@@ -196,16 +243,19 @@
 
 .prompt-reference-item:hover {
   z-index: 40;
-  transform: translateX(calc(var(--reference-index) * 58px)) rotate(calc(-7deg + var(--reference-index) * 3deg)) scale(1.2);
+  transform: translateX(calc(var(--reference-index) * 58px))
+    rotate(calc(-7deg + var(--reference-index) * 3deg)) scale(1.2);
 }
 
 .prompt-reference-deck.expanded .prompt-reference-item:hover {
   z-index: 40;
-  transform: translateX(calc(var(--reference-index) * 58px)) rotate(calc(-7deg + var(--reference-index) * 3deg)) scale(1.2);
+  transform: translateX(calc(var(--reference-index) * 58px))
+    rotate(calc(-7deg + var(--reference-index) * 3deg)) scale(1.2);
 }
 
 .prompt-reference-deck:not(.expanded) .prompt-reference-item:hover {
-  transform: translateX(min(calc(var(--reference-index) * 4px), 14px)) rotate(calc(-7deg + min(var(--reference-index), 4) * 2.5deg)) scale(1.2);
+  transform: translateX(min(calc(var(--reference-index) * 4px), 14px))
+    rotate(calc(-7deg + min(var(--reference-index), 4) * 2.5deg)) scale(1.2);
 }
 
 .prompt-reference-item::after {
@@ -250,7 +300,8 @@
   z-index: 300;
   display: grid;
   place-items: center;
-  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right))
+    max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
   background: rgba(15, 23, 42, 0.58);
   backdrop-filter: blur(10px);
 }
@@ -303,12 +354,14 @@
 .prompt-composer-content {
   display: grid;
   grid-area: content;
-  grid-template-rows: minmax(52px, 1fr) auto;
+  grid-template-rows: none;
+  grid-auto-rows: auto;
   min-width: 0;
-  gap: 14px;
+  gap: 10px;
 }
 
 .prompt-input-stack {
+  position: relative;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
@@ -322,6 +375,166 @@
   gap: 6px;
   overflow: hidden;
   white-space: nowrap;
+}
+
+.selection-scope-chip {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  height: 26px;
+  align-items: center;
+  gap: 4px;
+  padding-left: 8px;
+  border: 1px solid #f4c44e;
+  border-radius: 7px;
+  background: #fffbeb;
+  color: #854d0e;
+  font-size: 11px;
+}
+
+.selection-scope-chip > span {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
+.selection-scope-chip button {
+  display: inline-flex;
+  height: 24px;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.selection-scope-main {
+  min-width: 0;
+  gap: 4px;
+  padding: 0 4px;
+}
+
+.selection-scope-main strong {
+  overflow: hidden;
+  max-width: 180px;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selection-scope-clear {
+  width: 25px;
+  justify-content: center;
+  padding: 0;
+  border-left: 1px solid rgba(133, 77, 14, 0.16) !important;
+}
+
+.selection-scope-chip button:hover {
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.selection-scope-chip.invalid {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.selection-scope-chip.invalid > strong {
+  overflow: hidden;
+  max-width: 220px;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selection-scope-batch {
+  width: min(100%, 360px);
+  border: 1px solid #f2b94b;
+  border-radius: 7px;
+  background: #fffbeb;
+  color: #854d0e;
+  font-size: 11px;
+}
+
+.selection-scope-batch summary {
+  display: flex;
+  height: 28px;
+  align-items: center;
+  gap: 7px;
+  padding-left: 9px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.selection-scope-batch summary::-webkit-details-marker {
+  display: none;
+}
+
+.selection-scope-batch summary > span,
+.selection-scope-batch summary > strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selection-scope-batch summary > span {
+  font-weight: 700;
+}
+
+.selection-scope-batch summary > strong {
+  flex: 1;
+}
+
+.selection-scope-batch summary > svg {
+  transition: transform 160ms ease;
+}
+
+.selection-scope-batch[open] summary > svg {
+  transform: rotate(180deg);
+}
+
+.selection-scope-batch button {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.selection-scope-batch summary > button {
+  width: 28px;
+  height: 27px;
+  justify-content: center;
+  border-left: 1px solid rgba(133, 77, 14, 0.16);
+}
+
+.selection-scope-batch-items {
+  padding: 3px 6px 6px;
+  border-top: 1px solid rgba(133, 77, 14, 0.12);
+}
+
+.selection-scope-batch-items > div {
+  display: flex;
+  min-height: 26px;
+  align-items: center;
+}
+
+.selection-scope-batch-items > div > button:first-child {
+  min-width: 0;
+  flex: 1;
+  gap: 6px;
+  padding: 5px;
+  text-align: left;
+}
+
+.selection-scope-batch-items > div > button:first-child span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selection-scope-batch-items > div > button:last-child {
+  width: 24px;
+  justify-content: center;
 }
 
 .prompt-text-reference {
@@ -403,8 +616,7 @@
   border: 1px solid rgba(14, 165, 233, 0.28);
   border-radius: 9px;
   background:
-    linear-gradient(180deg, rgba(240, 249, 255, 0.96), rgba(248, 250, 252, 0.96)),
-    #f8fafc;
+    linear-gradient(180deg, rgba(240, 249, 255, 0.96), rgba(248, 250, 252, 0.96)), #f8fafc;
   color: #0f5f87;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.9),
@@ -512,20 +724,63 @@
 .prompt-rich-editor {
   position: relative;
   width: 100%;
-  min-height: 54px;
-  padding: 2px 4px;
+  min-height: 58px;
+  max-height: 180px;
+  padding: 1px 2px;
   border: 0;
   background: transparent;
   color: #111827;
   font-size: 14px;
   line-height: 1.65;
   outline: 0;
+  overflow-y: auto;
   resize: none;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.prompt-rich-editor[data-empty="true"]::before {
+.prompt-rich-placeholder {
+  position: absolute;
+  top: 1px;
+  left: 2px;
+  max-width: calc(100% - 8px);
+  color: #9aa3ad;
+  font-size: 14px;
+  line-height: 1.65;
+  pointer-events: none;
+}
+
+.prompt-inline-reference-mention {
+  display: inline-flex;
+  align-items: center;
+  max-width: 112px;
+  margin: 0 2px;
+  padding: 1px 5px;
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  background: #f8fafc;
+  color: #0369a1;
+  font-weight: 650;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+  user-select: all;
+}
+
+.prompt-inline-reference-mention[data-reference-type='image'] {
+  border-color: #bae6fd;
+  background: #f0f9ff;
+}
+
+.prompt-inline-reference-mention[data-reference-type='component'] {
+  border-color: #c7d2fe;
+  background: #eef2ff;
+  color: #4338ca;
+}
+
+.prompt-rich-editor[data-empty='true']::before {
   position: absolute;
   top: 2px;
   left: 4px;
@@ -688,12 +943,78 @@
 }
 
 .prompt-composer-actions {
-  display: flex;
+  display: grid;
+  grid-area: actions;
+  grid-template-columns: 34px minmax(0, 1fr) 42px;
   align-items: center;
-  gap: 6px;
-  padding-right: 56px;
-  overflow-x: auto;
+  min-width: 0;
+  gap: 5px;
+  padding-top: 9px;
+  border-top: 1px solid #edf0f4;
+  overflow: hidden;
   scrollbar-width: none;
+}
+
+.prompt-action-slot {
+  display: grid;
+  width: 100%;
+  max-width: 360px;
+  min-width: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: center;
+  justify-self: start;
+  gap: 5px;
+}
+
+.chat-panel-composer .prompt-action-slot {
+  max-width: none;
+}
+
+.prompt-action-button,
+.prompt-submit-button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #475569;
+}
+
+.prompt-action-button:hover {
+  background: #f1f4f7;
+  color: #0f172a;
+}
+
+.prompt-submit-button {
+  width: 42px;
+  height: 42px;
+  flex-basis: 42px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: #111827;
+  color: #fff;
+}
+
+.prompt-submit-button:disabled {
+  background: #edf0f3;
+  color: #7b8794;
+}
+
+.prompt-submit-button:not(:disabled):hover {
+  background: #020617;
+}
+
+.prompt-submit-button.is-stop {
+  background: #111827;
+  color: #fff;
+}
+
+.prompt-submit-button.is-stop:hover {
+  background: #dc2626;
 }
 
 .prompt-composer-actions::-webkit-scrollbar {
@@ -713,6 +1034,32 @@
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 18px 44px rgba(15, 23, 42, 0.16);
   backdrop-filter: blur(18px);
+  left: 74px;
+  top: calc(100% + 8px);
+}
+
+.prompt-mention-group {
+  display: grid;
+  gap: 2px;
+}
+
+.prompt-mention-group + .prompt-mention-group {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #edf0f4;
+}
+
+.prompt-mention-group > header {
+  padding: 2px 7px;
+  color: #8b96a5;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.chat-panel-composer .prompt-mention-menu,
+.ai-chat-composer .prompt-mention-menu {
+  top: auto;
+  bottom: calc(100% + 8px);
 }
 
 .prompt-mention-menu.above {
@@ -741,6 +1088,44 @@
   width: 32px;
   height: 32px;
   border-radius: 6px;
+}
+
+.mention-fallback.is-component {
+  background: #eef2ff;
+  color: #4f46e5;
+}
+
+.mention-fallback.is-canvas {
+  background: #f3f4f6;
+  color: #475569;
+}
+
+.mention-option-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.mention-option-copy strong,
+.mention-option-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mention-option-copy strong {
+  font-size: 12px;
+}
+.mention-option-copy small {
+  color: #8b96a5;
+  font-size: 10px;
+}
+
+.prompt-mention-menu .mention-import-component {
+  width: 100%;
+  margin-top: 7px;
+  border-top: 1px solid #edf0f4;
+  border-radius: 0 0 8px 8px;
 }
 
 .prompt-mention-menu img {
@@ -876,8 +1261,10 @@
 }
 
 .prompt-composer.compact .prompt-composer-main {
-  grid-template-columns: 62px minmax(0, 1fr) 38px;
-  grid-template-areas: "reference content content";
+  grid-template-columns: 52px minmax(0, 1fr);
+  grid-template-areas:
+    'reference content'
+    'actions actions';
   align-items: center;
   min-height: 64px;
   padding: 10px 12px;
@@ -913,7 +1300,8 @@
 
 .prompt-composer.compact .prompt-reference-item,
 .prompt-composer.compact .prompt-reference-add-button {
-  transform: translateX(min(calc(var(--reference-index) * 3px), 10px)) rotate(calc(-7deg + min(var(--reference-index), 4) * 2.5deg));
+  transform: translateX(min(calc(var(--reference-index) * 3px), 10px))
+    rotate(calc(-7deg + min(var(--reference-index), 4) * 2.5deg));
 }
 
 .prompt-composer.compact .prompt-reference-add-button {
@@ -927,12 +1315,13 @@
   border-radius: 50%;
 }
 
-.prompt-composer.compact .prompt-reference-deck.expanded .prompt-reference-item,
-.prompt-composer.compact .prompt-reference-deck.expanded .prompt-reference-add-button {
-  transform: translateX(calc(var(--reference-index) * 50px)) rotate(calc(-7deg + var(--reference-index) * 3deg));
+.prompt-composer.compact .prompt-reference-deck.expanded .prompt-reference-item {
+  transform: translateX(calc(var(--reference-index) * 50px))
+    rotate(calc(-7deg + var(--reference-index) * 3deg));
 }
 
 .prompt-composer.compact .prompt-reference-deck.expanded .prompt-reference-add-button {
+  inset: 0 auto auto 0;
   width: 42px;
   height: 48px;
   min-width: 42px;
@@ -940,18 +1329,23 @@
   min-height: 48px;
   max-height: 48px;
   border-radius: 4px;
+  transform: translateX(calc(var(--reference-index) * 50px))
+    rotate(calc(-7deg + var(--reference-index) * 3deg));
 }
 
 .prompt-composer.compact .prompt-reference-item:hover {
-  transform: translateX(calc(var(--reference-index) * 50px)) rotate(calc(-7deg + var(--reference-index) * 3deg)) scale(1.2);
+  transform: translateX(calc(var(--reference-index) * 50px))
+    rotate(calc(-7deg + var(--reference-index) * 3deg)) scale(1.2);
 }
 
 .prompt-composer.compact .prompt-reference-deck.expanded .prompt-reference-item:hover {
-  transform: translateX(calc(var(--reference-index) * 50px)) rotate(calc(-7deg + var(--reference-index) * 3deg)) scale(1.2);
+  transform: translateX(calc(var(--reference-index) * 50px))
+    rotate(calc(-7deg + var(--reference-index) * 3deg)) scale(1.2);
 }
 
 .prompt-composer.compact .prompt-reference-deck:not(.expanded) .prompt-reference-item:hover {
-  transform: translateX(min(calc(var(--reference-index) * 3px), 10px)) rotate(calc(-7deg + min(var(--reference-index), 4) * 2.5deg)) scale(1.2);
+  transform: translateX(min(calc(var(--reference-index) * 3px), 10px))
+    rotate(calc(-7deg + min(var(--reference-index), 4) * 2.5deg)) scale(1.2);
 }
 
 .prompt-composer.compact .prompt-reference-upload > em {
@@ -966,12 +1360,9 @@
 }
 
 .prompt-composer.compact .prompt-composer-content {
-  grid-template-rows: minmax(38px, auto);
+  grid-template-rows: none;
+  grid-auto-rows: auto;
   gap: 0;
-}
-
-.prompt-composer.compact .prompt-composer-actions {
-  padding-right: 48px;
 }
 
 .prompt-composer.compact .prompt-send-button {
@@ -998,6 +1389,13 @@
     width: 34px;
     justify-content: center;
     padding: 0;
+  }
+}
+
+@container (max-width: 430px) {
+  .prompt-composer-main {
+    min-height: 124px;
+    padding: 12px;
   }
 }
 

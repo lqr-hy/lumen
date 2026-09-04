@@ -7,29 +7,40 @@ import {
   saveStepCheckpoint,
 } from './agent-session-store.mjs'
 import { createAgentToolRegistry } from './agent-tools.mjs'
-import { decideConversationTurn } from './conversation-agent.mjs'
-import { decideAgentNextAction, getReadyAgentSteps } from './react-loop.mjs'
+import { getReadyWorkflowSteps } from './workflow-graph.mjs'
 import { createRuntimeError } from './providers.mjs'
 import { readArtifact, writeArtifact } from '../artifacts/artifact-repository.mjs'
+import { cancelPiAgent } from './pi/cancellation.mjs'
+import { genericUiLogicalSize } from './generic-ui.mjs'
+import {
+  inferFallbackSurfaceKind,
+  isFullUiRedesignRequest,
+  routeAgentIntent,
+} from './intent-router.mjs'
+import { createDefaultRuntimePlugins } from './plugins/campaign-component-plugin.mjs'
+import { assertTurnBudget, consumeTurnBudget, ensureTurnBudget } from './pi/turn-budget.mjs'
 
 const activeSessions = new Map()
 const MAX_ITERATIONS = 32
-const MAX_REACT_ITERATIONS = 20
 const DEFAULT_TOOL_TIMEOUT_MS = 5 * 60 * 1000
 // 页面组件工具内部包含多个组件流水线，不能复用单组件的 5 分钟限制。
 const MAX_TOOL_ATTEMPTS = 2
 
-export async function runAgent(payload, callbacks = {}, dependencies) {
+export async function runDesignWorkflow(payload, callbacks = {}, dependencies) {
   validateAgentPayload(payload)
+  ensureTurnBudget(payload)
   const session = await loadAgentSession(payload.sessionId)
   if (typeof payload.projectId === 'string' && payload.projectId.trim()) {
     session.projectId = payload.projectId
   }
-  if (isCanvasTarget(payload.canvasTarget)) {
-    session.canvasTarget = { ...payload.canvasTarget }
-  } else if (session.canvasTarget) {
-    payload = { ...payload, canvasTarget: session.canvasTarget }
-  }
+  session.activeStylePack =
+    payload.stylePack && typeof payload.stylePack === 'object' ? payload.stylePack : undefined
+  const decision = resolveWorkflowDecision(payload, session)
+  const resolvedTarget =
+    decision?.action === 'chat'
+      ? undefined
+      : await resolveWorkflowCanvasTarget(session, payload, decision, callbacks)
+  if (resolvedTarget) payload = { ...payload, canvasTarget: resolvedTarget }
   if (payload.canvasSnapshot && typeof payload.canvasSnapshot === 'object') {
     session.canvasSnapshot = sanitizeCanvasSnapshot(payload.canvasSnapshot)
   }
@@ -38,48 +49,36 @@ export async function runAgent(payload, callbacks = {}, dependencies) {
   } else if (session.taskKind === 'component-slot-edit' && session.editScope) {
     payload = { ...payload, editScope: session.editScope }
   }
-  const selectedSkills = Array.isArray(payload.skillNames) && payload.skillNames.length
-    ? payload.skillNames
-    : session.skills ?? []
+  const selectedSkills =
+    Array.isArray(payload.skillNames) && payload.skillNames.length
+      ? payload.skillNames
+      : (session.skills ?? [])
   payload = { ...payload, skillNames: selectedSkills }
   session.skills = selectedSkills
-  const decision = await decideConversationTurn({
-    session,
-    payload,
-    invokeProvider: dependencies.decideIntent,
-  })
-  session.lastConversationDecision = {
-    mode: decision.mode,
-    action: decision.action,
-    taskKind: decision.taskKind,
-    confidence: decision.confidence,
-    reason: decision.reason,
-    source: decision.source,
-  }
-  if (typeof decision.target?.componentName === 'string' && decision.target.componentName.trim()) {
+  session.lastWorkflowTrigger = decision
+    ? {
+        action: decision.action,
+        taskKind: decision.taskKind,
+        reason: decision.reason,
+        source: decision.source,
+      }
+    : undefined
+  if (
+    !session.componentRequest &&
+    typeof decision?.target?.componentName === 'string' &&
+    decision.target.componentName.trim()
+  ) {
     session.componentRequest = decision.target.componentName.trim()
   }
-  if (
-    decision.source === 'model' &&
-    (decision.mode === 'reply' || decision.mode === 'clarify') &&
-    decision.response
-  ) {
-    touch(session)
-    await saveAndEmitSession(session, callbacks)
-    return { text: decision.response, agent: publicSession(session) }
-  }
-  const turn = planAgentTurn(session, payload, decision.intent)
+  const runtimePlugins =
+    dependencies?.plugins === undefined ? createDefaultRuntimePlugins() : dependencies.plugins
+  const turn = planAgentTurn(session, payload, decision, { plugins: runtimePlugins })
   await saveAndEmitSession(session, callbacks)
 
   if (turn.action === 'reply') return { text: turn.text, agent: publicSession(session) }
 
   if (turn.action === 'chat') {
-    const result = await dependencies.invokeProvider({
-      ...payload,
-      type: 'chat',
-      question: buildChatQuestion(payload),
-    }, callbacks)
-    return { ...result, agent: publicSession(session) }
+    throw createRuntimeError('WORKFLOW_ACTION_REQUIRED', '设计工作流只接受明确的设计操作。')
   }
 
   if (activeSessions.has(session.id)) {
@@ -94,86 +93,247 @@ export async function runAgent(payload, callbacks = {}, dependencies) {
       { ...payload, signal: controller.signal },
       callbacks,
       dependencies,
+      runtimePlugins,
     )
   } finally {
     activeSessions.delete(session.id)
   }
 }
 
-export function cancelAgentRun(sessionId) {
-  const controller = activeSessions.get(sessionId)
-  if (!controller) return false
-  controller.abort(createRuntimeError('AGENT_CANCELLED', '用户已取消当前任务。'))
-  return true
+export function resolveWorkflowDecision(payload, session = {}) {
+  const supplied = payload.workflowDecision
+  if (supplied) {
+    if (!isPlacementDecision(supplied.placement)) {
+      throw createRuntimeError('PLACEMENT_DECISION_MISSING', '设计工作流缺少有效的画布放置决策。')
+    }
+    const reconciled = reconcileSuppliedWorkflowDecision(supplied, payload)
+    if (
+      ['create-component', 'create-page'].includes(reconciled.action) &&
+      (payload.selectedArtboardId || payload.activeArtboardId) &&
+      (payload.componentReferences?.length ?? 0) > 0
+    ) {
+      reconciled.placement = {
+        operation: 'insert',
+        scope: 'artboard',
+        targetArtboardId: payload.selectedArtboardId || payload.activeArtboardId,
+        reason: '用户已选中画板并要求追加组件，写入当前画板底部。',
+        confidence: 1,
+      }
+    }
+    return reconciled
+  }
+  const deterministic = routeAgentIntent({
+    prompt: payload.question,
+    editScope: payload.editScope,
+    componentReferences: payload.componentReferences,
+    session: {
+      taskKind: session.taskKind,
+      canvasSnapshot: payload.canvasSnapshot || session.canvasSnapshot,
+      componentDesign: session.componentDesign,
+    },
+  })
+  // 只依据画布选择状态决定组件目标，不猜测自然语言。
+  if (
+    ['create-component', 'create-page'].includes(deterministic.action) &&
+    (payload.selectedArtboardId || payload.activeArtboardId) &&
+    (payload.componentReferences?.length ?? 0) > 0
+  ) {
+    deterministic.placement = {
+      operation: 'insert',
+      scope: 'artboard',
+      targetArtboardId: payload.selectedArtboardId || payload.activeArtboardId,
+      reason: '用户已选中画板并要求追加组件，写入当前画板底部。',
+      confidence: 1,
+    }
+  }
+  return {
+    ...deterministic,
+    version: 2,
+    placement:
+      deterministic.placement ?? fallbackPlacementForDecision(deterministic, payload, session),
+    ...(deterministic.action === 'create-ui'
+      ? { surfaceKind: inferFallbackSurfaceKind(payload.question) }
+      : {}),
+  }
 }
 
-async function executePlan(session, payload, callbacks, dependencies) {
-  const registry = createAgentToolRegistry(dependencies)
+function reconcileSuppliedWorkflowDecision(decision, payload) {
+  if (decision.action !== 'revise-ui-structure' || !isFullUiRedesignRequest(payload.question)) {
+    return decision
+  }
+  const targetArtboardId =
+    decision.placement?.targetArtboardId || payload.canvasSnapshot?.artboardId
+  return {
+    ...decision,
+    action: 'create-ui',
+    taskKind: 'generic-ui',
+    reason: 'runtime-full-ui-redesign-variant',
+    placement: targetArtboardId
+      ? {
+          operation: 'variant',
+          scope: 'artboard',
+          targetArtboardId,
+          reason: '整页重新设计生成独立 Variant，保留原画板。',
+          confidence: 1,
+        }
+      : {
+          operation: 'create',
+          scope: 'document',
+          reason: '整页重新设计缺少现有目标，创建新画板。',
+          confidence: 1,
+        },
+  }
+}
+
+async function resolveWorkflowCanvasTarget(session, payload, decision, callbacks) {
+  const incomingTarget = isCanvasTarget(payload.canvasTarget) ? payload.canvasTarget : undefined
+  const previousTarget = isCanvasTarget(session.canvasTarget) ? session.canvasTarget : undefined
+  if (decision && typeof callbacks.onCanvasTargetRequest === 'function') {
+    const placement = decision.placement
+    const operationId = `canvas-operation-${payload.streamId || payload.sessionId}`
+    const preferredArtboardId =
+      placement.operation === 'resume'
+        ? previousTarget?.artboardId
+        : placement.targetArtboardId ||
+          (placement.scope === 'selection' ? payload.canvasSnapshot?.artboardId : undefined)
+    const request = {
+      id: `canvas-target-${operationId}`,
+      turnId: payload.streamId || `turn-${Date.now()}`,
+      sessionId: payload.sessionId,
+      projectId: payload.projectId,
+      action: decision.action,
+      taskKind: decision.taskKind,
+      operationId,
+      placement,
+      preferredArtboardId,
+      editScope: payload.editScope,
+      baseDocumentRevision:
+        payload.canvasContext?.documentRevision ?? payload.canvasSnapshot?.documentRevision ?? 0,
+      logicalSize:
+        decision.taskKind === 'generic-ui'
+          ? genericUiLogicalSize(decision.surfaceKind || 'desktop-admin')
+          : { width: 375, initialHeight: 812, autoHeight: true },
+    }
+    const resolution = await callbacks.onCanvasTargetRequest(request)
+    if (resolution?.status !== 'ready' || !isCanvasTarget(resolution.target)) {
+      throw createRuntimeError(
+        resolution?.errorCode || 'CANVAS_TARGET_MISSING',
+        resolution?.reason || '设计任务无法创建或选择目标画板。',
+      )
+    }
+    session.canvasTarget = { ...resolution.target }
+    session.canvasTransaction = {
+      operationId,
+      leaseId: resolution.target.leaseId,
+      turnId: request.turnId,
+      placement,
+      artboardId: resolution.target.artboardId,
+      baseDocumentRevision: request.baseDocumentRevision,
+      leasedDocumentRevision: resolution.target.documentRevision,
+      status: 'reserved',
+      updatedAt: new Date().toISOString(),
+    }
+    return session.canvasTarget
+  }
+  if (incomingTarget) {
+    session.canvasTarget = { ...incomingTarget }
+    return session.canvasTarget
+  }
+  if (decision?.placement?.operation === 'resume' && previousTarget) return previousTarget
+  return undefined
+}
+
+function fallbackPlacementForDecision(decision, payload, session) {
+  const selectionTarget = payload.canvasSnapshot?.artboardId
+  const sessionTarget = session.canvasTarget?.artboardId
+  if (decision.action === 'continue') {
+    return {
+      operation: 'resume',
+      scope: 'artboard',
+      targetArtboardId: sessionTarget,
+      reason: 'offline-resume',
+      confidence: 1,
+    }
+  }
+  if (decision.action === 'create-assets') {
+    return { operation: 'assets', scope: 'asset-board', reason: 'offline-assets', confidence: 1 }
+  }
+  if (
+    decision.action === 'create-artboard' ||
+    ['create-page', 'create-ui', 'create-component', 'create-image'].includes(decision.action)
+  ) {
+    return {
+      operation: 'create',
+      scope: 'document',
+      reason: 'offline-create',
+      confidence: decision.confidence,
+    }
+  }
+  return {
+    operation: 'revise',
+    scope: 'selection',
+    targetArtboardId: selectionTarget,
+    targetElementIds: decision.targetIds ?? [],
+    reason: 'offline-selection-revision',
+    confidence: decision.confidence,
+  }
+}
+
+function isPlacementDecision(value) {
+  return Boolean(
+    value &&
+    ['create', 'insert', 'revise', 'variant', 'assets', 'resume'].includes(value.operation) &&
+    ['document', 'artboard', 'selection', 'asset-board'].includes(value.scope) &&
+    typeof value.reason === 'string' &&
+    Number.isFinite(value.confidence),
+  )
+}
+
+export function cancelDesignWorkflow(sessionId) {
+  const controller = activeSessions.get(sessionId)
+  if (controller) {
+    controller.abort(createRuntimeError('AGENT_CANCELLED', '用户已取消当前任务。'))
+    return true
+  }
+  return cancelPiAgent(sessionId)
+}
+
+async function executePlan(session, payload, callbacks, dependencies, runtimePlugins) {
+  const registry = createAgentToolRegistry({
+    ...dependencies,
+    plugins: runtimePlugins,
+    invokeProvider: (providerPayload, providerCallbacks) =>
+      dependencies.invokeProvider(
+        {
+          ...providerPayload,
+          question: appendStylePackContract(providerPayload.question, session.activeStylePack),
+        },
+        providerCallbacks,
+      ),
+  })
   const memory = await restoreStepMemory(session, payload)
-  const reactEnabled = typeof dependencies.decideNextAction === 'function'
-  session.reactState = {
-    enabled: reactEnabled,
+  session.workflowState = {
     iteration: 0,
-    consecutiveFailures: {},
-    budget: {
-      maxIterations: reactEnabled ? MAX_REACT_ITERATIONS : MAX_ITERATIONS,
-      maxSameFailure: 2,
-    },
+    maxIterations: Math.min(MAX_ITERATIONS, payload.turnBudget.maxIterations),
   }
   session.status = 'running'
   emit(callbacks, { type: 'plan.updated', sessionId: session.id, steps: session.plan })
   await saveAndEmitSession(session, callbacks)
 
   let iterations = 0
-  const iterationLimit = reactEnabled ? MAX_REACT_ITERATIONS : MAX_ITERATIONS
+  const iterationLimit = Math.min(MAX_ITERATIONS, payload.turnBudget.maxIterations)
   try {
     while (iterations < iterationLimit) {
-      const readySteps = getReadyAgentSteps(session)
-      const nextAction = await decideAgentNextAction({
-        session,
-        payload,
-        readySteps,
-        invokeProvider: dependencies.decideNextAction,
-      })
-      session.lastNextAction = {
-        mode: nextAction.mode,
-        tool: nextAction.tool?.name,
-        stepId: nextAction.tool?.stepId,
-        confidence: nextAction.confidence,
-        reason: nextAction.reason,
-        source: nextAction.source,
-      }
-      emit(callbacks, { type: 'agent.decision', sessionId: session.id, decision: session.lastNextAction })
-      if (nextAction.mode === 'clarify') {
-        session.status = 'waiting-user'
-        delete session.currentStepId
-        touch(session)
-        await saveAndEmitSession(session, callbacks)
-        return { text: nextAction.response, agent: publicSession(session) }
-      }
-      if (nextAction.mode === 'finish' && !readySteps.length) break
-      const selectedAction = nextAction.mode === 'finish'
-        ? {
-            ...nextAction,
-            mode: 'tool',
-            tool: readySteps[0]
-              ? { stepId: readySteps[0].id, name: readySteps[0].tool, kind: 'planned' }
-              : undefined,
-          }
-        : nextAction
-      const step = resolveReactStep(session, readySteps, selectedAction, iterations)
-      if (!step) {
-        if (!readySteps.length) break
-        throw createRuntimeError('AGENT_NEXT_ACTION_INVALID', 'ReAct Agent 没有选择可执行工具。')
-      }
-      if (
-        (payload.provider === 'codex' || payload.provider === 'codex_cli') &&
-        step.tool === 'page.generate-component'
-      ) {
+      const readySteps = getReadyWorkflowSteps(session)
+      const step = readySteps[0]
+      if (!step) break
+      assertTurnBudget(payload)
+      consumeTurnBudget(payload, 'iteration')
+      if (payload.provider === 'codex' && step.tool === 'page.generate-component') {
         step.title = `生成 ${step.input?.componentName ?? '页面'} 组件`
       }
       iterations += 1
-      session.reactState.iteration = iterations
+      session.workflowState.iteration = iterations
       session.currentStepId = step.id
       step.inputHash = computeStepInputHash(session, payload, step)
       step.status = 'running'
@@ -196,15 +356,19 @@ async function executePlan(session, payload, callbacks, dependencies) {
           toolContext,
           callbacks,
           session.id,
-          reactEnabled ? 1 : MAX_TOOL_ATTEMPTS,
+          getToolAttempts(step.tool),
         )
+        recordDesignEvaluation(session, step, result.data, callbacks)
         if (
-          (step.tool === 'page.generate-shell' || step.tool === 'page.generate-component') &&
+          (step.tool === 'page.generate-shell' ||
+            result.data?.deliveryKind === 'page-shell' ||
+            step.tool === 'page.generate-component') &&
           !result.data?.failed
         ) {
-          const canvasObservation = step.tool === 'page.generate-shell'
-            ? await deliverPageShell(session, step, result.data, callbacks, iterations)
-            : await deliverPageComponent(session, step, result.data, callbacks, iterations)
+          const canvasObservation =
+            step.tool === 'page.generate-shell' || result.data?.deliveryKind === 'page-shell'
+              ? await deliverPageShell(session, step, result.data, callbacks, iterations)
+              : await deliverPageComponent(session, step, result.data, callbacks, iterations)
           if (canvasObservation) {
             session.canvasObservations = [
               ...(session.canvasObservations ?? []).slice(-19),
@@ -225,27 +389,72 @@ async function executePlan(session, payload, callbacks, dependencies) {
             }
           }
         }
+        if (step.tool.startsWith('canvas.present') || step.tool === 'canvas.commit') {
+          const canvasObservation = await deliverPresentation(
+            session,
+            step,
+            result.data,
+            callbacks,
+            iterations,
+          )
+          if (canvasObservation) {
+            session.canvasObservations = [
+              ...(session.canvasObservations ?? []).slice(-19),
+              canvasObservation,
+            ]
+            session.observations = [...session.observations.slice(-49), canvasObservation]
+            mergeCanvasSnapshot(session, canvasObservation)
+            emit(callbacks, {
+              type: 'observation.created',
+              sessionId: session.id,
+              observation: canvasObservation,
+            })
+            if (canvasObservation.status !== 'success') {
+              if (step.tool === 'canvas.present-ui-section') {
+                const sectionIndex = Number(step.input?.blockIndex)
+                if (Number.isInteger(sectionIndex)) {
+                  session.genericUiFailedSectionIndexes = [
+                    ...new Set([...(session.genericUiFailedSectionIndexes ?? []), sectionIndex]),
+                  ]
+                }
+                result.data = {
+                  ...result.data,
+                  failed: true,
+                  canvasFailure: {
+                    errorCode: canvasObservation.errorCode,
+                    summary: canvasObservation.summary,
+                  },
+                }
+                step.partialSummary = canvasObservation.summary
+              } else {
+                throw createRuntimeError(
+                  canvasObservation.errorCode || 'CANVAS_DELIVERY_FAILED',
+                  canvasObservation.summary || '设计结果未写入目标画板。',
+                )
+              }
+            }
+          }
+        }
         memory.set(step.tool, result)
         memory.set(step.id, result)
-        if (step.tool === 'page.generate-component' && result.data?.failed) {
+        if (result.data?.failed) {
           step.partialFailure = true
         } else {
           delete step.partialFailure
         }
-        insertDynamicSteps(session, step.id, result.nextSteps)
+        const planLengthBeforeDynamicChanges = session.plan.length
+        const insertedStepCount = insertDynamicSteps(session, step.id, result.nextSteps)
+        if (insertedStepCount > 0 || session.plan.length !== planLengthBeforeDynamicChanges) {
+          emit(callbacks, { type: 'plan.updated', sessionId: session.id, steps: session.plan })
+        }
         const externalizedResult = await externalizeArtifacts(result, session)
         step.outputHash = hashValue(externalizedResult)
-        await saveStepCheckpoint(
-          session.id,
-          session.runId,
-          step.id,
-          {
-            checkpointVersion: 2,
-            inputHash: step.inputHash,
-            outputHash: step.outputHash,
-            result: externalizedResult,
-          },
-        )
+        await saveStepCheckpoint(session.id, session.runId, step.id, {
+          checkpointVersion: 2,
+          inputHash: step.inputHash,
+          outputHash: step.outputHash,
+          result: externalizedResult,
+        })
         const observation = {
           id: `observation-${Date.now()}-${iterations}`,
           stepId: step.id,
@@ -284,9 +493,7 @@ async function executePlan(session, payload, callbacks, dependencies) {
         if (payload.signal?.aborted || error?.code === 'AGENT_CANCELLED') throw error
         step.status = 'failed'
         step.error = error instanceof Error ? error.message : String(error)
-        const failureKey = hashValue({ tool: step.tool, input: step.input, error: error?.code ?? step.error })
-        const failureCount = (session.reactState.consecutiveFailures[failureKey] ?? 0) + 1
-        session.reactState.consecutiveFailures[failureKey] = failureCount
+        step.completedAt = new Date().toISOString()
         const observation = {
           id: `observation-${Date.now()}-${iterations}-failed`,
           stepId: step.id,
@@ -294,24 +501,29 @@ async function executePlan(session, payload, callbacks, dependencies) {
           status: 'failed',
           summary: step.error,
           errorCode: typeof error?.code === 'string' ? error.code : 'AGENT_TOOL_FAILED',
-          retryable: reactEnabled && failureCount < session.reactState.budget.maxSameFailure,
+          retryable: false,
           createdAt: new Date().toISOString(),
         }
         session.observations = [...session.observations.slice(-49), observation]
         session.status = 'failed'
+        if (session.canvasTransaction) {
+          session.canvasTransaction.status = 'failed'
+          session.canvasTransaction.updatedAt = new Date().toISOString()
+        }
         session.lastError = {
           code: typeof error?.code === 'string' ? error.code : 'AGENT_TOOL_FAILED',
           message: step.error,
           stepId: step.id,
         }
         touch(session)
-        emit(callbacks, { type: 'step.failed', sessionId: session.id, step: publicStep(step), error: step.error })
+        emit(callbacks, {
+          type: 'step.failed',
+          sessionId: session.id,
+          step: publicStep(step),
+          error: step.error,
+        })
         emit(callbacks, { type: 'observation.created', sessionId: session.id, observation })
         await saveAgentSession(session)
-        if (reactEnabled && failureCount < session.reactState.budget.maxSameFailure) {
-          session.status = 'running'
-          continue
-        }
         emit(callbacks, { type: 'task.failed', sessionId: session.id, error: step.error })
         throw error
       }
@@ -322,35 +534,65 @@ async function executePlan(session, payload, callbacks, dependencies) {
     }
 
     const presentation = memory.get('canvas.present')?.data
-    const pagePresentation = memory.get('canvas.present-page')?.data
-    const componentPresentation = memory.get('canvas.present-component')?.data
+    const pagePresentation =
+      memory.get('canvas.present-page')?.data ??
+      (memory.get('canvas.commit')?.data?.deliveryKind === 'page'
+        ? memory.get('canvas.commit')?.data
+        : undefined)
+    const componentPresentation =
+      memory.get('canvas.present-component')?.data ??
+      (memory.get('canvas.commit')?.data?.deliveryKind === 'component'
+        ? memory.get('canvas.commit')?.data
+        : undefined)
     const slotPresentation = memory.get('canvas.present-slot')?.data
+    const slotBatchPresentation = memory.get('canvas.present-slots')?.data
     const pageShellPresentation = memory.get('canvas.present-page-shell')?.data
-    const artifact = pagePresentation?.pageShellArtifact ?? pageShellPresentation?.pageShellArtifact ?? pageShellPresentation?.artifact ?? slotPresentation?.artifact ?? componentPresentation?.previewArtifact ?? presentation?.artifact
+    const patchPresentation = memory.get('canvas.present-patch')?.data
+    const specPatchPresentation = memory.get('canvas.present-spec-patch')?.data
+    const artifact =
+      pagePresentation?.pageShellArtifact ??
+      pageShellPresentation?.pageShellArtifact ??
+      pageShellPresentation?.artifact ??
+      slotPresentation?.artifact ??
+      slotBatchPresentation?.items?.[0]?.artifact ??
+      componentPresentation?.previewArtifact ??
+      presentation?.artifact
     const assetArtifacts = componentPresentation
-      ? componentPresentation.artifacts ?? []
+      ? (componentPresentation.artifacts ?? [])
       : memory.get('canvas.present-assets')?.data?.artifacts
     const artifacts = pagePresentation
       ? [
           pagePresentation.pageShellArtifact,
           ...pagePresentation.components.flatMap((component) => [
             component.previewArtifact,
-            component.visualShellArtifact,
             ...(component.artifacts ?? []),
           ]),
         ].filter(Boolean)
       : pageShellPresentation
-      ? [pageShellPresentation.artifact]
-      : slotPresentation
-      ? [slotPresentation.artifact]
-      : componentPresentation
-      ? [
-          componentPresentation.previewArtifact,
-          componentPresentation.visualShellArtifact,
-          ...(componentPresentation.artifacts ?? []),
-        ].filter(Boolean)
-      : assetArtifacts ?? (artifact ? [artifact] : [])
+        ? [pageShellPresentation.artifact]
+        : slotBatchPresentation
+          ? slotBatchPresentation.items.map((item) => item.artifact)
+          : slotPresentation
+            ? [slotPresentation.artifact]
+            : componentPresentation
+              ? [
+                  componentPresentation.previewArtifact,
+                  ...(componentPresentation.artifacts ?? []),
+                ].filter(Boolean)
+              : patchPresentation
+                ? Object.values(patchPresentation.imageArtifacts ?? {})
+                : (assetArtifacts ?? (artifact ? [artifact] : []))
     session.status = 'completed'
+    if (session.canvasTransaction) {
+      session.canvasTransaction.status = 'committed'
+      session.canvasTransaction.updatedAt = new Date().toISOString()
+    }
+    if (pagePresentation?.failedComponents?.length && session.pendingTask) {
+      session.pendingTask.status = 'failed'
+      session.pendingTask.updatedAt = new Date().toISOString()
+    } else if (componentPresentation || pagePresentation) {
+      delete session.pendingTask
+    }
     delete session.currentStepId
     delete session.lastError
     for (let index = 0; index < artifacts.length; index += 1) {
@@ -374,39 +616,66 @@ async function executePlan(session, payload, callbacks, dependencies) {
     return {
       text: pagePresentation
         ? pagePresentation.failedComponents?.length
-          ? `页面已交付 ${pagePresentation.components.length}/${pagePresentation.pageDesign.blueprint.sections.length} 个组件；生成失败：${pagePresentation.failedComponents.map((item) => item.componentName).join('、')}。点击“继续”只重试失败组件。`
+          ? `页面已交付 ${pagePresentation.components.length}/${pagePresentation.components.length + pagePresentation.failedComponents.length} 个组件；生成失败：${pagePresentation.failedComponents.map((item) => item.componentName).join('、')}。点击“继续”只重试失败组件。`
           : `已完成包含 ${pagePresentation.components.length} 个组件实例的完整页面设计。`
         : pageShellPresentation
-        ? '已重新生成并替换页面视觉外壳。'
-        : slotPresentation
-        ? `已重新生成并替换 ${slotPresentation.editScope.slotId} 素材。`
-        : componentPresentation
-        ? `已完成 ${componentPresentation.componentDesign.componentName} 组件设计，生成视觉外壳、${componentPresentation.artifacts.length} 个 Props 独立素材和 Props Patch。`
-        : artifacts.length > 1
-          ? `已完成计划并生成 ${artifacts.length} 个独立素材。`
-        : '已完成计划并生成设计图。',
+          ? '已重新生成并替换页面视觉外壳。'
+          : slotBatchPresentation
+            ? `已批量重新生成并替换 ${slotBatchPresentation.items.length} 个组件素材。`
+            : slotPresentation
+              ? `已重新生成并替换 ${slotPresentation.editScope.slotId} 素材。`
+              : componentPresentation
+                ? ['raster-component', 'hybrid-component'].includes(
+                    componentPresentation.componentDesign.deliveryMode,
+                  )
+                  ? componentPresentation.componentDesign.deliveryMode === 'hybrid-component'
+                    ? `已完成 ${componentPresentation.componentDesign.componentName} 视觉设计，并写入视觉外壳和可编辑文字、按钮、图片节点。`
+                    : `已完成 ${componentPresentation.componentDesign.componentName} 整体组件设计，并作为单张图片写入画布；Runtime 结构已保留为元数据。`
+                  : `已完成 ${componentPresentation.componentDesign.componentName} 可编辑组件设计，生成 ${componentPresentation.artifacts.length} 个必要的 Props 叶子素材和 Props Patch。`
+                : specPatchPresentation
+                  ? `已应用 ${specPatchPresentation.patch.operations.length} 个页面结构修改。`
+                  : patchPresentation
+                    ? `已应用 ${patchPresentation.patch.operations.length} 个局部修改。`
+                    : session.genericUiSchema
+                      ? `已生成包含 ${session.genericUiSchema.blocks.length} 个通用 UI 模块的可编辑设计稿。`
+                      : artifacts.length > 1
+                        ? `已完成计划并生成 ${artifacts.length} 个独立素材。`
+                        : '已完成计划并生成设计图。',
       artifact,
       artifacts: assetArtifacts,
-      visualShellArtifact: componentPresentation?.visualShellArtifact,
       componentDesign: componentPresentation?.componentDesign,
       pageDesign: pagePresentation?.pageDesign,
       pageComponents: pagePresentation?.components,
       pageShellArtifact: pagePresentation?.pageShellArtifact,
-      editScope: pageShellPresentation?.editScope ?? slotPresentation?.editScope ?? (
-        componentPresentation && session.editScope?.type === 'component-instance'
+      genericUiSchema: session.genericUiSchema,
+      designSpec: session.designSpec,
+      editScope:
+        pageShellPresentation?.editScope ??
+        slotPresentation?.editScope ??
+        (componentPresentation && session.editScope?.type === 'component-instance'
           ? session.editScope
-          : undefined
-      ),
+          : undefined),
       blueprint: session.blueprint,
+      generationBrief: session.generationBrief,
+      designPatch: patchPresentation?.patch,
+      designSpecPatch: specPatchPresentation?.patch,
       qualityReview: presentation?.review,
       refined: presentation?.refined ?? false,
+      canvasDelivered: typeof callbacks.onDeliverable === 'function',
       agent: publicSession(session),
     }
   } catch (error) {
     if (payload.signal?.aborted || error?.code === 'AGENT_CANCELLED') {
       const currentStep = session.plan.find((step) => step.status === 'running')
-      if (currentStep) currentStep.status = 'cancelled'
+      if (currentStep) {
+        currentStep.status = 'cancelled'
+        currentStep.completedAt = new Date().toISOString()
+      }
       session.status = 'cancelled'
+      if (session.pendingTask) {
+        session.pendingTask.status = 'failed'
+        session.pendingTask.updatedAt = new Date().toISOString()
+      }
       session.lastError = {
         code: 'AGENT_CANCELLED',
         message: '用户已取消当前任务。',
@@ -424,6 +693,11 @@ async function executePlan(session, payload, callbacks, dependencies) {
         message: error instanceof Error ? error.message : String(error),
       }
       touch(session)
+      await saveAgentSession(session)
+    }
+    if (session.pendingTask) {
+      session.pendingTask.status = 'failed'
+      session.pendingTask.updatedAt = new Date().toISOString()
       await saveAgentSession(session)
     }
     throw error
@@ -444,9 +718,7 @@ async function restoreStepMemory(session, payload) {
     }
     try {
       const expectedInputHash = computeStepInputHash(session, payload, step)
-      const envelope = checkpoint?.checkpointVersion === 2
-        ? checkpoint
-        : { result: checkpoint }
+      const envelope = checkpoint?.checkpointVersion === 2 ? checkpoint : { result: checkpoint }
       if (envelope.inputHash && envelope.inputHash !== expectedInputHash) {
         step.status = 'pending'
         invalidateDownstream = true
@@ -474,35 +746,12 @@ async function restoreStepMemory(session, payload) {
   return memory
 }
 
-function resolveReactStep(session, readySteps, action, iteration) {
-  if (action.tool?.kind === 'planned') {
-    return readySteps.find((step) => (
-      step.id === action.tool.stepId && step.tool === action.tool.name
-    ))
-  }
-  if (action.tool?.kind !== 'inspect') return undefined
-  const step = {
-    id: `${action.tool.stepId}-${Date.now()}-${iteration + 1}`,
-    title: inspectToolTitle(action.tool.name),
-    tool: action.tool.name,
-    status: 'pending',
-    input: action.tool.arguments ?? {},
-    transient: true,
-  }
-  const insertionIndex = session.plan.findIndex((candidate) => (
-    candidate.status === 'pending' || candidate.status === 'failed'
-  ))
-  if (insertionIndex < 0) session.plan.push(step)
-  else session.plan.splice(insertionIndex, 0, step)
-  return step
-}
-
 async function deliverPageComponent(session, step, data, callbacks, iteration) {
   if (typeof callbacks.onDeliverable !== 'function') return undefined
-  const deliveryId = `deliverable-${session.runId}-${step.id}-${Date.now()}`
-  const pageSection = session.pageBlueprint?.sections?.find((section) => (
-    section.id === step.input?.pageSectionId
-  ))
+  const deliveryId = stableDeliveryId(session.runId, step.id)
+  const pageSection = session.pageBlueprint?.sections?.find(
+    (section) => section.id === step.input?.pageSectionId,
+  )
   const observation = await callbacks.onDeliverable({
     id: deliveryId,
     kind: 'page-component',
@@ -517,26 +766,22 @@ async function deliverPageComponent(session, step, data, callbacks, iteration) {
       componentName: data.componentName,
       componentDesign: data.componentDesign,
       artifacts: data.artifacts ?? [],
-      visualShellArtifact: data.visualShellArtifact,
     },
   })
-  const status = ['success', 'failed'].includes(observation?.status)
-    ? observation.status
-    : 'failed'
+  const status = ['success', 'failed'].includes(observation?.status) ? observation.status : 'failed'
   return {
     id: `observation-${Date.now()}-${iteration}-canvas`,
     deliveryId,
     stepId: step.id,
     tool: 'canvas.incremental-present-component',
     status,
-    summary: typeof observation?.summary === 'string'
-      ? observation.summary
-      : status === 'success'
-        ? `${data.componentName} 已增量写入画布。`
-        : `${data.componentName} 增量写入画布失败。`,
-    errorCode: status === 'failed'
-      ? observation?.errorCode || 'CANVAS_DELIVERY_FAILED'
-      : undefined,
+    summary:
+      typeof observation?.summary === 'string'
+        ? observation.summary
+        : status === 'success'
+          ? `${data.componentName} 已增量写入画布。`
+          : `${data.componentName} 增量写入画布失败。`,
+    errorCode: status === 'failed' ? observation?.errorCode || 'CANVAS_DELIVERY_FAILED' : undefined,
     retryable: status === 'failed',
     data: observation?.data,
     createdAt: new Date().toISOString(),
@@ -545,7 +790,7 @@ async function deliverPageComponent(session, step, data, callbacks, iteration) {
 
 async function deliverPageShell(session, step, data, callbacks, iteration) {
   if (typeof callbacks.onDeliverable !== 'function') return undefined
-  const deliveryId = `deliverable-${session.runId}-${step.id}-${Date.now()}`
+  const deliveryId = stableDeliveryId(session.runId, step.id)
   const observation = await callbacks.onDeliverable({
     id: deliveryId,
     kind: 'page-shell',
@@ -565,6 +810,153 @@ async function deliverPageShell(session, step, data, callbacks, iteration) {
     successSummary: '页面视觉外壳已增量写入画布。',
     failureSummary: '页面视觉外壳增量写入画布失败。',
   })
+}
+
+async function deliverPresentation(session, step, data, callbacks, iteration) {
+  if (typeof callbacks.onDeliverable !== 'function') return undefined
+  const id = stableDeliveryId(session.runId, step.id)
+  const base = {
+    id,
+    sessionId: session.id,
+    runId: session.runId,
+    stepId: step.id,
+    target: session.canvasTarget,
+  }
+  let deliverable
+  if (step.tool === 'canvas.present') {
+    deliverable = { ...base, kind: 'image', artifacts: data?.artifact ? [data.artifact] : [] }
+  } else if (step.tool === 'canvas.present-assets') {
+    deliverable = { ...base, kind: 'asset-set', artifacts: data?.artifacts ?? [] }
+  } else if (
+    step.tool === 'canvas.present-component' ||
+    (step.tool === 'canvas.commit' && data?.deliveryKind === 'component')
+  ) {
+    deliverable = {
+      ...base,
+      kind: 'component',
+      componentDesign: data?.componentDesign,
+      artifacts: data?.artifacts ?? [],
+      editScope: session.editScope,
+    }
+  } else if (step.tool === 'canvas.present-slot') {
+    deliverable = {
+      ...base,
+      kind: 'component-slot',
+      artifact: data?.artifact,
+      editScope: data?.editScope,
+    }
+  } else if (step.tool === 'canvas.present-slots') {
+    deliverable = {
+      ...base,
+      kind: 'component-slot-batch',
+      items: data?.items ?? [],
+      editScope: data?.editScope,
+    }
+  } else if (step.tool === 'canvas.present-page-shell') {
+    deliverable = {
+      ...base,
+      kind: 'page-shell-edit',
+      artifact: data?.artifact,
+      editScope: data?.editScope,
+    }
+  } else if (
+    step.tool === 'canvas.present-page' ||
+    (step.tool === 'canvas.commit' && data?.deliveryKind === 'page')
+  ) {
+    deliverable = {
+      ...base,
+      kind: 'page-finalize',
+      blueprint: data?.pageDesign?.blueprint,
+      expectedComponentCount: data?.components?.length ?? 0,
+      expectedPageSectionIds:
+        data?.successfulPageSectionIds ??
+        data?.components?.map((component) => component.pageSectionId).filter(Boolean) ??
+        [],
+    }
+  } else if (step.tool === 'canvas.present-ui-section') {
+    deliverable = {
+      ...base,
+      kind: 'generic-ui-section',
+      uiSchema: data?.uiSchema,
+      section: data?.section,
+      deliveredBlockIds: data?.deliveredBlockIds ?? [],
+    }
+  } else if (step.tool === 'canvas.present-ui') {
+    deliverable = data?.sceneGraph
+      ? {
+          ...base,
+          kind: 'generic-ui-runtime',
+          sceneGraph: data.sceneGraph,
+          runtimeDraft: summarizeRuntimeDraft(data.runtimeDraft),
+          expectedNodeCount: data.expectedNodeCount ?? data.sceneGraph.nodes?.length ?? 0,
+        }
+      : {
+          ...base,
+          kind: 'generic-ui-finalize',
+          uiSchema: data?.uiSchema,
+          expectedBlockIds: data?.expectedBlockIds ?? [],
+          failedSectionIndexes: data?.failedSectionIndexes ?? [],
+        }
+  } else if (step.tool === 'canvas.commit' && data?.deliveryKind === 'generic-ui') {
+    deliverable = data?.sceneGraph
+      ? {
+          ...base,
+          kind: 'generic-ui-runtime',
+          sceneGraph: data.sceneGraph,
+          runtimeDraft: summarizeRuntimeDraft(data.runtimeDraft),
+          expectedNodeCount: data.expectedNodeCount ?? data.sceneGraph.nodes?.length ?? 0,
+        }
+      : {
+          ...base,
+          kind: 'generic-ui-finalize',
+          uiSchema: data?.uiSchema,
+          expectedBlockIds: data?.expectedBlockIds ?? [],
+          failedSectionIndexes: data?.failedSectionIndexes ?? [],
+        }
+  } else if (step.tool === 'canvas.present-patch') {
+    deliverable = {
+      ...base,
+      kind: 'design-patch',
+      patch: data?.patch,
+      imageArtifacts: data?.imageArtifacts ?? {},
+    }
+  } else if (step.tool === 'canvas.present-spec-patch') {
+    deliverable = {
+      ...base,
+      kind: 'design-spec-patch',
+      patch: data?.patch,
+      baseDesignSpec: data?.baseDesignSpec,
+      nextDesignSpec: data?.nextDesignSpec,
+    }
+  } else {
+    return undefined
+  }
+  const observation = await callbacks.onDeliverable(deliverable)
+  return normalizeCanvasObservation({
+    observation,
+    deliveryId: id,
+    step,
+    iteration,
+    tool: step.tool,
+    successSummary: '设计结果已写入目标画板。',
+    failureSummary: '设计结果写入目标画板失败。',
+  })
+}
+
+function summarizeRuntimeDraft(draft) {
+  if (!draft || typeof draft !== 'object') return undefined
+  return {
+    version: 1,
+    title: String(draft.title || 'Runtime UI'),
+    viewport: {
+      width: Number(draft.viewport?.width) || 1440,
+      height: Number(draft.viewport?.height) || 960,
+    },
+  }
+}
+
+function stableDeliveryId(runId, stepId) {
+  return `deliverable-${hashValue({ runId, stepId }).slice(0, 24)}`
 }
 
 function mergeCanvasSnapshot(session, observation) {
@@ -587,32 +979,43 @@ function mergeCanvasSnapshot(session, observation) {
           designRole: 'page-shell',
         }
       : undefined
-  const incomingElements = Array.isArray(data.elements) && data.elements.length
-    ? data.elements.slice(0, 80)
-    : writtenElement ? [writtenElement] : []
+  const incomingElements =
+    Array.isArray(data.elements) && data.elements.length
+      ? data.elements.slice(0, 80)
+      : writtenElement
+        ? [writtenElement]
+        : []
   const incomingIds = new Set(incomingElements.map((element) => element.id))
+  const retainedElements = data.replacedArtboard ? [] : previousElements
   const elements = incomingElements.length
     ? [
-        ...previousElements.filter((element) => (
-          !incomingIds.has(element.id) &&
-          !(data.pageSectionId && element.pageSectionId === data.pageSectionId) &&
-          !(data.shellElementId && element.designRole === 'page-shell')
-        )),
+        ...retainedElements.filter(
+          (element) =>
+            !incomingIds.has(element.id) &&
+            !(data.pageSectionId && element.pageSectionId === data.pageSectionId) &&
+            !(data.shellElementId && element.designRole === 'page-shell'),
+        ),
         ...incomingElements,
       ].slice(-80)
     : previousElements
   session.canvasSnapshot = {
     ...(session.canvasSnapshot ?? {}),
     artboardId: data.artboardId ?? session.canvasTarget?.artboardId,
-    width: session.canvasTarget?.width,
-    height: session.canvasTarget?.height,
+    width: data.artboardWidth ?? session.canvasTarget?.width,
+    height: data.artboardHeight ?? session.canvasTarget?.height,
     elementCount: data.elementCount ?? session.canvasSnapshot?.elementCount,
-    componentCount: data.componentCount ?? (
-      observation.tool === 'canvas.incremental-present-component'
+    documentRevision: Number.isInteger(data.documentRevision)
+      ? data.documentRevision
+      : session.canvasSnapshot?.documentRevision,
+    componentCount:
+      data.componentCount ??
+      (observation.tool === 'canvas.incremental-present-component'
         ? (session.canvasSnapshot?.componentCount ?? 0) + 1
-        : session.canvasSnapshot?.componentCount
-    ),
+        : session.canvasSnapshot?.componentCount),
     hasPageShell: data.hasPageShell ?? session.canvasSnapshot?.hasPageShell ?? false,
+    designSpec: data.replacedArtboard
+      ? undefined
+      : (data.designSpec ?? session.canvasSnapshot?.designSpec),
     elements,
     truncated: session.canvasSnapshot?.truncated === true,
     lastWrite: {
@@ -622,6 +1025,7 @@ function mergeCanvasSnapshot(session, observation) {
       shellElementId: data.shellElementId,
       instanceId: data.instanceId,
       pageSectionId: data.pageSectionId,
+      affectedBlockIds: data.affectedBlockIds,
     },
   }
 }
@@ -635,33 +1039,24 @@ function normalizeCanvasObservation({
   successSummary,
   failureSummary,
 }) {
-  const status = ['success', 'failed'].includes(observation?.status)
-    ? observation.status
-    : 'failed'
+  const status = ['success', 'failed'].includes(observation?.status) ? observation.status : 'failed'
   return {
     id: `observation-${Date.now()}-${iteration}-canvas`,
     deliveryId,
     stepId: step.id,
     tool,
     status,
-    summary: typeof observation?.summary === 'string'
-      ? observation.summary
-      : status === 'success'
-        ? successSummary
-        : failureSummary,
-    errorCode: status === 'failed'
-      ? observation?.errorCode || 'CANVAS_DELIVERY_FAILED'
-      : undefined,
+    summary:
+      typeof observation?.summary === 'string'
+        ? observation.summary
+        : status === 'success'
+          ? successSummary
+          : failureSummary,
+    errorCode: status === 'failed' ? observation?.errorCode || 'CANVAS_DELIVERY_FAILED' : undefined,
     retryable: status === 'failed',
     data: observation?.data,
     createdAt: new Date().toISOString(),
   }
-}
-
-function inspectToolTitle(toolName) {
-  if (toolName === 'canvas.inspect') return '检查目标画板'
-  if (toolName === 'artifact.inspect') return '检查任务制品'
-  return '检查 Agent 状态'
 }
 
 function summarizeObservationData(data) {
@@ -674,6 +1069,31 @@ function summarizeObservationData(data) {
     failed: data.failed === true,
     targetArtboardId: data.canvasTarget?.artboardId,
   }
+}
+
+function recordDesignEvaluation(session, step, data, callbacks) {
+  const report = data?.qualityReview ?? data?.componentDesign?.qualityReview
+  if (report?.evalVersion !== 1 || !report.dimensions) return
+  const evaluation = {
+    id: `design-eval-${Date.now()}-${step.id}`,
+    stepId: step.id,
+    scope:
+      session.taskKind === 'page-design' || step.tool.startsWith('page.') ? 'page' : 'component',
+    passed: report.passed,
+    overall: report.overall,
+    dimensions: report.dimensions,
+    issueCodes: (report.issues ?? []).map((issue) => issue.code).slice(0, 20),
+    repairTargets: (report.repairPlan ?? [])
+      .map((item) => ({
+        kind: item.kind,
+        targetId: item.targetId,
+        automatic: item.automatic,
+      }))
+      .slice(0, 10),
+    createdAt: new Date().toISOString(),
+  }
+  session.designEvaluations = [...(session.designEvaluations ?? []).slice(-19), evaluation]
+  emit(callbacks, { type: 'design.eval.completed', sessionId: session.id, evaluation })
 }
 
 function applyToolDecision(session, currentStep, decision) {
@@ -720,6 +1140,7 @@ function computeStepInputHash(session, payload, step) {
     taskKind: session.taskKind,
     canvasTarget: session.canvasTarget,
     editScope: session.editScope,
+    stylePack: session.activeStylePack,
     references: (session.references ?? []).map((reference) => ({
       id: reference.id,
       role: reference.role,
@@ -732,6 +1153,17 @@ function computeStepInputHash(session, payload, step) {
   })
 }
 
+function appendStylePackContract(question, stylePack) {
+  if (!stylePack) return question
+  return [
+    question,
+    '当前任务选择了以下 Style Pack。没有 KV/视觉参考时必须执行；存在本轮 KV/视觉参考时，KV 的品牌、主色和图形语言优先，Style Pack 只补充未指定的排版、间距和表面规则。',
+    JSON.stringify(stylePack),
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+}
+
 function hashValue(value) {
   return crypto.createHash('sha256').update(stableStringify(value)).digest('hex')
 }
@@ -739,30 +1171,35 @@ function hashValue(value) {
 function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
   if (!value || typeof value !== 'object') return JSON.stringify(value)
-  return `{${Object.keys(value).sort().map((key) => (
-    `${JSON.stringify(key)}:${stableStringify(value[key])}`
-  )).join(',')}}`
+  return `{${Object.keys(value)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+    .join(',')}}`
 }
 
 function insertDynamicSteps(session, afterStepId, nextSteps) {
-  if (!Array.isArray(nextSteps) || !nextSteps.length) return
+  if (!Array.isArray(nextSteps) || !nextSteps.length) return 0
   const existingIds = new Set(session.plan.map((step) => step.id))
-  const additions = nextSteps.filter((step) => (
-    step &&
-    typeof step.id === 'string' &&
-    typeof step.title === 'string' &&
-    typeof step.tool === 'string' &&
-    !existingIds.has(step.id)
-  )).map((step) => ({
-    id: step.id,
-    title: step.title,
-    tool: step.tool,
-    status: 'pending',
-    input: step.input,
-  }))
-  if (!additions.length) return
+  const additions = nextSteps
+    .filter(
+      (step) =>
+        step &&
+        typeof step.id === 'string' &&
+        typeof step.title === 'string' &&
+        typeof step.tool === 'string' &&
+        !existingIds.has(step.id),
+    )
+    .map((step) => ({
+      id: step.id,
+      title: step.title,
+      tool: step.tool,
+      status: 'pending',
+      input: step.input,
+    }))
+  if (!additions.length) return 0
   const index = session.plan.findIndex((step) => step.id === afterStepId)
   session.plan.splice(index + 1, 0, ...additions)
+  return additions.length
 }
 
 async function externalizeArtifacts(value, session) {
@@ -780,13 +1217,16 @@ async function externalizeArtifacts(value, session) {
       mime: value.mime,
       width: value.width,
       height: value.height,
+      analysis: value.analysis,
     })
     return { __artifactRef: metadata.id }
   }
-  const entries = await Promise.all(Object.entries(value).map(async ([key, item]) => [
-    key,
-    await externalizeArtifacts(item, session),
-  ]))
+  const entries = await Promise.all(
+    Object.entries(value).map(async ([key, item]) => [
+      key,
+      await externalizeArtifacts(item, session),
+    ]),
+  )
   return Object.fromEntries(entries)
 }
 
@@ -803,20 +1243,28 @@ async function hydrateArtifacts(value) {
       ...(artifact.mime ? { mime: artifact.mime } : {}),
       ...(Number.isFinite(artifact.width) ? { width: artifact.width } : {}),
       ...(Number.isFinite(artifact.height) ? { height: artifact.height } : {}),
+      ...(artifact.analysis ? { analysis: artifact.analysis } : {}),
     }
   }
-  const entries = await Promise.all(Object.entries(value).map(async ([key, item]) => [
-    key,
-    await hydrateArtifacts(item),
-  ]))
+  const entries = await Promise.all(
+    Object.entries(value).map(async ([key, item]) => [key, await hydrateArtifacts(item)]),
+  )
   return Object.fromEntries(entries)
 }
 
-async function executeToolWithRetry(registry, step, context, callbacks, sessionId, maxAttempts = MAX_TOOL_ATTEMPTS) {
+async function executeToolWithRetry(
+  registry,
+  step,
+  context,
+  callbacks,
+  sessionId,
+  maxAttempts = MAX_TOOL_ATTEMPTS,
+) {
   let lastError
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     let cancelAttempt
     try {
+      consumeTurnBudget(context.payload, 'tool')
       if (context.payload.signal?.aborted) {
         throw createRuntimeError('AGENT_CANCELLED', '用户已取消当前任务。')
       }
@@ -836,6 +1284,7 @@ async function executeToolWithRetry(registry, step, context, callbacks, sessionI
     } catch (error) {
       lastError = error
       if (context.payload.signal?.aborted || error?.code === 'AGENT_CANCELLED') break
+      if (error?.details?.retryable === false) break
       if (attempt >= maxAttempts) break
       emit(callbacks, {
         type: 'step.retrying',
@@ -858,6 +1307,20 @@ function getToolTimeout(toolName) {
   return Number.isFinite(configured) && configured > 0 ? configured : defaultTimeout
 }
 
+function getToolAttempts(toolName) {
+  // Source Adapter stages are composite transactions. Retrying the whole stage
+  // repeats internal tools and already completed provider requests.
+  return [
+    'source.inspect',
+    'source.to-scene',
+    'source.confirm',
+    'design.transform',
+    'canvas.commit',
+  ].includes(toolName)
+    ? 1
+    : MAX_TOOL_ATTEMPTS
+}
+
 function withTimeout(promise, timeoutMs, message, controller) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -876,18 +1339,6 @@ function withTimeout(promise, timeoutMs, message, controller) {
       },
     )
   })
-}
-
-function buildChatQuestion(payload) {
-  const history = (payload.history ?? [])
-    .slice(-12)
-    .map((message) => `${message.role === 'user' ? '用户' : '助手'}：${message.text}`)
-    .join('\n')
-  return [
-    '你是 AI Campaign Page Studio 的助手。请直接进行正常对话，不要返回 JSON 或虚构已经执行了工具。',
-    history ? `最近对话：\n${history}` : '',
-    `用户：${payload.question}`,
-  ].filter(Boolean).join('\n\n')
 }
 
 async function saveAndEmitSession(session, callbacks) {
@@ -922,13 +1373,17 @@ function publicSession(session) {
     })),
     artifacts: session.artifacts,
     skills: session.skills ?? [],
+    activeStylePack: session.activeStylePack,
     canvasTarget: session.canvasTarget,
+    canvasTransaction: session.canvasTransaction,
     editScope: session.editScope,
     componentContext: session.componentContext,
     blueprint: session.blueprint,
-    lastConversationDecision: session.lastConversationDecision,
-    lastNextAction: session.lastNextAction,
-    reactState: session.reactState,
+    generationBrief: session.generationBrief,
+    designSpec: session.designSpec,
+    lastWorkflowTrigger: session.lastWorkflowTrigger,
+    workflowState: session.workflowState,
+    designEvaluations: (session.designEvaluations ?? []).slice(-20),
     observations: session.observations.slice(-20).map((observation) => ({
       id: observation.id,
       stepId: observation.stepId,
@@ -964,31 +1419,105 @@ function sanitizeCanvasSnapshot(value) {
     elementCount: Number.isFinite(value.elementCount) ? value.elementCount : 0,
     componentCount: Number.isFinite(value.componentCount) ? value.componentCount : 0,
     hasPageShell: value.hasPageShell === true,
+    documentRevision: Number.isInteger(value.documentRevision) ? value.documentRevision : 0,
     selectedElementIds: Array.isArray(value.selectedElementIds)
       ? value.selectedElementIds.filter((id) => typeof id === 'string').slice(0, 50)
       : [],
     elements: Array.isArray(value.elements)
       ? value.elements.filter((element) => element && typeof element.id === 'string').slice(0, 80)
       : [],
+    designSpec:
+      value.designSpec && typeof value.designSpec === 'object' ? value.designSpec : undefined,
     truncated: value.truncated === true,
   }
 }
 
 function isDesignEditScope(value) {
-  if (!value || typeof value.elementId !== 'string' || !value.elementId.trim()) return false
+  if (
+    !value ||
+    typeof value.scopeId !== 'string' ||
+    !value.scopeId.trim() ||
+    typeof value.artboardId !== 'string' ||
+    !value.artboardId.trim() ||
+    !Number.isInteger(value.documentRevision) ||
+    typeof value.targetHash !== 'string' ||
+    !value.targetHash.trim() ||
+    !Array.isArray(value.targetElementIds) ||
+    !value.targetElementIds.length
+  )
+    return false
+  if (value.type === 'multi-node') {
+    return Boolean(
+      Array.isArray(value.elementIds) &&
+      value.elementIds.length > 1 &&
+      value.elementIds.every((id) => typeof id === 'string' && id.trim()),
+    )
+  }
+  if (value.type === 'component-region-batch') {
+    return Boolean(
+      Array.isArray(value.elementIds) &&
+      value.elementIds.length > 0 &&
+      Array.isArray(value.targets) &&
+      value.targets.length === value.elementIds.length &&
+      value.targets.every(
+        (target) =>
+          target?.type === 'component-region' &&
+          typeof target.elementId === 'string' &&
+          typeof target.slotId === 'string' &&
+          target.slotId.trim() &&
+          typeof target.propPath === 'string' &&
+          target.propPath.trim(),
+      ),
+    )
+  }
+  if (typeof value.elementId !== 'string' || !value.elementId.trim()) return false
   if (value.type === 'page-shell') {
-    return Boolean(typeof value.artboardId === 'string' && value.artboardId.trim())
+    return true
+  }
+  if (value.type === 'generic-node') {
+    return true
+  }
+  if (value.type === 'text-range') {
+    return Boolean(
+      value.elementType === 'text' &&
+      Number.isInteger(value.start) &&
+      Number.isInteger(value.end) &&
+      value.start >= 0 &&
+      value.end > value.start &&
+      typeof value.selectedText === 'string' &&
+      value.selectedText.length === value.end - value.start,
+    )
+  }
+  if (value.type === 'image-region') {
+    return Boolean(
+      value.elementType === 'image' &&
+      value.normalizedRect &&
+      [
+        value.normalizedRect.x,
+        value.normalizedRect.y,
+        value.normalizedRect.width,
+        value.normalizedRect.height,
+      ].every(Number.isFinite) &&
+      typeof value.currentImage === 'string' &&
+      value.currentImage.startsWith('data:image/') &&
+      typeof value.maskImage === 'string' &&
+      value.maskImage.startsWith('data:image/png'),
+    )
   }
   if (value.type === 'component-instance') {
     return Boolean(
-      typeof value.instanceId === 'string' && value.instanceId.trim() &&
-      typeof value.componentName === 'string' && value.componentName.trim(),
+      typeof value.instanceId === 'string' &&
+      value.instanceId.trim() &&
+      typeof value.componentName === 'string' &&
+      value.componentName.trim(),
     )
   }
   return Boolean(
     value.type === 'component-region' &&
-    typeof value.slotId === 'string' && value.slotId.trim() &&
-    typeof value.propPath === 'string' && value.propPath.trim(),
+    typeof value.slotId === 'string' &&
+    value.slotId.trim() &&
+    typeof value.propPath === 'string' &&
+    value.propPath.trim(),
   )
 }
 
@@ -999,8 +1528,12 @@ function publicStep(step) {
     tool: step.tool,
     status: step.status,
     error: step.error,
+    startedAt: step.startedAt,
+    completedAt: step.completedAt,
     inputHash: step.inputHash,
     outputHash: step.outputHash,
+    partialFailure: step.partialFailure === true,
+    partialSummary: step.partialSummary,
   }
 }
 

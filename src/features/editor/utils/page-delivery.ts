@@ -2,6 +2,7 @@ import type { DeliveryStatus, DesignDocument, DesignQualityReview } from '../typ
 import { buildComponentExportPackage } from './component-export'
 import { createZip, type ZipEntry } from './zip'
 import { sha256Bytes } from './sha256'
+import { resolveTextLineHeightPixels } from './design-properties'
 
 export interface PageDeliveryOptions {
   previews?: { oneX: Uint8Array; twoX: Uint8Array }
@@ -14,8 +15,9 @@ export function buildPageDeliveryPackage(
 ) {
   const artboard = document.artboards.find((item) => item.id === artboardId)
   if (!artboard) throw new Error(`画板不存在：${artboardId}`)
-  const instances = Object.values(document.componentInstances ?? {})
-    .filter((instance) => instance.artboardId === artboardId)
+  const instances = Object.values(document.componentInstances ?? {}).filter(
+    (instance) => instance.artboardId === artboardId,
+  )
   const elements = document.elements.filter((element) => element.artboardId === artboardId)
   const entries: ZipEntry[] = []
   const exportedDocument = structuredClone({
@@ -37,7 +39,9 @@ export function buildPageDeliveryPackage(
     const data = decodeDataUri(element.src)
     const checksum = `sha256:${sha256Bytes(data)}`
     const existingFile = assetFilesByChecksum.get(checksum)
-    const file = existingFile ?? `page-assets/${safeName(element.name || element.id)}-${checksum.slice(-8)}.${dataUriExtension(element.src)}`
+    const file =
+      existingFile ??
+      `page-assets/${safeName(element.name || element.id)}-${checksum.slice(-8)}.${dataUriExtension(element.src)}`
     if (!existingFile) {
       entries.push({ name: file, data })
       assetFilesByChecksum.set(checksum, file)
@@ -88,10 +92,12 @@ export function buildPageDeliveryPackage(
       file: `components/${safeName(instance.id)}/component.zip`,
     })),
     assets: assetManifest,
-    previews: options.previews ? {
-      oneX: 'previews/page@1x.png',
-      twoX: 'previews/page@2x.png',
-    } : undefined,
+    previews: options.previews
+      ? {
+          oneX: 'previews/page@1x.png',
+          twoX: 'previews/page@2x.png',
+        }
+      : undefined,
     resources: collectResourceDependencies(elements),
     deliveryStatus,
     designDeliverable: deliveryStatus === 'design-ready' || deliveryStatus === 'runtime-verified',
@@ -112,39 +118,65 @@ export function buildPageDeliveryPackage(
   return createZip(entries)
 }
 
-export function reviewPageDelivery(document: DesignDocument, artboardId: string): DesignQualityReview {
+export function reviewPageDelivery(
+  document: DesignDocument,
+  artboardId: string,
+): DesignQualityReview {
   const artboard = document.artboards.find((item) => item.id === artboardId)
   if (!artboard) throw new Error(`画板不存在：${artboardId}`)
   const elements = document.elements.filter((element) => element.artboardId === artboardId)
-  const roots = elements.filter((element) => (
-    !element.parentId && element.visible !== false && element.designRole !== 'page-shell'
-  ))
-  const instances = Object.values(document.componentInstances ?? {})
-    .filter((instance) => instance.artboardId === artboardId)
+  const roots = elements.filter(
+    (element) =>
+      !element.parentId && element.visible !== false && element.designRole !== 'page-shell',
+  )
+  const instances = Object.values(document.componentInstances ?? {}).filter(
+    (instance) => instance.artboardId === artboardId,
+  )
   const issues: DesignQualityReview['issues'] = []
-  const inBounds = roots.filter((element) => (
-    element.x >= artboard.x && element.y >= artboard.y &&
-    element.x + element.width <= artboard.x + artboard.width + 1 &&
-    element.y + element.height <= artboard.y + artboard.height + 1
-  )).length
+  const inBounds = roots.filter(
+    (element) =>
+      element.x >= artboard.x &&
+      element.y >= artboard.y &&
+      element.x + element.width <= artboard.x + artboard.width + 1 &&
+      element.y + element.height <= artboard.y + artboard.height + 1,
+  ).length
   const structure = roots.length ? inBounds / roots.length : 0
   const overlaps = countRootOverlaps(roots)
-  const overflowingText = elements.filter((element) => element.type === 'text' && textLikelyOverflows(element))
+  const overflowingText = elements.filter(
+    (element) => element.type === 'text' && textLikelyOverflows(element),
+  )
   const readabilityPenalty = overlaps + overflowingText.length
   const readability = readabilityPenalty
-    ? Math.max(0, 1 - readabilityPenalty / Math.max(1, roots.length + elements.filter((element) => element.type === 'text').length))
+    ? Math.max(
+        0,
+        1 -
+          readabilityPenalty /
+            Math.max(
+              1,
+              roots.length + elements.filter((element) => element.type === 'text').length,
+            ),
+      )
     : 1
   const componentReviews = instances.map((instance) => instance.design.qualityReview)
   const theme = average(componentReviews.map((review) => review?.scores.theme ?? 0.75))
   const completeness = instances.length
-    ? instances.filter((instance) => instance.design.assetTasks.every((task) => (
-        elements.some((element) => element.componentBinding?.slotId === task.slotId)
-      ))).length / instances.length
-    : elements.length ? 1 : 0
-  const runtimeStatuses = instances.map((instance) => instance.design.runtimeValidation?.status ?? 'unsupported')
-  const developmentReadiness = average(runtimeStatuses.map((status) => (
-    status === 'passed' ? 1 : status === 'unsupported' ? 0.5 : 0
-  ))) || (elements.length ? 0.5 : 0)
+    ? instances.filter((instance) =>
+        instance.design.assetTasks.every((task) =>
+          elements.some((element) => element.componentBinding?.slotId === task.slotId),
+        ),
+      ).length / instances.length
+    : elements.length
+      ? 1
+      : 0
+  const runtimeStatuses = instances.map(
+    (instance) => instance.design.runtimeValidation?.status ?? 'unsupported',
+  )
+  const developmentReadiness =
+    average(
+      runtimeStatuses.map((status) =>
+        status === 'passed' ? 1 : status === 'unsupported' ? 0.5 : 0,
+      ),
+    ) || (elements.length ? 0.5 : 0)
   addIssue(issues, structure, 0.9, 'PAGE_STRUCTURE_INVALID', '页面存在越界根图层。')
   addIssue(issues, theme, 0.75, 'PAGE_THEME_INCONSISTENT', '组件主题一致性不足。')
   addIssue(issues, readability, 0.85, 'PAGE_ROOT_OVERLAP', '页面根模块存在非预期重叠。')
@@ -178,29 +210,93 @@ export function reviewPageDelivery(document: DesignDocument, artboardId: string)
   }
   const passed = !issues.some((issue) => issue.severity === 'error')
   const deliveryStatus = resolveDeliveryStatus({ passed }, runtimeStatuses)
+  const editableCoverage =
+    average(
+      componentReviews.map(
+        (review) =>
+          review?.dimensions?.editableCoverage ??
+          review?.scores.editableCoverage ??
+          review?.scores.developmentReadiness ??
+          0,
+      ),
+    ) || (elements.length ? 0.5 : 0)
+  const dimensions = {
+    themeAlignment: round(theme),
+    layoutCompleteness: round(average([structure, completeness])),
+    componentIntegrity: round(
+      average([
+        completeness,
+        average(componentReviews.map((review) => (review?.passed === false ? 0 : 1))),
+      ]),
+    ),
+    editableCoverage: round(editableCoverage),
+    readability: round(readability),
+  }
+  const overall = round(
+    dimensions.themeAlignment * 0.25 +
+      dimensions.layoutCompleteness * 0.25 +
+      dimensions.componentIntegrity * 0.2 +
+      dimensions.editableCoverage * 0.2 +
+      dimensions.readability * 0.1,
+  )
   return {
+    evalVersion: 1,
     passed,
     deliveryStatus,
+    overall,
+    dimensions,
+    thresholds: {
+      themeAlignment: 0.75,
+      layoutCompleteness: 0.9,
+      componentIntegrity: 0.9,
+      editableCoverage: 0.8,
+      readability: 0.85,
+    },
     scores: {
       structure: round(structure),
       theme: round(theme),
       readability: round(readability),
       completeness: round(completeness),
       developmentReadiness: round(developmentReadiness),
+      editableCoverage: round(editableCoverage),
     },
     issues,
+    repairPlan: createDeliveryRepairPlan(issues),
     repairCount: componentReviews.reduce((total, review) => total + (review?.repairCount ?? 0), 0),
   }
 }
 
-function textLikelyOverflows(element: Extract<DesignDocument['elements'][number], { type: 'text' }>) {
+function createDeliveryRepairPlan(
+  issues: DesignQualityReview['issues'],
+): NonNullable<DesignQualityReview['repairPlan']> {
+  return issues.map((issue) => ({
+    kind:
+      issue.scope === 'runtime'
+        ? 'runtime'
+        : issue.targetId
+          ? 'page-component'
+          : issue.code.includes('THEME')
+            ? 'page-shell'
+            : 'page-layout',
+    targetId: issue.targetId,
+    issueCodes: [issue.code],
+    reason: issue.message,
+    action: issue.repairAction,
+    automatic: issue.scope !== 'runtime',
+  }))
+}
+
+function textLikelyOverflows(
+  element: Extract<DesignDocument['elements'][number], { type: 'text' }>,
+) {
   const fontSize = Math.max(1, element.style.fontSize || 16)
-  const lineHeight = fontSize * (element.style.lineHeight || 1.4)
+  const lineHeight = resolveTextLineHeightPixels(fontSize, element.style.lineHeight)
   const charactersPerLine = Math.max(1, Math.floor(element.width / (fontSize * 0.58)))
   const explicitLines = element.content.split(/\r?\n/)
-  const estimatedLines = explicitLines.reduce((total, line) => (
-    total + Math.max(1, Math.ceil(Array.from(line).length / charactersPerLine))
-  ), 0)
+  const estimatedLines = explicitLines.reduce(
+    (total, line) => total + Math.max(1, Math.ceil(Array.from(line).length / charactersPerLine)),
+    0,
+  )
   return estimatedLines * lineHeight > element.height + 1
 }
 
@@ -222,9 +318,12 @@ function countRootOverlaps(elements: DesignDocument['elements']) {
       const left = elements[leftIndex]
       const right = elements[rightIndex]
       if (
-        left.x < right.x + right.width && left.x + left.width > right.x &&
-        left.y < right.y + right.height && left.y + left.height > right.y
-      ) count += 1
+        left.x < right.x + right.width &&
+        left.x + left.width > right.x &&
+        left.y < right.y + right.height &&
+        left.y + left.height > right.y
+      )
+        count += 1
     }
   }
   return count
@@ -238,7 +337,13 @@ function addIssue(
   message: string,
 ) {
   if (score >= threshold) return
-  issues.push({ code, severity: 'error', scope: 'page', message, repairAction: '修正页面结构后重新审查。' })
+  issues.push({
+    code,
+    severity: 'error',
+    scope: 'page',
+    message,
+    repairAction: '修正页面结构后重新审查。',
+  })
 }
 
 function unsupportedRuntime(componentName: string) {
@@ -261,12 +366,20 @@ function round(value: number) {
 
 function collectResourceDependencies(elements: DesignDocument['elements']) {
   return {
-    remoteImages: Array.from(new Set(elements.flatMap((element) => (
-      element.type === 'image' && /^https?:\/\//i.test(element.src) ? [element.src] : []
-    )))),
-    fonts: Array.from(new Set(elements.flatMap((element) => (
-      element.type === 'text' && element.style.fontFamily ? [element.style.fontFamily] : []
-    )))),
+    remoteImages: Array.from(
+      new Set(
+        elements.flatMap((element) =>
+          element.type === 'image' && /^https?:\/\//i.test(element.src) ? [element.src] : [],
+        ),
+      ),
+    ),
+    fonts: Array.from(
+      new Set(
+        elements.flatMap((element) =>
+          element.type === 'text' && element.style.fontFamily ? [element.style.fontFamily] : [],
+        ),
+      ),
+    ),
   }
 }
 
@@ -293,7 +406,12 @@ function dataUriExtension(value: string) {
 }
 
 function safeName(value: string) {
-  return value.trim().replace(/[^a-z0-9\u4e00-\u9fa5_-]+/gi, '-').replace(/^-|-$/g, '') || 'asset'
+  return (
+    value
+      .trim()
+      .replace(/[^a-z0-9\u4e00-\u9fa5_-]+/gi, '-')
+      .replace(/^-|-$/g, '') || 'asset'
+  )
 }
 
 function replaceEmbeddedDataUris(value: unknown): unknown {
@@ -302,8 +420,7 @@ function replaceEmbeddedDataUris(value: unknown): unknown {
   }
   if (Array.isArray(value)) return value.map(replaceEmbeddedDataUris)
   if (!value || typeof value !== 'object') return value
-  return Object.fromEntries(Object.entries(value).map(([key, child]) => [
-    key,
-    replaceEmbeddedDataUris(child),
-  ]))
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [key, replaceEmbeddedDataUris(child)]),
+  )
 }

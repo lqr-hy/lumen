@@ -30,6 +30,10 @@
   box-shadow: none;
 }
 
+.studio-home .prompt-action-slot {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .prompt-main {
   display: grid;
   grid-template-columns: 58px minmax(0, 1fr);
@@ -125,4 +129,3 @@
   align-items: center;
   gap: 6px;
 }
-

@@ -21,11 +21,23 @@ import {
 } from '../constants'
 import type { PlacementMode } from '../utils/placement-intent'
 import type { BlueprintConfirmation } from '../../ai/types'
-import { layoutSectionChildren } from '../utils/auto-layout'
+import type { ChatRun } from '../../ai/agent-run'
+import type { ComposerMention } from '../../ai/composer-draft'
+import { layoutSection } from '../utils/auto-layout'
+import { createComponentInstance, normalizeComponentInstances } from '../utils/component-instances'
 import {
-  createComponentInstance,
-  normalizeComponentInstances,
-} from '../utils/component-instances'
+  DEFAULT_DESIGN_BREAKPOINTS,
+  resolveDesignSpecBreakpoint,
+} from '../utils/generic-ui-compiler'
+import { applyDesignPatchToDocument, type DesignPatchApplyResult } from '../utils/design-patch'
+import type { MutationLedgerEntry } from '../utils/mutation-ledger'
+import { normalizeMutationLedger } from '../utils/mutation-ledger'
+import { compileResponsivePreviews } from '../utils/responsive-preview'
+import { resolveElementLayoutSize, resolveLayoutSizing } from '../utils/design-properties'
+import { compileDesignSpecToSceneCommit } from '../scene/design-spec-adapter'
+import { compileDesignSpecSceneTransaction } from '../scene/design-spec-transaction'
+import { compileComponentDesignToSceneCommit } from '../scene/component-design-adapter'
+import { compileSceneCommit } from '../scene/scene-commit'
 
 export interface QueuedReferenceImage {
   id: string
@@ -40,6 +52,7 @@ export interface QueuedChatText {
   text: string
   elementId?: string
   target: 'bottom' | 'panel'
+  kind?: 'text' | 'component-region-regeneration'
 }
 
 export interface EditorChatImage {
@@ -47,6 +60,7 @@ export interface EditorChatImage {
   name: string
   src: string
   elementId?: string
+  role?: import('../../ai/types').ReferenceImageRole
 }
 
 export interface EditorChatTextReference {
@@ -54,6 +68,26 @@ export interface EditorChatTextReference {
   text: string
   elementId?: string
   insertOffset?: number
+  kind?: 'text' | 'component-region-regeneration'
+}
+
+export interface EditorTextRangeSelection {
+  elementId: string
+  start: number
+  end: number
+  selectedText: string
+  prefix: string
+  suffix: string
+}
+
+export interface EditorImageRegionSelection {
+  elementId: string
+  sourceSrc: string
+  normalizedRect: { x: number; y: number; width: number; height: number }
+  pixelRect: { x: number; y: number; width: number; height: number }
+  targetSize: { width: number; height: number }
+  currentImage: string
+  maskImage: string
 }
 
 export interface EditorChatMessage {
@@ -61,8 +95,11 @@ export interface EditorChatMessage {
   role: 'user' | 'agent'
   text: string
   referenceImages?: EditorChatImage[]
+  mentions?: ComposerMention[]
   pending?: boolean
+  runId?: string
   confirmation?: BlueprintConfirmation
+  selectionScope?: import('../../ai/types').SelectionScope
 }
 
 export interface EditorChatThread {
@@ -74,10 +111,18 @@ export interface EditorChatThread {
   assetArtboardId?: string
   placementMode?: PlacementMode
   lastPlacementMode?: Exclude<PlacementMode, 'auto'>
+  visualOptimizationDraft?: {
+    sourceArtboardId: string
+    sourceArtboardName: string
+    brief: import('../utils/visual-brief').VisualRedesignBrief
+  }
   prompt: string
+  editorState?: string
+  mentions?: ComposerMention[]
   referenceImages: EditorChatImage[]
   textReferences: EditorChatTextReference[]
   messages: EditorChatMessage[]
+  runs?: Record<string, ChatRun>
 }
 
 export interface ChatArtboardTarget {
@@ -85,6 +130,9 @@ export interface ChatArtboardTarget {
   created: boolean
   mode: Exclude<PlacementMode, 'auto'>
   parentArtboardId?: string
+  /** Agent Lease 当前已确认的 DesignDocument 版本。 */
+  documentRevision?: number
+  leaseSnapshot?: import('../../ai/canvas-rebase').CanvasLeaseSnapshot
 }
 
 export interface GeneratedArtboardImage {
@@ -102,19 +150,22 @@ export interface GeneratedPageComponent {
   pageSectionId?: string
   componentDesign: ComponentDesignMeta
   assets: GeneratedArtboardImage[]
-  visualShell?: GeneratedArtboardImage
 }
 
 export interface EditorWorkspaceSnapshot {
   document: DesignDocument
   chatThreads: EditorChatThread[]
   activeChatThreadId: string
+  mutationLedger?: MutationLedgerEntry[]
 }
 
 interface EditorState {
   document: DesignDocument | null
   viewport: ViewportState
   selectedElementIds: string[]
+  selectionScopeArmed: boolean
+  textRangeSelection?: EditorTextRangeSelection
+  imageRegionSelection?: EditorImageRegionSelection
   activeArtboardId?: string
   selectedArtboardId?: string
   tool: EditorTool
@@ -122,10 +173,13 @@ interface EditorState {
   queuedChatTexts: QueuedChatText[]
   chatThreads: EditorChatThread[]
   activeChatThreadId: string
+  mutationLedger: MutationLedgerEntry[]
   history: DesignDocument[]
   future: DesignDocument[]
+  propertyTransaction?: { baseline: DesignDocument }
   setDocument: (document: DesignDocument) => void
   hydrateWorkspace: (snapshot: EditorWorkspaceSnapshot) => void
+  setMutationLedger: (ledger: MutationLedgerEntry[]) => void
   updateDocumentMeta: (patch: { title?: string; settings?: ProjectSettings }) => void
   setViewport: (viewport: ViewportState) => void
   addQueuedReferenceImage: (image: QueuedReferenceImage) => void
@@ -140,7 +194,58 @@ interface EditorState {
   ensureChatThreadArtboard: (
     threadId: string,
     mode?: PlacementMode,
+    preferredArtboardId?: string,
+    reuseEmpty?: boolean,
+    logicalSize?: { width: number; initialHeight: number; autoHeight: boolean },
   ) => ChatArtboardTarget | undefined
+  applyGenericUiDesign: (
+    target: ChatArtboardTarget,
+    schema: import('../types').GenericUiSchema,
+  ) => string | undefined
+  applyGenericUiRuntimeScene: (
+    target: ChatArtboardTarget,
+    sceneGraph: import('../scene/scene-graph').SceneGraph,
+  ) =>
+    | {
+        rootId: string
+        elementCount: number
+        editableNodeCount: number
+        sourceAdapterId: string
+        documentRevision: number
+      }
+    | undefined
+  applyGenericUiBlock: (
+    target: ChatArtboardTarget,
+    schema: import('../types').GenericUiSchema,
+    blockIndex: number,
+    deliveredBlockIds: string[],
+  ) =>
+    | {
+        rootId: string
+        blockRootId: string
+        affectedElementIds: string[]
+        affectedBlockIds: string[]
+        removedBlockIds: string[]
+        documentRevision: number
+      }
+    | undefined
+  applyGenericUiStructure: (
+    target: ChatArtboardTarget,
+    schema: import('../types').DesignSpec,
+    baseRevision: number,
+  ) =>
+    | {
+        rootId: string
+        affectedElementIds: string[]
+        affectedBlockIds: string[]
+        removedBlockIds: string[]
+        documentRevision: number
+      }
+    | undefined
+  applyDesignPatch: (
+    patch: import('../../ai/types').DesignPatch,
+    images: Record<string, import('../../ai/types').GeneratedCanvasImage>,
+  ) => DesignPatchApplyResult
   applyGeneratedImage: (
     target: ChatArtboardTarget,
     image: GeneratedArtboardImage,
@@ -149,7 +254,6 @@ interface EditorState {
     target: ChatArtboardTarget,
     componentDesign: ComponentDesignMeta,
     assets: GeneratedArtboardImage[],
-    visualShell?: GeneratedArtboardImage,
     replaceInstanceId?: string,
     pageSectionId?: string,
   ) => string | undefined
@@ -169,20 +273,48 @@ interface EditorState {
     elementId: string,
     autoLayout: import('../types').SectionElement['autoLayout'],
   ) => void
-  applyComponentSlotImage: (
-    elementId: string,
-    image: GeneratedArtboardImage,
-  ) => boolean
+  applyComponentSlotImage: (elementId: string, image: GeneratedArtboardImage) => boolean
+  applyComponentSlotImages: (
+    items: Array<{
+      scope: import('../../ai/types').ComponentRegionEditScope
+      image: GeneratedArtboardImage
+    }>,
+  ) => { ok: boolean; affectedElementIds: string[] }
   applyPageShellImage: (elementId: string, image: GeneratedArtboardImage) => boolean
   setTool: (tool: EditorTool) => void
   selectElement: (id: string, options?: { append?: boolean }) => void
   setSelectedElements: (ids: string[], options?: { append?: boolean }) => void
+  setTextRangeSelection: (selection?: EditorTextRangeSelection) => void
+  setImageRegionSelection: (selection?: EditorImageRegionSelection) => void
   selectArtboard: (id: string) => void
   clearSelection: () => void
+  clearArtboardSelection: () => void
+  consumeSelectionScope: () => void
   updateElement: (id: string, patch: Partial<DesignElement>) => void
   updateElements: (patches: Array<{ id: string; patch: Partial<DesignElement> }>) => void
+  beginPropertyTransaction: () => void
+  previewElementProperties: (patches: Array<{ id: string; patch: Partial<DesignElement> }>) => void
+  previewSectionAutoLayout: (
+    elementId: string,
+    autoLayout: import('../types').SectionElement['autoLayout'],
+  ) => void
+  commitPropertyTransaction: () => void
+  cancelPropertyTransaction: () => void
   addArtboard: (artboard: Artboard) => void
   updateArtboard: (id: string, patch: Partial<Artboard>) => void
+  setDesignBreakpoint: (id: string, breakpointId: import('../types').DesignBreakpointId) => void
+  upsertDesignBreakpoint: (id: string, breakpoint: import('../types').DesignBreakpoint) => void
+  removeDesignBreakpoint: (id: string, breakpointId: import('../types').DesignBreakpointId) => void
+  captureResponsiveBaseline: (
+    id: string,
+    breakpointId: import('../types').DesignBreakpointId,
+  ) => void
+  clearResponsiveBaseline: (id: string, breakpointId: import('../types').DesignBreakpointId) => void
+  applyResponsiveTokenBatch: (
+    id: string,
+    breakpointIds: import('../types').DesignBreakpointId[],
+    patch: import('../types').ResponsiveTokenBatchPatch,
+  ) => void
   addElement: (element: DesignElement) => void
   removeElements: (ids: string[]) => void
   removeArtboard: (id: string) => void
@@ -198,13 +330,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   document: null,
   viewport: { ...DEFAULT_CANVAS_VIEWPORT },
   selectedElementIds: [],
+  selectionScopeArmed: false,
+  textRangeSelection: undefined,
+  imageRegionSelection: undefined,
   tool: 'select',
   queuedReferenceImages: [],
   queuedChatTexts: [],
   chatThreads: [createDefaultChatThread()],
   activeChatThreadId: 'panel-thread-default',
+  mutationLedger: [],
   history: [],
   future: [],
+  propertyTransaction: undefined,
 
   setDocument: (document) =>
     set((state) => {
@@ -214,12 +351,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         viewport:
           state.document?.id === document.id
             ? state.viewport
-            : normalizedDocument.viewport ?? { ...DEFAULT_CANVAS_VIEWPORT },
+            : (normalizedDocument.viewport ?? { ...DEFAULT_CANVAS_VIEWPORT }),
         selectedElementIds: [],
+        selectionScopeArmed: false,
         activeArtboardId: normalizedDocument.artboards[0]?.id,
         selectedArtboardId: undefined,
         history: [],
         future: [],
+        propertyTransaction: undefined,
       }
     }),
 
@@ -229,6 +368,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       document: normalizedDocument,
       viewport: normalizedDocument.viewport ?? { ...DEFAULT_CANVAS_VIEWPORT },
       selectedElementIds: [],
+      selectionScopeArmed: false,
       activeArtboardId: normalizedDocument.artboards[0]?.id,
       selectedArtboardId: undefined,
       queuedReferenceImages: [],
@@ -236,13 +376,20 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       chatThreads: snapshot.chatThreads.length
         ? normalizePersistedChatThreads(snapshot.chatThreads)
         : [createDefaultChatThread()],
-      activeChatThreadId: snapshot.chatThreads.some((thread) => thread.id === snapshot.activeChatThreadId)
+      activeChatThreadId: snapshot.chatThreads.some(
+        (thread) => thread.id === snapshot.activeChatThreadId,
+      )
         ? snapshot.activeChatThreadId
-        : snapshot.chatThreads[0]?.id ?? 'panel-thread-default',
+        : (snapshot.chatThreads[0]?.id ?? 'panel-thread-default'),
+      mutationLedger: normalizeMutationLedger(snapshot.mutationLedger),
       history: [],
       future: [],
+      propertyTransaction: undefined,
     })
   },
+
+  setMutationLedger: (mutationLedger) =>
+    set({ mutationLedger: normalizeMutationLedger(mutationLedger) }),
 
   updateDocumentMeta: (patch) =>
     set((state) => {
@@ -328,9 +475,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   updateChatThread: (id, updater) =>
     set((state) => ({
-      chatThreads: state.chatThreads.map((thread) =>
-        thread.id === id ? updater(thread) : thread,
-      ),
+      chatThreads: state.chatThreads.map((thread) => (thread.id === id ? updater(thread) : thread)),
     })),
 
   deleteChatThread: (id) =>
@@ -347,7 +492,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         chatThreads: nextThreads,
         activeChatThreadId:
           state.activeChatThreadId === id
-            ? nextThreads[0]?.id ?? 'panel-thread-default'
+            ? (nextThreads[0]?.id ?? 'panel-thread-default')
             : state.activeChatThreadId,
       }
     }),
@@ -355,47 +500,59 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   appendChatMessage: (threadId, message) =>
     set((state) => ({
       chatThreads: state.chatThreads.map((thread) =>
-        thread.id === threadId
-          ? { ...thread, messages: [...thread.messages, message] }
-          : thread,
+        thread.id === threadId ? { ...thread, messages: [...thread.messages, message] } : thread,
       ),
     })),
 
-  ensureChatThreadArtboard: (threadId, requestedMode = 'auto') => {
+  ensureChatThreadArtboard: (
+    threadId,
+    requestedMode = 'auto',
+    preferredArtboardId,
+    reuseEmpty = true,
+    logicalSize,
+  ) => {
     let target: ChatArtboardTarget | undefined
     set((state) => {
       if (!state.document) return state
       const thread = state.chatThreads.find((item) => item.id === threadId)
       if (!thread) return state
 
-      const mode = requestedMode === 'auto' ? 'append-section' : requestedMode
+      const mode = requestedMode === 'auto' ? 'new-artboard' : requestedMode
 
       const selectedElement = state.document.elements.find((element) =>
         state.selectedElementIds.includes(element.id),
       )
-      const candidates = [
-        selectedElement?.artboardId,
-        state.selectedArtboardId,
-        thread.activeTargetArtboardId,
-        thread.targetArtboardId,
-      ]
+      const explicitTargetMode = mode === 'append-section' || mode === 'duplicate-variant'
+      const candidates = explicitTargetMode
+        ? [preferredArtboardId, selectedElement?.artboardId, state.selectedArtboardId]
+        : [
+            preferredArtboardId,
+            selectedElement?.artboardId,
+            state.selectedArtboardId,
+            state.activeArtboardId,
+          ]
       const selectedTargetId = candidates.find((candidate) =>
         state.document?.artboards.some((artboard) => artboard.id === candidate),
       )
-      const threadTargetArtboard = thread.activeTargetArtboardId || thread.targetArtboardId
-      const reusableEmptyArtboardId = mode === 'new-artboard' &&
-        threadTargetArtboard &&
-        state.document.artboards.some((artboard) => artboard.id === threadTargetArtboard) &&
-        !state.document.elements.some((element) => element.artboardId === threadTargetArtboard)
-        ? threadTargetArtboard
-        : undefined
-      const existingArtboardId = mode === 'asset-board'
-        ? state.document.artboards.some((artboard) => artboard.id === thread.assetArtboardId)
-          ? thread.assetArtboardId
+      const targetWidth = logicalSize?.width ?? DEFAULT_ARTBOARD_WIDTH
+      const targetHeight = logicalSize?.initialHeight ?? DEFAULT_ARTBOARD_HEIGHT
+      const reusableEmptyArtboardId =
+        mode === 'new-artboard' && reuseEmpty
+          ? candidates.find(
+              (candidate) =>
+                state.document?.artboards.some(
+                  (artboard) => artboard.id === candidate && artboard.width === targetWidth,
+                ) && !state.document?.elements.some((element) => element.artboardId === candidate),
+            )
           : undefined
-        : mode === 'append-section'
-          ? selectedTargetId
-          : reusableEmptyArtboardId
+      const existingArtboardId =
+        mode === 'asset-board'
+          ? state.document.artboards.some((artboard) => artboard.id === thread.assetArtboardId)
+            ? thread.assetArtboardId
+            : undefined
+          : mode === 'append-section'
+            ? selectedTargetId
+            : reusableEmptyArtboardId
 
       if (existingArtboardId) {
         const existingArtboard = state.document.artboards.find(
@@ -404,9 +561,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         target = { artboardId: existingArtboardId, created: false, mode }
         return {
           chatThreads: state.chatThreads.map((item) =>
-            item.id === threadId
-              ? bindThreadToArtboard(item, existingArtboardId, mode)
-              : item,
+            item.id === threadId ? bindThreadToArtboard(item, existingArtboardId, mode) : item,
           ),
           activeArtboardId: existingArtboardId,
           selectedArtboardId: existingArtboardId,
@@ -426,75 +581,103 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         : undefined
       const artboard: Artboard = {
         id: createStoreId('artboard'),
-        name: mode === 'asset-board'
-          ? '独立素材'
-          : mode === 'duplicate-variant'
-            ? `${sourceArtboard?.name || '页面'} 变体`
-            : thread.title === '未命名对话' || thread.title === '新对话'
-              ? `AI 页面 ${(thread.artboardIds?.length ?? 0) + 1}`
-              : thread.title,
+        name:
+          mode === 'asset-board'
+            ? '独立素材'
+            : mode === 'duplicate-variant'
+              ? `${sourceArtboard?.name || '页面'} 变体`
+              : thread.title === '未命名对话' || thread.title === '新对话'
+                ? `AI 页面 ${(thread.artboardIds?.length ?? 0) + 1}`
+                : thread.title,
         x: state.document.artboards.length ? maxX + ARTBOARD_GAP : 0,
         y: 0,
-        width: mode === 'duplicate-variant'
-          ? sourceArtboard?.width ?? DEFAULT_ARTBOARD_WIDTH
-          : DEFAULT_ARTBOARD_WIDTH,
-        height: mode === 'duplicate-variant'
-          ? sourceArtboard?.height ?? DEFAULT_ARTBOARD_HEIGHT
-          : DEFAULT_ARTBOARD_HEIGHT,
+        width:
+          mode === 'duplicate-variant'
+            ? (sourceArtboard?.width ?? DEFAULT_ARTBOARD_WIDTH)
+            : targetWidth,
+        height: targetHeight,
         background: sourceArtboard?.background ?? '#ffffff',
         borderRadius: 0,
         overflow: 'hidden',
-        autoHeight: true,
+        autoHeight: logicalSize?.autoHeight ?? true,
+        variantParentArtboardId: mode === 'duplicate-variant' ? sourceArtboard?.id : undefined,
+        variantStatus: mode === 'duplicate-variant' ? 'candidate' : undefined,
+        variantLabel:
+          mode === 'duplicate-variant' && sourceArtboard
+            ? `V${state.document.artboards.filter((item) => item.variantParentArtboardId === sourceArtboard.id).length + 1}`
+            : undefined,
+        variantCreatedAt: mode === 'duplicate-variant' ? new Date().toISOString() : undefined,
+        visualOptimizationBrief:
+          mode === 'duplicate-variant' && thread.visualOptimizationDraft
+            ? structuredClone(thread.visualOptimizationDraft.brief)
+            : undefined,
       }
-      const sourceElements = mode === 'duplicate-variant' && sourceArtboard
-        ? state.document.elements.filter((element) => element.artboardId === sourceArtboard.id)
-        : []
-      const elementIdMap = new Map(sourceElements.map((element, index) => [
-        element.id,
-        createStoreId(`${element.type}-variant-${index}`),
-      ]))
-      const sourceInstanceIds = Array.from(new Set(sourceElements
-        .map((element) => element.componentBinding?.instanceId)
-        .filter((value): value is string => Boolean(value))))
-      const instanceIdMap = new Map(sourceInstanceIds.map((instanceId) => [
-        instanceId,
-        createStoreId('component-instance'),
-      ]))
-      const clonedElements = sourceElements.map((element) => {
-        const id = elementIdMap.get(element.id)!
-        const parentId = element.parentId ? elementIdMap.get(element.parentId) : undefined
-        const binding = element.componentBinding
-        const nextInstanceId = binding ? instanceIdMap.get(binding.instanceId) : undefined
-        return {
-          ...element,
-          id,
-          parentId,
-          artboardId: artboard.id,
-          x: artboard.x + element.x - (sourceArtboard?.x ?? 0),
-          y: artboard.y + element.y - (sourceArtboard?.y ?? 0),
-          componentBinding: binding && nextInstanceId
-            ? {
-                ...binding,
-                instanceId: nextInstanceId,
-                rootElementId: elementIdMap.get(binding.rootElementId) ?? id,
-              }
-            : binding,
-        } as DesignElement
-      })
-      const clonedInstances = Object.fromEntries(sourceInstanceIds.flatMap((sourceInstanceId) => {
-        const sourceInstance = state.document?.componentInstances?.[sourceInstanceId]
-        const instanceId = instanceIdMap.get(sourceInstanceId)
-        const rootElementId = sourceInstance
-          ? elementIdMap.get(sourceInstance.rootElementId)
-          : undefined
-        if (!sourceInstance || !instanceId || !rootElementId) return []
-        return [[instanceId, createComponentInstance(
-          sourceInstance.design,
-          artboard.id,
-          rootElementId,
-          instanceId,
-        )]]
-      }))
+      const sourceElements =
+        mode === 'duplicate-variant' && sourceArtboard
+          ? state.document.elements.filter((element) => element.artboardId === sourceArtboard.id)
+          : []
+      const elementIdMap = new Map(
+        sourceElements.map((element, index) => [
+          element.id,
+          createStoreId(`${element.type}-variant-${index}`),
+        ]),
+      )
+      const sourceInstanceIds = Array.from(
+        new Set(
+          sourceElements
+            .map((element) => element.componentBinding?.instanceId)
+            .filter((value): value is string => Boolean(value)),
+        ),
+      )
+      const instanceIdMap = new Map(
+        sourceInstanceIds.map((instanceId) => [instanceId, createStoreId('component-instance')]),
+      )
+      const clonedElements = constrainElementsToArtboard(
+        sourceElements.map((element) => {
+          const id = elementIdMap.get(element.id)!
+          const parentId = element.parentId ? elementIdMap.get(element.parentId) : undefined
+          const binding = element.componentBinding
+          const nextInstanceId = binding ? instanceIdMap.get(binding.instanceId) : undefined
+          return {
+            ...element,
+            id,
+            parentId,
+            artboardId: artboard.id,
+            x: artboard.x + element.x - (sourceArtboard?.x ?? 0),
+            y: artboard.y + element.y - (sourceArtboard?.y ?? 0),
+            componentBinding:
+              binding && nextInstanceId
+                ? {
+                    ...binding,
+                    instanceId: nextInstanceId,
+                    rootElementId: elementIdMap.get(binding.rootElementId) ?? id,
+                  }
+                : binding,
+          } as DesignElement
+        }),
+        artboard,
+      )
+      const clonedInstances = Object.fromEntries(
+        sourceInstanceIds.flatMap((sourceInstanceId) => {
+          const sourceInstance = state.document?.componentInstances?.[sourceInstanceId]
+          const instanceId = instanceIdMap.get(sourceInstanceId)
+          const rootElementId = sourceInstance
+            ? elementIdMap.get(sourceInstance.rootElementId)
+            : undefined
+          if (!sourceInstance || !instanceId || !rootElementId) return []
+          return [
+            [
+              instanceId,
+              createComponentInstance(
+                sourceInstance.design,
+                artboard.id,
+                rootElementId,
+                instanceId,
+              ),
+            ],
+          ]
+        }),
+      )
       target = {
         artboardId: artboard.id,
         created: true,
@@ -527,6 +710,310 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     return target
   },
 
+  applyGenericUiDesign: (target, schema) => {
+    let rootId: string | undefined
+    set((state) => {
+      if (!state.document) return state
+      const artboard = state.document.artboards.find((item) => item.id === target.artboardId)
+      if (!artboard) return state
+      const { commit } = compileDesignSpecToSceneCommit(schema, artboard)
+      const targetWidth =
+        target.mode === 'duplicate-variant' ? artboard.width : schema.viewport.width
+      rootId = commit.rootNodeId
+      const retained = state.document.elements.filter(
+        (element) => element.artboardId !== artboard.id,
+      )
+      return {
+        document: {
+          ...state.document,
+          version: state.document.version + 1,
+          artboards: state.document.artboards.map((item) =>
+            item.id === artboard.id
+              ? {
+                  ...item,
+                  width: targetWidth,
+                  height: commit.contentHeight,
+                  autoHeight: target.mode === 'duplicate-variant' ? true : false,
+                  background: schema.theme.colors[1] || '#f5f7fa',
+                  designSpec: schema,
+                  genericUiSchema: schema,
+                }
+              : item,
+          ),
+          elements: [...retained, ...constrainElementsToArtboard(commit.elements, artboard)],
+          updatedAt: new Date().toISOString(),
+        },
+        activeArtboardId: artboard.id,
+        selectedArtboardId: artboard.id,
+        selectedElementIds: [commit.rootNodeId],
+        history: pushHistory(state),
+        future: [],
+      }
+    })
+    return rootId
+  },
+
+  applyGenericUiRuntimeScene: (target, sceneGraph) => {
+    let result:
+      | {
+          rootId: string
+          elementCount: number
+          editableNodeCount: number
+          sourceAdapterId: string
+          documentRevision: number
+        }
+      | undefined
+    set((state) => {
+      if (!state.document) return state
+      const artboard = state.document.artboards.find((item) => item.id === target.artboardId)
+      if (!artboard) return state
+      const commit = compileSceneCommit(sceneGraph, { artboardId: artboard.id })
+      const targetWidth =
+        target.mode === 'duplicate-variant' ? artboard.width : sceneGraph.surface.width
+      const root = sceneGraph.nodes.find((node) => node.id === sceneGraph.rootNodeId)
+      const background = root?.style?.fill ?? root?.style?.background ?? artboard.background
+      const documentRevision = state.document.version + 1
+      const editableNodeCount = sceneGraph.nodes.filter(
+        (node) =>
+          node.type === 'text' ||
+          node.type === 'button' ||
+          node.type === 'input' ||
+          node.type === 'image',
+      ).length
+      result = {
+        rootId: commit.rootNodeId,
+        elementCount: commit.elements.length,
+        editableNodeCount,
+        sourceAdapterId: commit.sourceAdapterId,
+        documentRevision,
+      }
+      return {
+        document: {
+          ...state.document,
+          version: documentRevision,
+          artboards: state.document.artboards.map((item) =>
+            item.id === artboard.id
+              ? {
+                  ...item,
+                  width: targetWidth,
+                  height: Math.max(1, sceneGraph.surface.height),
+                  autoHeight: target.mode === 'duplicate-variant' ? true : false,
+                  background,
+                  designSpec: undefined,
+                  genericUiSchema: undefined,
+                  designBreakpointId: undefined,
+                  responsiveBaselines: undefined,
+                  pageDesign: undefined,
+                  runtimeScene: {
+                    graphId: commit.graphId,
+                    sourceAdapterId: commit.sourceAdapterId,
+                    nodeCount: commit.elements.length,
+                  },
+                }
+              : item,
+          ),
+          elements: [
+            ...state.document.elements.filter((element) => element.artboardId !== artboard.id),
+            ...constrainElementsToArtboard(commit.elements, artboard),
+          ],
+          componentInstances: Object.fromEntries(
+            Object.entries(state.document.componentInstances ?? {}).filter(
+              ([, instance]) => instance.artboardId !== artboard.id,
+            ),
+          ),
+          structuralInstances: Object.fromEntries(
+            Object.entries(state.document.structuralInstances ?? {}).filter(
+              ([, instance]) => instance.artboardId !== artboard.id,
+            ),
+          ),
+          updatedAt: new Date().toISOString(),
+        },
+        activeArtboardId: artboard.id,
+        selectedArtboardId: artboard.id,
+        selectedElementIds: [commit.rootNodeId],
+        history: pushHistory(state),
+        future: [],
+      }
+    })
+    return result
+  },
+
+  applyGenericUiBlock: (target, schema, blockIndex, deliveredBlockIds) => {
+    let result:
+      | {
+          rootId: string
+          blockRootId: string
+          affectedElementIds: string[]
+          affectedBlockIds: string[]
+          removedBlockIds: string[]
+          documentRevision: number
+        }
+      | undefined
+    set((state) => {
+      if (!state.document) return state
+      const artboard = state.document.artboards.find((item) => item.id === target.artboardId)
+      const block = schema.blocks[blockIndex]
+      if (!artboard || !block || !deliveredBlockIds.includes(block.id)) return state
+
+      const deliveredIds = new Set(deliveredBlockIds)
+      if (
+        deliveredIds.size !== deliveredBlockIds.length ||
+        deliveredBlockIds.some((id) => !schema.blocks.some((item) => item.id === id))
+      )
+        return state
+
+      const renderSchema = resolveDesignSpecBreakpoint(schema, artboard.designBreakpointId)
+      const transaction = compileDesignSpecSceneTransaction({
+        artboard,
+        renderSchema,
+        comparisonSchema: schema,
+        previousSchema: artboard.designSpec,
+        currentElements: state.document.elements,
+        desiredBlockIds: deliveredBlockIds,
+        forceBlockIds: [block.id],
+      })
+      const blockRootId = transaction.blockRootIds[block.id]
+      if (!blockRootId) return state
+      const nextElementIds = new Set(transaction.nextElements.map((element) => element.id))
+      const selectedElementIds = state.selectedElementIds.filter((id) => nextElementIds.has(id))
+      const deliveredBlocks = schema.blocks.filter((item) => deliveredIds.has(item.id))
+      const documentRevision = state.document.version + 1
+      result = {
+        rootId: transaction.rootNodeId,
+        blockRootId,
+        affectedElementIds: transaction.affectedElementIds,
+        affectedBlockIds: transaction.affectedRegionIds,
+        removedBlockIds: transaction.removedRegionIds,
+        documentRevision,
+      }
+      return {
+        document: {
+          ...state.document,
+          version: documentRevision,
+          artboards: state.document.artboards.map((item) =>
+            item.id === artboard.id
+              ? {
+                  ...item,
+                  width:
+                    target.mode === 'duplicate-variant'
+                      ? artboard.width
+                      : renderSchema.viewport.width,
+                  height: transaction.contentHeight,
+                  autoHeight: target.mode === 'duplicate-variant' ? true : false,
+                  background: schema.theme.colors[1] || '#f5f7fa',
+                  designSpec: { ...schema, blocks: deliveredBlocks },
+                  genericUiSchema: { ...schema, blocks: deliveredBlocks },
+                }
+              : item,
+          ),
+          elements: constrainElementsToArtboard(transaction.nextElements, artboard),
+          updatedAt: new Date().toISOString(),
+        },
+        activeArtboardId: artboard.id,
+        selectedArtboardId: artboard.id,
+        selectedElementIds: selectedElementIds.length ? selectedElementIds : [blockRootId],
+        history: pushHistory(state),
+        future: [],
+      }
+    })
+    return result
+  },
+
+  applyGenericUiStructure: (target, schema, baseRevision) => {
+    let result:
+      | {
+          rootId: string
+          affectedElementIds: string[]
+          affectedBlockIds: string[]
+          removedBlockIds: string[]
+          documentRevision: number
+        }
+      | undefined
+    set((state) => {
+      if (!state.document || state.document.version !== baseRevision) return state
+      const artboard = state.document.artboards.find((item) => item.id === target.artboardId)
+      if (!artboard?.designSpec || !schema.blocks.length) return state
+
+      const renderSchema = resolveDesignSpecBreakpoint(schema, artboard.designBreakpointId)
+      const transaction = compileDesignSpecSceneTransaction({
+        artboard,
+        renderSchema,
+        comparisonSchema: schema,
+        previousSchema: artboard.designSpec,
+        currentElements: state.document.elements,
+      })
+      const nextElementIds = new Set(transaction.nextElements.map((element) => element.id))
+      const selectedElementIds = state.selectedElementIds.filter((id) => nextElementIds.has(id))
+      const documentRevision = state.document.version + 1
+      result = {
+        rootId: transaction.rootNodeId,
+        affectedElementIds: transaction.affectedElementIds,
+        affectedBlockIds: transaction.affectedRegionIds,
+        removedBlockIds: transaction.removedRegionIds,
+        documentRevision,
+      }
+      return {
+        document: {
+          ...state.document,
+          version: documentRevision,
+          artboards: state.document.artboards.map((item) =>
+            item.id === artboard.id
+              ? {
+                  ...item,
+                  width:
+                    target.mode === 'duplicate-variant'
+                      ? artboard.width
+                      : renderSchema.viewport.width,
+                  height: transaction.contentHeight,
+                  autoHeight: target.mode === 'duplicate-variant' ? true : false,
+                  background: schema.theme.colors[1] || '#f5f7fa',
+                  designSpec: schema,
+                  genericUiSchema: schema,
+                }
+              : item,
+          ),
+          elements: constrainElementsToArtboard(transaction.nextElements, artboard),
+          updatedAt: new Date().toISOString(),
+        },
+        selectedElementIds,
+        history: pushHistory(state),
+        future: [],
+      }
+    })
+    return result
+  },
+
+  applyDesignPatch: (patch, images) => {
+    let result: DesignPatchApplyResult = {
+      ok: false,
+      errorCode: 'DESIGN_DOCUMENT_MISSING',
+      message: '当前没有可修改的设计文档。',
+    }
+    set((state) => {
+      if (!state.document) return state
+      result = applyDesignPatchToDocument(state.document, patch, images)
+      if (!result.ok) return state
+      const document = {
+        ...result.document,
+        componentInstances: syncComponentInstancesFromElements(
+          result.document.componentInstances ?? {},
+          result.document.elements,
+          new Set(result.affectedElementIds),
+        ),
+      }
+      result = { ...result, document }
+      return {
+        document,
+        selectedElementIds: result.affectedElementIds.filter((id) =>
+          document.elements.some((element) => element.id === id),
+        ),
+        history: pushHistory(state),
+        future: [],
+      }
+    })
+    return result
+  },
+
   applyGeneratedImage: (target, image) => {
     let imageElementId: string | undefined
     set((state) => {
@@ -543,15 +1030,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       )
       const usesAutoHeight = Boolean(artboard.autoHeight || target.created)
       const isIndependentAsset = image.placement === 'asset'
-      const assetScale = image.width >= DEFAULT_ARTBOARD_WIDTH * 1.8
-        ? Math.min(0.5, DEFAULT_ARTBOARD_WIDTH / image.width)
-        : Math.min(1, (DEFAULT_ARTBOARD_WIDTH - GENERATED_CONTENT_GAP * 2) / image.width)
-      const widthScale = isIndependentAsset
-        ? assetScale
-        : DEFAULT_ARTBOARD_WIDTH / image.width
+      const assetScale =
+        image.width >= DEFAULT_ARTBOARD_WIDTH * 1.8
+          ? Math.min(0.5, DEFAULT_ARTBOARD_WIDTH / image.width)
+          : Math.min(1, (DEFAULT_ARTBOARD_WIDTH - GENERATED_CONTENT_GAP * 2) / image.width)
+      const widthScale = isIndependentAsset ? assetScale : artboard.width / image.width
+      // 页面/Variant 必须沿用目标画板的逻辑宽度；只有独立素材才按默认素材宽度缩放。
+      // 之前这里固定使用 DEFAULT_ARTBOARD_WIDTH，导致 1440px 原稿的 Variant 被错误压成 375px。
       const autoHeightImageWidth = isIndependentAsset
         ? Math.max(1, image.width * widthScale)
-        : DEFAULT_ARTBOARD_WIDTH
+        : artboard.width
       const autoHeightImageHeight = Math.max(1, image.height * widthScale)
       const contentBottom = Math.max(
         artboard.y,
@@ -566,15 +1054,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const width = usesAutoHeight ? autoHeightImageWidth : Math.max(1, image.width * fixedScale)
       const height = usesAutoHeight ? autoHeightImageHeight : Math.max(1, image.height * fixedScale)
       const x = usesAutoHeight
-        ? artboard.x + (DEFAULT_ARTBOARD_WIDTH - width) / 2
+        ? artboard.x + (artboard.width - width) / 2
         : artboard.x + (artboard.width - width) / 2
-      const y = usesAutoHeight
-        ? autoHeightY
-        : artboard.y + (artboard.height - height) / 2
+      const y = usesAutoHeight ? autoHeightY : artboard.y + (artboard.height - height) / 2
       const targetArtboard = usesAutoHeight
         ? {
             ...artboard,
-            width: DEFAULT_ARTBOARD_WIDTH,
+            width: artboard.width,
             height: Math.max(
               1,
               y - artboard.y + height + (isIndependentAsset ? GENERATED_CONTENT_GAP : 0),
@@ -597,12 +1083,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
               },
             }
           : artboard
-      const zIndex = Math.max(
-        0,
-        ...retainedElements
-          .filter((element) => element.artboardId === target.artboardId)
-          .map((element) => element.zIndex),
-      ) + 1
+      const zIndex =
+        Math.max(
+          0,
+          ...retainedElements
+            .filter((element) => element.artboardId === target.artboardId)
+            .map((element) => element.zIndex),
+        ) + 1
       const assetId = createStoreId('asset')
       imageElementId = createStoreId('image')
 
@@ -645,7 +1132,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     return imageElementId
   },
 
-  applyComponentDesign: (target, componentDesign, assets, visualShell, replaceInstanceId, explicitPageSectionId) => {
+  applyComponentDesign: (
+    target,
+    componentDesign,
+    assets,
+    replaceInstanceId,
+    explicitPageSectionId,
+  ) => {
     let rootElementId: string | undefined
     set((state) => {
       if (!state.document) return state
@@ -653,13 +1146,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (!artboard) return state
 
       const replacesVariant = target.mode === 'duplicate-variant'
-      const replacedRoot = !replacesVariant && replaceInstanceId
-        ? state.document.elements.find((element) => (
-            element.artboardId === target.artboardId &&
-            element.componentBinding?.instanceId === replaceInstanceId &&
-            element.componentBinding.renderMode === 'root'
-          ))
-        : undefined
+      const replacedRoot =
+        !replacesVariant && replaceInstanceId
+          ? state.document.elements.find(
+              (element) =>
+                element.artboardId === target.artboardId &&
+                element.componentBinding?.instanceId === replaceInstanceId &&
+                element.componentBinding.renderMode === 'root',
+            )
+          : undefined
       const replacesInstance = Boolean(replacedRoot && replaceInstanceId)
       const retainedElements = replacesVariant
         ? state.document.elements.filter((element) => element.artboardId !== target.artboardId)
@@ -675,157 +1170,35 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         artboard.y,
         ...artboardElements.map((element) => element.y + element.height),
       )
-      const originY = replacedRoot?.y ?? (
-        artboardElements.length ? contentBottom + GENERATED_CONTENT_GAP : artboard.y
-      )
-      const scale = DEFAULT_ARTBOARD_WIDTH / componentDesign.blueprint.width
-      const rootWidth = DEFAULT_ARTBOARD_WIDTH
+      const originY =
+        replacedRoot?.y ??
+        (artboardElements.length ? contentBottom + GENERATED_CONTENT_GAP : artboard.y)
+      const rootWidth = artboard.width
+      const scale = rootWidth / componentDesign.blueprint.width
       const rootHeight = Math.max(1, componentDesign.blueprint.height * scale)
       const originX = replacedRoot?.x ?? artboard.x
-      const baseZIndex = replacedRoot?.zIndex ?? (
+      const baseZIndex =
+        replacedRoot?.zIndex ??
         Math.max(0, ...artboardElements.map((element) => element.zIndex)) + 1
-      )
       const instanceId = replacesInstance ? replaceInstanceId! : createStoreId('component-instance')
       rootElementId = replacedRoot?.id ?? createStoreId('component-section')
       const pageSectionId = explicitPageSectionId ?? replacedRoot?.componentBinding?.pageSectionId
       const pageSectionLocked = replacedRoot?.locked === true
       const nextComponentDesign: ComponentDesignMeta = { ...componentDesign, instanceId }
-      const propertyKinds = new Map(
-        (componentDesign.properties ?? []).map((property) => [property.path, property.kind]),
-      )
-      const tasksBySlot = new Map(
-        componentDesign.assetTasks.map((task, index) => [task.slotId, { task, image: assets[index] }]),
-      )
-      const rootElement: DesignElement = {
-        id: rootElementId,
-        artboardId: target.artboardId,
-        type: 'section',
-        name: `${componentDesign.componentName} 组件`,
-        label: `${componentDesign.componentName} / ${componentDesign.profile}`,
-        x: originX,
-        y: originY,
+      const { commit: componentSceneCommit } = compileComponentDesignToSceneCommit({
+        componentDesign,
+        assets,
+        artboard,
+        instanceId,
+        rootElementId,
+        pageSectionId,
+        originX,
+        originY,
         width: rootWidth,
         height: rootHeight,
-        zIndex: baseZIndex,
+        scale,
+        baseZIndex,
         locked: pageSectionLocked,
-        componentBinding: {
-          instanceId,
-          componentName: componentDesign.componentName,
-          profile: componentDesign.profile,
-          regionId: 'root',
-          renderMode: 'root',
-          rootElementId,
-          pageSectionId,
-          propPaths: [],
-          bindings: {},
-        },
-      }
-      const shellElement: DesignElement | undefined = visualShell
-        ? {
-            id: createStoreId('component-shell'),
-            artboardId: target.artboardId,
-            parentId: rootElementId,
-            type: 'image',
-            name: `${componentDesign.componentName} 视觉外壳`,
-            x: originX,
-            y: originY,
-            width: rootWidth,
-            height: rootHeight,
-            zIndex: baseZIndex + 1,
-            locked: pageSectionLocked,
-            src: visualShell.src,
-            objectFit: 'fill',
-            componentBinding: {
-              instanceId,
-              componentName: componentDesign.componentName,
-              profile: componentDesign.profile,
-              regionId: 'visual-shell',
-              renderMode: 'shell',
-              rootElementId,
-              pageSectionId,
-              propPaths: [],
-              bindings: {},
-            },
-          }
-        : undefined
-      const regionElements = componentDesign.blueprint.regions.map((region, index) => {
-        const slotAsset = region.slotId ? tasksBySlot.get(region.slotId) : undefined
-        const bindings = createComponentBindings(
-          region.propBindings,
-          propertyKinds,
-          slotAsset?.task.propPath,
-        )
-        const base = {
-          id: createStoreId(`component-${region.renderMode}`),
-          artboardId: target.artboardId,
-          parentId: rootElementId,
-          name: region.role,
-          x: originX + region.bounds.x * scale,
-          y: originY + region.bounds.y * scale,
-          width: Math.max(1, region.bounds.width * scale),
-          height: Math.max(1, region.bounds.height * scale),
-          zIndex: baseZIndex + index + (shellElement ? 2 : 1),
-          locked: pageSectionLocked,
-          componentBinding: {
-            instanceId,
-            componentName: componentDesign.componentName,
-            profile: componentDesign.profile,
-            regionId: region.id,
-            slotId: region.slotId,
-            renderMode: region.renderMode,
-            rootElementId,
-            pageSectionId,
-            propPaths: region.propBindings,
-            bindings,
-          },
-        }
-        if (region.renderMode === 'generated-asset' && slotAsset?.image) {
-          return {
-            ...base,
-            type: 'image',
-            src: slotAsset.image.src,
-            objectFit: 'fill',
-          } as DesignElement
-        }
-        if (region.renderMode === 'color') {
-          const fill = readRegionColor(
-            region.propBindings,
-            componentDesign.blueprint.propertyValues,
-            readThemeColor(componentDesign, 'background', '#e5e7eb'),
-          )
-          return {
-            ...base,
-            type: 'shape',
-            shape: 'rect',
-            fill,
-            borderRadius: componentDesign.blueprint.visualTheme?.surfaces?.[0]?.radius ?? 0,
-          } as DesignElement
-        }
-        if (region.renderMode === 'text') {
-          const typography = readThemeTypography(componentDesign, 'body')
-          return {
-            ...base,
-            type: 'text',
-            content: region.content || region.role,
-            style: {
-              fontSize: typography?.size ?? Math.max(12, Math.min(32, region.bounds.height * scale * 0.42)),
-              fontWeight: typography?.weight ?? 700,
-              fontFamily: typography?.family,
-              color: readRegionColor(
-                region.propBindings,
-                componentDesign.blueprint.propertyValues,
-                readThemeColor(componentDesign, 'text', '#111827'),
-              ),
-              lineHeight: typography?.lineHeight ?? 1.3,
-              textAlign: 'center',
-            },
-          } as DesignElement
-        }
-        return {
-          ...base,
-          type: 'runtime-placeholder',
-          label: region.role,
-        } as DesignElement
       })
       const nextAssets = assets.map((image) => ({
         id: createStoreId('asset'),
@@ -833,38 +1206,29 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         name: image.name,
         src: image.src,
       }))
-      if (visualShell) {
-        nextAssets.unshift({
-          id: createStoreId('asset'),
-          type: 'image' as const,
-          name: visualShell.name,
-          src: visualShell.src,
-        })
-      }
       const nextArtboard: Artboard = {
         ...artboard,
-        width: DEFAULT_ARTBOARD_WIDTH,
+        width: artboard.width,
         height: Math.max(artboard.height, originY - artboard.y + rootHeight),
         autoHeight: true,
       }
-      const retainedInstances = Object.fromEntries(Object.entries(
-        state.document.componentInstances ?? {},
-      ).filter(([id, instance]) => (
-        id !== replaceInstanceId && !(replacesVariant && instance.artboardId === artboard.id)
-      )))
+      const retainedInstances = Object.fromEntries(
+        Object.entries(state.document.componentInstances ?? {}).filter(
+          ([id, instance]) =>
+            id !== replaceInstanceId && !(replacesVariant && instance.artboardId === artboard.id),
+        ),
+      )
 
       return {
         document: {
           ...state.document,
           version: state.document.version + 1,
-          artboards: state.document.artboards.map((item) => (
-            item.id === artboard.id ? nextArtboard : item
-          )),
+          artboards: state.document.artboards.map((item) =>
+            item.id === artboard.id ? nextArtboard : item,
+          ),
           elements: [
             ...retainedElements,
-            rootElement,
-            ...(shellElement ? [shellElement] : []),
-            ...regionElements,
+            ...constrainElementsToArtboard(componentSceneCommit.elements, artboard),
           ],
           componentInstances: {
             ...retainedInstances,
@@ -889,37 +1253,53 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   applyPageDesign: (target, pageDesign, components, pageShell) => {
-    const rootElementIds = components.map((component, index) => {
-      const pageSectionId = component.pageSectionId ?? pageDesign.blueprint.sections[component.index ?? index]?.id
-      const existingInstanceId = get().document?.elements.find((element) => (
-        element.artboardId === target.artboardId &&
-        element.componentBinding?.pageSectionId === pageSectionId &&
-        element.componentBinding.renderMode === 'root'
-      ))?.componentBinding?.instanceId
-      return get().applyComponentDesign(
-      index === 0
-        ? target
-        : { ...target, created: false, mode: 'append-section' },
-      component.componentDesign,
-      component.assets,
-      component.visualShell,
-      existingInstanceId,
-      pageSectionId,
-      )
-    }).filter((id): id is string => Boolean(id))
+    const rootElementIds = components
+      .map((component, index) => {
+        const pageSectionId =
+          component.pageSectionId ?? pageDesign.blueprint.sections[component.index ?? index]?.id
+        // 新增页面组件没有 pageSectionId 时，绝不能把另一个同样缺少
+        // pageSectionId 的根组件误判为替换目标；只有显式 section ID
+        // 才允许进入替换实例流程。
+        const existingInstanceId = pageSectionId
+          ? get().document?.elements.find(
+              (element) =>
+                element.artboardId === target.artboardId &&
+                element.componentBinding?.pageSectionId === pageSectionId &&
+                element.componentBinding.renderMode === 'root',
+            )?.componentBinding?.instanceId
+          : undefined
+        return get().applyComponentDesign(
+          index === 0 ? target : { ...target, created: false, mode: 'append-section' },
+          component.componentDesign,
+          component.assets,
+          existingInstanceId,
+          pageSectionId,
+        )
+      })
+      .filter((id): id is string => Boolean(id))
 
     set((state) => {
       if (!state.document) return state
       const artboard = state.document.artboards.find((item) => item.id === target.artboardId)
       if (!artboard) return state
-      const artboardElements = state.document.elements.filter((element) => element.artboardId === artboard.id)
-      const sectionByInstance = new Map(rootElementIds.map((rootId, index) => {
-        const root = state.document?.elements.find((element) => element.id === rootId)
-        const component = components[index]
-        return [root?.componentBinding?.instanceId, pageDesign.blueprint.sections[component.index ?? index]] as const
-      }).filter((entry): entry is readonly [string, PageDesignMeta['blueprint']['sections'][number]] => (
-        Boolean(entry[0] && entry[1])
-      )))
+      const artboardElements = state.document.elements.filter(
+        (element) => element.artboardId === artboard.id,
+      )
+      const sectionByInstance = new Map(
+        rootElementIds
+          .map((rootId, index) => {
+            const root = state.document?.elements.find((element) => element.id === rootId)
+            const component = components[index]
+            return [
+              root?.componentBinding?.instanceId,
+              pageDesign.blueprint.sections[component.index ?? index],
+            ] as const
+          })
+          .filter(
+            (entry): entry is readonly [string, PageDesignMeta['blueprint']['sections'][number]] =>
+              Boolean(entry[0] && entry[1]),
+          ),
+      )
       const contentBottom = Math.max(
         artboard.y + pageDesign.blueprint.estimatedHeight,
         ...artboardElements.map((element) => element.y + element.height),
@@ -971,9 +1351,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           } satisfies DesignElement,
         }
       })
-      const existingShell = state.document.elements.find((element) => (
-        element.artboardId === artboard.id && element.designRole === 'page-shell'
-      ))
+      const existingShell = state.document.elements.find(
+        (element) => element.artboardId === artboard.id && element.designRole === 'page-shell',
+      )
       const shellElementId = existingShell?.id ?? createStoreId('page-shell')
       const shellElement: DesignElement = {
         id: shellElementId,
@@ -982,9 +1362,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         name: '页面视觉外壳',
         x: artboard.x,
         y: artboard.y,
-        width: DEFAULT_ARTBOARD_WIDTH,
+        width: artboard.width,
         height,
-        zIndex: Math.min(0, ...artboardElements.map((element) => element.zIndex)) - 1,
+        zIndex: 0,
         src: pageShell.src,
         objectFit: 'fill',
         designRole: 'page-shell',
@@ -993,37 +1373,46 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         document: {
           ...state.document,
           version: state.document.version + 1,
-          artboards: state.document.artboards.map((item) => item.id === artboard.id
-            ? { ...item, width: DEFAULT_ARTBOARD_WIDTH, height, autoHeight: true, pageDesign }
-            : item),
+          artboards: state.document.artboards.map((item) =>
+            item.id === artboard.id
+              ? { ...item, width: artboard.width, height, autoHeight: true, pageDesign }
+              : item,
+          ),
           elements: [
-            ...state.document.elements.filter((element) => element.id !== shellElementId).map((element): DesignElement => {
-              const binding = element.componentBinding
-              const section = binding ? sectionByInstance.get(binding.instanceId) : undefined
-              return section
-                ? {
-                    ...element,
-                    locked: section.locked === true,
-                    componentBinding: {
-                      ...binding,
-                      pageSectionId: section.id,
-                    },
-                  } as DesignElement
-                : element
-            }),
+            ...state.document.elements
+              .filter((element) => element.id !== shellElementId)
+              .map((element): DesignElement => {
+                const binding = element.componentBinding
+                const section = binding ? sectionByInstance.get(binding.instanceId) : undefined
+                return section
+                  ? ({
+                      ...element,
+                      locked: section.locked === true,
+                      componentBinding: {
+                        ...binding,
+                        pageSectionId: section.id,
+                      },
+                    } as DesignElement)
+                  : element
+              }),
             ...structuralElements.map((item) => item.element),
             shellElement,
           ],
           structuralInstances: {
             ...(state.document.structuralInstances ?? {}),
-            ...Object.fromEntries(structuralElements.map((item) => [item.structuralId, item.instance])),
+            ...Object.fromEntries(
+              structuralElements.map((item) => [item.structuralId, item.instance]),
+            ),
           },
-          assets: [...state.document.assets, {
-            id: createStoreId('asset'),
-            type: 'image',
-            name: pageShell.name,
-            src: pageShell.src,
-          }],
+          assets: [
+            ...state.document.assets,
+            {
+              id: createStoreId('asset'),
+              type: 'image',
+              name: pageShell.name,
+              src: pageShell.src,
+            },
+          ],
           updatedAt: new Date().toISOString(),
         },
         activeArtboardId: artboard.id,
@@ -1042,11 +1431,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (!state.document) return state
       const artboard = state.document.artboards.find((item) => item.id === target.artboardId)
       if (!artboard) return state
-      const existingShell = state.document.elements.find((element) => (
-        element.artboardId === artboard.id && element.designRole === 'page-shell'
-      ))
+      const existingShell = state.document.elements.find(
+        (element) => element.artboardId === artboard.id && element.designRole === 'page-shell',
+      )
       shellElementId = existingShell?.id ?? createStoreId('page-shell')
-      const retainedElements = state.document.elements.filter((element) => element.id !== shellElementId)
+      const retainedElements = state.document.elements.filter(
+        (element) => element.id !== shellElementId,
+      )
       const height = Math.max(DEFAULT_ARTBOARD_HEIGHT, blueprint.estimatedHeight)
       const shellElement: DesignElement = {
         id: shellElementId,
@@ -1055,11 +1446,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         name: pageShell.name || '页面视觉外壳',
         x: artboard.x,
         y: artboard.y,
-        width: DEFAULT_ARTBOARD_WIDTH,
+        width: artboard.width,
         height,
-        zIndex: Math.min(0, ...retainedElements
-          .filter((element) => element.artboardId === artboard.id)
-          .map((element) => element.zIndex)) - 1,
+        zIndex: 0,
         src: pageShell.src,
         objectFit: 'fill',
         designRole: 'page-shell',
@@ -1068,16 +1457,21 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         document: {
           ...state.document,
           version: state.document.version + 1,
-          artboards: state.document.artboards.map((item) => item.id === artboard.id
-            ? { ...item, width: DEFAULT_ARTBOARD_WIDTH, height, autoHeight: true }
-            : item),
+          artboards: state.document.artboards.map((item) =>
+            item.id === artboard.id
+              ? { ...item, width: artboard.width, height, autoHeight: true }
+              : item,
+          ),
           elements: [...retainedElements, shellElement],
-          assets: [...state.document.assets, {
-            id: createStoreId('asset'),
-            type: 'image',
-            name: pageShell.name,
-            src: pageShell.src,
-          }],
+          assets: [
+            ...state.document.assets,
+            {
+              id: createStoreId('asset'),
+              type: 'image',
+              name: pageShell.name,
+              src: pageShell.src,
+            },
+          ],
           updatedAt: new Date().toISOString(),
         },
         activeArtboardId: artboard.id,
@@ -1092,34 +1486,38 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setPageSectionLocked: (sectionId, locked) => {
     set((state) => {
       if (!state.document) return state
-      const instanceIds = new Set(state.document.elements
-        .filter((element) => element.componentBinding?.pageSectionId === sectionId)
-        .map((element) => element.componentBinding?.instanceId)
-        .filter((id): id is string => Boolean(id)))
+      const instanceIds = new Set(
+        state.document.elements
+          .filter((element) => element.componentBinding?.pageSectionId === sectionId)
+          .map((element) => element.componentBinding?.instanceId)
+          .filter((id): id is string => Boolean(id)),
+      )
       if (!instanceIds.size) return state
       return {
         document: {
           ...state.document,
           version: state.document.version + 1,
-          artboards: state.document.artboards.map((artboard) => artboard.pageDesign
-            ? {
-                ...artboard,
-                pageDesign: {
-                  ...artboard.pageDesign,
-                  blueprint: {
-                    ...artboard.pageDesign.blueprint,
-                    sections: artboard.pageDesign.blueprint.sections.map((section) => (
-                      section.id === sectionId ? { ...section, locked } : section
-                    )),
+          artboards: state.document.artboards.map((artboard) =>
+            artboard.pageDesign
+              ? {
+                  ...artboard,
+                  pageDesign: {
+                    ...artboard.pageDesign,
+                    blueprint: {
+                      ...artboard.pageDesign.blueprint,
+                      sections: artboard.pageDesign.blueprint.sections.map((section) =>
+                        section.id === sectionId ? { ...section, locked } : section,
+                      ),
+                    },
                   },
-                },
-              }
-            : artboard),
-          elements: state.document.elements.map((element) => (
+                }
+              : artboard,
+          ),
+          elements: state.document.elements.map((element) =>
             element.componentBinding && instanceIds.has(element.componentBinding.instanceId)
               ? { ...element, locked }
-              : element
-          )),
+              : element,
+          ),
           updatedAt: new Date().toISOString(),
         },
         history: pushHistory(state),
@@ -1131,21 +1529,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setSectionAutoLayout: (elementId, autoLayout) => {
     set((state) => {
       if (!state.document) return state
-      const section = state.document.elements.find((element) => element.id === elementId)
-      if (!section || section.type !== 'section') return state
-      const nextSection = { ...section, autoLayout }
-      const patches = new Map(
-        layoutSectionChildren(nextSection, state.document.elements).map((item) => [item.id, item.patch]),
+      const nextElements = applySectionAutoLayoutToElements(
+        state.document.elements,
+        elementId,
+        autoLayout,
       )
+      if (!nextElements) return state
       return {
         document: {
           ...state.document,
           version: state.document.version + 1,
-          elements: state.document.elements.map((element) => element.id === elementId
-            ? nextSection
-            : patches.has(element.id)
-              ? { ...element, ...patches.get(element.id) }
-              : element),
+          elements: nextElements,
           updatedAt: new Date().toISOString(),
         },
         history: pushHistory(state),
@@ -1181,9 +1575,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
               design: { ...instance.design, propsPatch },
             },
           },
-          elements: state.document.elements.map((item) => item.id === elementId
-            ? { ...item, src: image.src, name: image.name }
-            : item),
+          elements: state.document.elements.map((item) =>
+            item.id === elementId ? { ...item, src: image.src, name: image.name } : item,
+          ),
           assets: [
             ...state.document.assets,
             { id: createStoreId('asset'), type: 'image', name: image.name, src: image.src },
@@ -1198,6 +1592,87 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     return applied
   },
 
+  applyComponentSlotImages: (items) => {
+    let result = { ok: false, affectedElementIds: [] as string[] }
+    set((state) => {
+      if (!state.document || !items.length) return state
+      const uniqueItems = [...new Map(items.map((item) => [item.scope.elementId, item])).values()]
+      if (uniqueItems.length !== items.length) return state
+      const resolved = uniqueItems.map((item) => {
+        const element = state.document!.elements.find(
+          (candidate) => candidate.id === item.scope.elementId,
+        )
+        const binding = element?.componentBinding
+        const instance = binding
+          ? state.document!.componentInstances?.[binding.instanceId]
+          : undefined
+        if (
+          !element ||
+          element.type !== 'image' ||
+          !binding?.slotId ||
+          !binding.bindings.image ||
+          !instance ||
+          binding.instanceId !== item.scope.instanceId ||
+          binding.slotId !== item.scope.slotId ||
+          binding.bindings.image !== item.scope.propPath ||
+          (item.scope.currentImage && element.src !== item.scope.currentImage)
+        )
+          return undefined
+        return { ...item, element, binding, instance }
+      })
+      if (resolved.some((item) => !item)) return state
+
+      const componentInstances = { ...(state.document.componentInstances ?? {}) }
+      for (const item of resolved) {
+        if (!item) continue
+        const currentInstance = componentInstances[item.binding.instanceId]
+        const propsPatch = structuredClone(currentInstance.design.propsPatch)
+        setNestedPatchValue(propsPatch, item.binding.bindings.image!, item.image.src)
+        const task = currentInstance.design.assetTasks.find(
+          (candidate) => candidate.slotId === item.binding.slotId,
+        )
+        const fallbackPath = item.scope.fallbackPath ?? task?.fallbackPath
+        if (fallbackPath) setNestedPatchValue(propsPatch, fallbackPath, item.image.src)
+        componentInstances[item.binding.instanceId] = {
+          ...currentInstance,
+          design: { ...currentInstance.design, propsPatch },
+        }
+      }
+      const imageByElementId = new Map(
+        uniqueItems.map((item) => [item.scope.elementId, item.image]),
+      )
+      const affectedElementIds = [...imageByElementId.keys()]
+      result = { ok: true, affectedElementIds }
+      return {
+        document: {
+          ...state.document,
+          version: state.document.version + 1,
+          componentInstances,
+          elements: state.document.elements.map((element) => {
+            const image = imageByElementId.get(element.id)
+            return image && element.type === 'image'
+              ? { ...element, src: image.src, name: image.name }
+              : element
+          }),
+          assets: [
+            ...state.document.assets,
+            ...uniqueItems.map((item) => ({
+              id: createStoreId('asset'),
+              type: 'image' as const,
+              name: item.image.name,
+              src: item.image.src,
+            })),
+          ],
+          updatedAt: new Date().toISOString(),
+        },
+        selectedElementIds: affectedElementIds,
+        history: pushHistory(state),
+        future: [],
+      }
+    })
+    return result
+  },
+
   applyPageShellImage: (elementId, image) => {
     let applied = false
     set((state) => {
@@ -1209,15 +1684,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         document: {
           ...state.document,
           version: state.document.version + 1,
-          elements: state.document.elements.map((item) => item.id === elementId
-            ? { ...item, src: image.src, name: image.name }
-            : item),
-          assets: [...state.document.assets, {
-            id: createStoreId('asset'),
-            type: 'image',
-            name: image.name,
-            src: image.src,
-          }],
+          elements: state.document.elements.map((item) =>
+            item.id === elementId ? { ...item, src: image.src, name: image.name } : item,
+          ),
+          assets: [
+            ...state.document.assets,
+            {
+              id: createStoreId('asset'),
+              type: 'image',
+              name: image.name,
+              src: image.src,
+            },
+          ],
           updatedAt: new Date().toISOString(),
         },
         history: pushHistory(state),
@@ -1240,8 +1718,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
       return {
         selectedElementIds,
+        selectionScopeArmed: selectedElementIds.length > 0,
+        textRangeSelection:
+          state.textRangeSelection?.elementId === id && !options?.append
+            ? state.textRangeSelection
+            : undefined,
+        imageRegionSelection:
+          state.imageRegionSelection?.elementId === id && !options?.append
+            ? state.imageRegionSelection
+            : undefined,
         activeArtboardId: element?.artboardId ?? state.activeArtboardId,
         selectedArtboardId: undefined,
+        chatThreads: state.chatThreads.map((thread) =>
+          thread.id === state.activeChatThreadId && thread.visualOptimizationDraft
+            ? { ...thread, visualOptimizationDraft: undefined, prompt: '' }
+            : thread,
+        ),
       }
     }),
 
@@ -1255,37 +1747,102 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
       return {
         selectedElementIds,
+        selectionScopeArmed: selectedElementIds.length > 0,
+        textRangeSelection:
+          selectedElementIds.length === 1 &&
+          state.textRangeSelection?.elementId === selectedElementIds[0]
+            ? state.textRangeSelection
+            : undefined,
+        imageRegionSelection:
+          selectedElementIds.length === 1 &&
+          state.imageRegionSelection?.elementId === selectedElementIds[0]
+            ? state.imageRegionSelection
+            : undefined,
         activeArtboardId: element?.artboardId ?? state.activeArtboardId,
         selectedArtboardId: undefined,
+        chatThreads: state.chatThreads.map((thread) =>
+          thread.id === state.activeChatThreadId && thread.visualOptimizationDraft
+            ? { ...thread, visualOptimizationDraft: undefined, prompt: '' }
+            : thread,
+        ),
       }
     }),
 
-  selectArtboard: (id) => set({
-    activeArtboardId: id,
-    selectedArtboardId: id,
-    selectedElementIds: [],
-  }),
+  selectArtboard: (id) =>
+    set((state) => ({
+      activeArtboardId: id,
+      selectedArtboardId: id,
+      selectedElementIds: [],
+      selectionScopeArmed: false,
+      textRangeSelection: undefined,
+      imageRegionSelection: undefined,
+      // 切换画板后，旧画板的待确认视觉优化摘要不再适用。
+      chatThreads: state.chatThreads.map((thread) =>
+        thread.id === state.activeChatThreadId
+          ? {
+              ...thread,
+              visualOptimizationDraft: undefined,
+              prompt: thread.visualOptimizationDraft ? '' : thread.prompt,
+            }
+          : thread,
+      ),
+    })),
 
-  clearSelection: () => set({ selectedElementIds: [], selectedArtboardId: undefined }),
+  clearSelection: () =>
+    set({
+      selectedElementIds: [],
+      selectedArtboardId: undefined,
+      selectionScopeArmed: false,
+      textRangeSelection: undefined,
+      imageRegionSelection: undefined,
+    }),
+
+  clearArtboardSelection: () =>
+    set({
+      activeArtboardId: undefined,
+      selectedArtboardId: undefined,
+      selectedElementIds: [],
+      selectionScopeArmed: false,
+      textRangeSelection: undefined,
+      imageRegionSelection: undefined,
+    }),
+
+  consumeSelectionScope: () =>
+    set({
+      selectionScopeArmed: false,
+      textRangeSelection: undefined,
+      imageRegionSelection: undefined,
+    }),
+
+  setTextRangeSelection: (textRangeSelection) =>
+    set({
+      textRangeSelection,
+      selectionScopeArmed: Boolean(textRangeSelection),
+    }),
+  setImageRegionSelection: (imageRegionSelection) =>
+    set({
+      imageRegionSelection,
+      selectionScopeArmed: Boolean(imageRegionSelection),
+    }),
 
   updateElement: (id, patch) =>
     set((state) => {
       if (!state.document) return state
-      const nextElements = applyElementPatches(
-        state.document.elements,
-        [{ id, patch }],
-      )
+      const nextElements = applyElementPatches(state.document.elements, [{ id, patch }])
       const nextComponentInstances = syncComponentInstancesFromElements(
         state.document.componentInstances ?? {},
         nextElements,
-        new Set(nextElements
-          .filter((element) => element.id === id || element.parentId === id)
-          .map((element) => element.id)),
+        new Set(
+          nextElements
+            .filter((element) => element.id === id || element.parentId === id)
+            .map((element) => element.id),
+        ),
       )
 
       return {
         document: {
           ...state.document,
+          version: state.document.version + 1,
           componentInstances: nextComponentInstances,
           elements: nextElements,
           updatedAt: new Date().toISOString(),
@@ -1299,16 +1856,19 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((state) => {
       if (!state.document) return state
       const nextElements = applyElementPatches(state.document.elements, patches)
-      const changedIds = new Set(patches.flatMap((item) => [
-        item.id,
-        ...nextElements
-          .filter((element) => element.parentId === item.id)
-          .map((element) => element.id),
-      ]))
+      const changedIds = new Set(
+        patches.flatMap((item) => [
+          item.id,
+          ...nextElements
+            .filter((element) => element.parentId === item.id)
+            .map((element) => element.id),
+        ]),
+      )
 
       return {
         document: {
           ...state.document,
+          version: state.document.version + 1,
           componentInstances: syncComponentInstancesFromElements(
             state.document.componentInstances ?? {},
             nextElements,
@@ -1322,6 +1882,65 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }
     }),
 
+  beginPropertyTransaction: () =>
+    set((state) =>
+      state.document && !state.propertyTransaction
+        ? { propertyTransaction: { baseline: structuredClone(state.document) } }
+        : state,
+    ),
+
+  previewElementProperties: (patches) =>
+    set((state) => {
+      if (!state.document || !state.propertyTransaction) return state
+      const nextElements = applyElementPatches(state.document.elements, patches)
+      const changedIds = new Set(patches.map((item) => item.id))
+      return {
+        document: {
+          ...state.document,
+          elements: nextElements,
+          componentInstances: syncComponentInstancesFromElements(
+            state.document.componentInstances ?? {},
+            nextElements,
+            changedIds,
+          ),
+        },
+      }
+    }),
+
+  previewSectionAutoLayout: (elementId, autoLayout) =>
+    set((state) => {
+      if (!state.document || !state.propertyTransaction) return state
+      const elements = applySectionAutoLayoutToElements(
+        state.document.elements,
+        elementId,
+        autoLayout,
+      )
+      return elements ? { document: { ...state.document, elements } } : state
+    }),
+
+  commitPropertyTransaction: () =>
+    set((state) => {
+      if (!state.document || !state.propertyTransaction) return state
+      const baseline = state.propertyTransaction.baseline
+      return {
+        document: {
+          ...state.document,
+          version: baseline.version + 1,
+          updatedAt: new Date().toISOString(),
+        },
+        history: [...state.history, baseline].slice(-60),
+        future: [],
+        propertyTransaction: undefined,
+      }
+    }),
+
+  cancelPropertyTransaction: () =>
+    set((state) =>
+      state.propertyTransaction
+        ? { document: state.propertyTransaction.baseline, propertyTransaction: undefined }
+        : state,
+    ),
+
   addArtboard: (artboard) =>
     set((state) => {
       if (!state.document) return state
@@ -1329,6 +1948,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return {
         document: {
           ...state.document,
+          version: state.document.version + 1,
           artboards: [...state.document.artboards, artboard],
           updatedAt: new Date().toISOString(),
         },
@@ -1344,14 +1964,332 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((state) => {
       if (!state.document) return state
 
+      const current = state.document.artboards.find((artboard) => artboard.id === id)
+      if (current?.designSpec && ['x', 'y', 'width', 'height'].some((key) => key in patch)) {
+        const nextArtboard = { ...current, ...patch }
+        const schema = {
+          ...current.designSpec,
+          viewport: {
+            width: Math.max(320, Number(patch.width ?? current.designSpec.viewport.width)),
+            height: Math.max(320, Number(patch.height ?? current.designSpec.viewport.height)),
+          },
+        }
+        const transaction = compileDesignSpecSceneTransaction({
+          artboard: nextArtboard,
+          renderSchema: schema,
+          comparisonSchema: schema,
+          previousSchema: current.designSpec,
+          currentElements: state.document.elements,
+          replaceAll: true,
+        })
+        const nextIds = new Set(transaction.nextElements.map((element) => element.id))
+        return {
+          document: {
+            ...state.document,
+            version: state.document.version + 1,
+            artboards: state.document.artboards.map((artboard) =>
+              artboard.id === id
+                ? {
+                    ...nextArtboard,
+                    designBreakpointId: undefined,
+                    width: schema.viewport.width,
+                    height: transaction.contentHeight,
+                    designSpec: schema,
+                    genericUiSchema: schema,
+                  }
+                : artboard,
+            ),
+            elements: transaction.nextElements,
+            updatedAt: new Date().toISOString(),
+          },
+          selectedElementIds: state.selectedElementIds.filter((elementId) =>
+            nextIds.has(elementId),
+          ),
+          history: pushHistory(state),
+          future: [],
+        }
+      }
+
       return {
         document: {
           ...state.document,
+          version: state.document.version + 1,
           artboards: state.document.artboards.map((artboard) =>
             artboard.id === id ? { ...artboard, ...patch } : artboard,
           ),
           updatedAt: new Date().toISOString(),
         },
+        history: pushHistory(state),
+        future: [],
+      }
+    }),
+
+  setDesignBreakpoint: (id, breakpointId) =>
+    set((state) => {
+      if (!state.document) return state
+      const artboard = state.document.artboards.find((item) => item.id === id)
+      if (!artboard?.designSpec) return state
+      const renderSchema = resolveDesignSpecBreakpoint(artboard.designSpec, breakpointId)
+      const previewArtboard = {
+        ...artboard,
+        width: renderSchema.viewport.width,
+        height: renderSchema.viewport.height,
+        designBreakpointId: breakpointId,
+      }
+      const transaction = compileDesignSpecSceneTransaction({
+        artboard: previewArtboard,
+        renderSchema,
+        comparisonSchema: renderSchema,
+        previousSchema: artboard.designSpec,
+        currentElements: state.document.elements,
+        replaceAll: true,
+      })
+      const nextIds = new Set(transaction.nextElements.map((element) => element.id))
+      return {
+        document: {
+          ...state.document,
+          version: state.document.version + 1,
+          artboards: state.document.artboards.map((item) =>
+            item.id === id
+              ? {
+                  ...previewArtboard,
+                  height: transaction.contentHeight,
+                }
+              : item,
+          ),
+          elements: transaction.nextElements,
+          updatedAt: new Date().toISOString(),
+        },
+        selectedElementIds: state.selectedElementIds.filter((elementId) => nextIds.has(elementId)),
+        history: pushHistory(state),
+        future: [],
+      }
+    }),
+
+  upsertDesignBreakpoint: (id, breakpoint) =>
+    set((state) => {
+      if (!state.document) return state
+      const artboard = state.document.artboards.find((item) => item.id === id)
+      if (!artboard?.designSpec) return state
+      const normalizedBreakpoint = {
+        ...breakpoint,
+        label: breakpoint.label.trim().slice(0, 40) || '自定义断点',
+        viewport: {
+          width: Math.max(320, Math.min(2560, Math.round(breakpoint.viewport.width))),
+          height: Math.max(320, Math.min(10000, Math.round(breakpoint.viewport.height))),
+        },
+      }
+      const current = artboard.designSpec.responsive?.breakpoints ?? DEFAULT_DESIGN_BREAKPOINTS
+      const exists = current.some((item) => item.id === normalizedBreakpoint.id)
+      const breakpoints = exists
+        ? current.map((item) => (item.id === normalizedBreakpoint.id ? normalizedBreakpoint : item))
+        : [...current, normalizedBreakpoint].slice(0, 11)
+      const designSpec = {
+        ...artboard.designSpec,
+        responsive: { strategy: 'fluid' as const, breakpoints },
+      }
+      return {
+        document: {
+          ...state.document,
+          version: state.document.version + 1,
+          artboards: state.document.artboards.map((item) =>
+            item.id === id ? { ...item, designSpec, genericUiSchema: designSpec } : item,
+          ),
+          updatedAt: new Date().toISOString(),
+        },
+        history: pushHistory(state),
+        future: [],
+      }
+    }),
+
+  removeDesignBreakpoint: (id, breakpointId) =>
+    set((state) => {
+      if (!state.document || ['mobile', 'tablet', 'desktop'].includes(breakpointId)) return state
+      const artboard = state.document.artboards.find((item) => item.id === id)
+      if (!artboard?.designSpec?.responsive) return state
+      const breakpoints = artboard.designSpec.responsive.breakpoints.filter(
+        (item) => item.id !== breakpointId,
+      )
+      if (breakpoints.length === artboard.designSpec.responsive.breakpoints.length) return state
+      const designSpec = {
+        ...artboard.designSpec,
+        responsive: { ...artboard.designSpec.responsive, breakpoints },
+      }
+      const responsiveBaselines = { ...artboard.responsiveBaselines }
+      delete responsiveBaselines[breakpointId]
+      return {
+        document: {
+          ...state.document,
+          version: state.document.version + 1,
+          artboards: state.document.artboards.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  designSpec,
+                  genericUiSchema: designSpec,
+                  responsiveBaselines,
+                  designBreakpointId:
+                    item.designBreakpointId === breakpointId ? 'desktop' : item.designBreakpointId,
+                }
+              : item,
+          ),
+          updatedAt: new Date().toISOString(),
+        },
+        history: pushHistory(state),
+        future: [],
+      }
+    }),
+
+  captureResponsiveBaseline: (id, breakpointId) =>
+    set((state) => {
+      if (!state.document) return state
+      const artboard = state.document.artboards.find((item) => item.id === id)
+      if (!artboard?.designSpec) return state
+      const preview = compileResponsivePreviews(artboard.designSpec, artboard).find(
+        (item) => item.breakpoint.id === breakpointId,
+      )
+      if (!preview) return state
+      const baseline = {
+        breakpointId,
+        fingerprint: preview.fingerprint,
+        documentRevision: state.document.version,
+        capturedAt: new Date().toISOString(),
+        viewport: { ...preview.schema.viewport },
+        elementCount: preview.elements.length,
+      }
+      return {
+        document: {
+          ...state.document,
+          version: state.document.version + 1,
+          artboards: state.document.artboards.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  responsiveBaselines: { ...item.responsiveBaselines, [breakpointId]: baseline },
+                }
+              : item,
+          ),
+          updatedAt: new Date().toISOString(),
+        },
+        history: pushHistory(state),
+        future: [],
+      }
+    }),
+
+  clearResponsiveBaseline: (id, breakpointId) =>
+    set((state) => {
+      if (!state.document) return state
+      const artboard = state.document.artboards.find((item) => item.id === id)
+      if (!artboard?.responsiveBaselines?.[breakpointId]) return state
+      const responsiveBaselines = { ...artboard.responsiveBaselines }
+      delete responsiveBaselines[breakpointId]
+      return {
+        document: {
+          ...state.document,
+          version: state.document.version + 1,
+          artboards: state.document.artboards.map((item) =>
+            item.id === id ? { ...item, responsiveBaselines } : item,
+          ),
+          updatedAt: new Date().toISOString(),
+        },
+        history: pushHistory(state),
+        future: [],
+      }
+    }),
+
+  applyResponsiveTokenBatch: (id, breakpointIds, patch) =>
+    set((state) => {
+      if (!state.document || !breakpointIds.length) return state
+      const artboard = state.document.artboards.find((item) => item.id === id)
+      if (!artboard?.designSpec?.responsive) return state
+      const selectedIds = new Set(breakpointIds)
+      const breakpoints = artboard.designSpec.responsive.breakpoints.map((breakpoint) => {
+        if (!selectedIds.has(breakpoint.id)) return breakpoint
+        const colors = [
+          ...(breakpoint.overrides?.theme?.colors ?? artboard.designSpec!.theme.colors),
+        ]
+        while (colors.length < 5) colors.push('#d9dee8')
+        if (patch.primaryColor) colors[3] = patch.primaryColor
+        return {
+          ...breakpoint,
+          overrides: {
+            ...breakpoint.overrides,
+            theme: {
+              ...breakpoint.overrides?.theme,
+              ...(patch.primaryColor ? { colors } : {}),
+              ...(patch.radius !== undefined
+                ? { radius: Math.max(0, Math.min(32, patch.radius)) }
+                : {}),
+              ...(patch.density ? { density: patch.density } : {}),
+            },
+            layout: {
+              ...breakpoint.overrides?.layout,
+              ...(patch.contentPadding !== undefined
+                ? { contentPadding: Math.max(0, Math.min(96, patch.contentPadding)) }
+                : {}),
+              ...(patch.blockGap !== undefined
+                ? { blockGap: Math.max(0, Math.min(64, patch.blockGap)) }
+                : {}),
+              ...(patch.sidebarMode ? { sidebarMode: patch.sidebarMode } : {}),
+            },
+          },
+        }
+      })
+      const designSpec = {
+        ...artboard.designSpec,
+        responsive: { ...artboard.designSpec.responsive, breakpoints },
+      }
+      const activeBreakpointId =
+        artboard.designBreakpointId ??
+        (artboard.width < 600 ? 'mobile' : artboard.width < 1024 ? 'tablet' : 'desktop')
+      if (!selectedIds.has(activeBreakpointId)) {
+        return {
+          document: {
+            ...state.document,
+            version: state.document.version + 1,
+            artboards: state.document.artboards.map((item) =>
+              item.id === id ? { ...item, designSpec, genericUiSchema: designSpec } : item,
+            ),
+            updatedAt: new Date().toISOString(),
+          },
+          history: pushHistory(state),
+          future: [],
+        }
+      }
+      const renderSchema = resolveDesignSpecBreakpoint(designSpec, activeBreakpointId)
+      const previewArtboard = {
+        ...artboard,
+        width: renderSchema.viewport.width,
+        height: renderSchema.viewport.height,
+      }
+      const transaction = compileDesignSpecSceneTransaction({
+        artboard: previewArtboard,
+        renderSchema,
+        comparisonSchema: renderSchema,
+        previousSchema: artboard.designSpec,
+        currentElements: state.document.elements,
+        replaceAll: true,
+      })
+      const nextIds = new Set(transaction.nextElements.map((element) => element.id))
+      return {
+        document: {
+          ...state.document,
+          version: state.document.version + 1,
+          artboards: state.document.artboards.map((item) =>
+            item.id === id
+              ? {
+                  ...previewArtboard,
+                  height: transaction.contentHeight,
+                  designSpec,
+                  genericUiSchema: designSpec,
+                  designBreakpointId: activeBreakpointId,
+                }
+              : item,
+          ),
+          elements: transaction.nextElements,
+          updatedAt: new Date().toISOString(),
+        },
+        selectedElementIds: state.selectedElementIds.filter((elementId) => nextIds.has(elementId)),
         history: pushHistory(state),
         future: [],
       }
@@ -1364,6 +2302,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return {
         document: {
           ...state.document,
+          version: state.document.version + 1,
           elements: [...state.document.elements, element],
           updatedAt: new Date().toISOString(),
         },
@@ -1389,16 +2328,21 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           }
         }
       }
-      const removedInstanceIds = new Set(state.document.elements
-        .filter((element) => removalIds.has(element.id) && element.type === 'section')
-        .map((element) => element.componentBinding?.instanceId)
-        .filter((value): value is string => Boolean(value)))
+      const removedInstanceIds = new Set(
+        state.document.elements
+          .filter((element) => removalIds.has(element.id) && element.type === 'section')
+          .map((element) => element.componentBinding?.instanceId)
+          .filter((value): value is string => Boolean(value)),
+      )
       return {
         document: {
           ...state.document,
-          componentInstances: Object.fromEntries(Object.entries(
-            state.document.componentInstances ?? {},
-          ).filter(([instanceId]) => !removedInstanceIds.has(instanceId))),
+          version: state.document.version + 1,
+          componentInstances: Object.fromEntries(
+            Object.entries(state.document.componentInstances ?? {}).filter(
+              ([instanceId]) => !removedInstanceIds.has(instanceId),
+            ),
+          ),
           elements: state.document.elements.filter((element) => !removalIds.has(element.id)),
           updatedAt: new Date().toISOString(),
         },
@@ -1416,18 +2360,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const nextArtboards = state.document.artboards.filter((artboard) => artboard.id !== id)
       const nextElements = state.document.elements.filter((element) => element.artboardId !== id)
       const nextActiveArtboardId =
-        state.activeArtboardId === id
-          ? nextArtboards[0]?.id
-          : state.activeArtboardId
+        state.activeArtboardId === id ? nextArtboards[0]?.id : state.activeArtboardId
 
       return {
         document: {
           ...state.document,
           artboards: nextArtboards,
           elements: nextElements,
-          componentInstances: Object.fromEntries(Object.entries(
-            state.document.componentInstances ?? {},
-          ).filter(([, instance]) => instance.artboardId !== id)),
+          componentInstances: Object.fromEntries(
+            Object.entries(state.document.componentInstances ?? {}).filter(
+              ([, instance]) => instance.artboardId !== id,
+            ),
+          ),
           updatedAt: new Date().toISOString(),
         },
         activeArtboardId: nextActiveArtboardId,
@@ -1436,7 +2380,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           (thread.artboardIds ?? []).includes(id) || thread.targetArtboardId === id
             ? {
                 ...thread,
-                targetArtboardId: thread.targetArtboardId === id ? undefined : thread.targetArtboardId,
+                targetArtboardId:
+                  thread.targetArtboardId === id ? undefined : thread.targetArtboardId,
                 activeTargetArtboardId:
                   thread.activeTargetArtboardId === id ? undefined : thread.activeTargetArtboardId,
                 assetArtboardId: thread.assetArtboardId === id ? undefined : thread.assetArtboardId,
@@ -1488,6 +2433,7 @@ function createDefaultChatThread(): EditorChatThread {
     artboardIds: [],
     placementMode: 'auto',
     prompt: '',
+    mentions: [],
     referenceImages: [],
     textReferences: [],
     messages: [],
@@ -1495,16 +2441,57 @@ function createDefaultChatThread(): EditorChatThread {
 }
 
 function normalizePersistedChatThreads(threads: EditorChatThread[]) {
-  return threads.map((thread) => ({
-    ...thread,
-    messages: thread.messages.map((message) => message.pending
-      ? {
-          ...message,
-          pending: false,
-          text: '上次任务在应用重启前中断，未继续执行。请点击“继续”恢复任务。',
-        }
-      : message),
-  }))
+  return threads.map((thread) => {
+    const interruptedRunIds = new Set(
+      thread.messages
+        .filter((message) => message.pending && message.runId)
+        .map((message) => message.runId!),
+    )
+    return {
+      ...thread,
+      messages: thread.messages.map((message) =>
+        message.pending
+          ? {
+              ...message,
+              pending: false,
+              text: '上次任务在应用重启前中断，可输入“继续”从检查点恢复。',
+            }
+          : message,
+      ),
+      runs: Object.fromEntries(
+        Object.entries(thread.runs ?? {}).map(([id, run]) =>
+          interruptedRunIds.has(id)
+            ? [
+                id,
+                {
+                  ...run,
+                  status: 'interrupted' as const,
+                  phaseLabel: '任务在应用重启前中断',
+                  finishedAt: new Date().toISOString(),
+                },
+              ]
+            : [id, normalizePersistedRun(run)],
+        ),
+      ),
+    }
+  })
+}
+
+function normalizePersistedRun(run: NonNullable<EditorChatThread['runs']>[string]) {
+  if (!run.finishedAt || !['completed', 'failed', 'cancelled'].includes(run.status)) return run
+  return {
+    ...run,
+    steps: run.steps.map((step) => {
+      if (!['running', 'retrying'].includes(step.status)) return step
+      const status =
+        run.status === 'completed'
+          ? ('completed' as const)
+          : run.status === 'cancelled'
+            ? ('cancelled' as const)
+            : ('failed' as const)
+      return { ...step, status, completedAt: step.completedAt ?? run.finishedAt }
+    }),
+  }
 }
 
 function bindThreadToArtboard(
@@ -1534,62 +2521,11 @@ function focusConversationArtboard(viewport: ViewportState, artboard: Artboard):
 }
 
 function createStoreId(prefix: string) {
-  const suffix = typeof crypto !== 'undefined' && 'randomUUID' in crypto
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const suffix =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`
   return `${prefix}-${suffix}`
-}
-
-function createComponentBindings(
-  propPaths: string[],
-  propertyKinds: Map<string, string>,
-  imagePath?: string,
-) {
-  const bindings: NonNullable<DesignElement['componentBinding']>['bindings'] = {}
-  for (const path of propPaths) {
-    const kind = propertyKinds.get(path)
-    if (kind === 'width' || kind === 'height' || kind === 'x' || kind === 'y') {
-      bindings[kind] = path
-    } else if (kind === 'color') {
-      bindings.color = path
-    } else if (kind === 'visibility') {
-      bindings.visible = path
-    }
-  }
-  if (imagePath) bindings.image = imagePath
-  return bindings
-}
-
-function readRegionColor(
-  propPaths: string[],
-  propertyValues: Record<string, unknown>,
-  fallback = '#e5e7eb',
-) {
-  const color = propPaths
-    .map((path) => propertyValues[path])
-    .find((value): value is string => (
-      typeof value === 'string' && /^(?:#|rgb|hsl|transparent)/i.test(value)
-    ))
-  return color ?? fallback
-}
-
-function readThemeColor(
-  design: ComponentDesignMeta,
-  role: 'primary' | 'secondary' | 'background' | 'surface' | 'text' | 'accent',
-  fallback: string,
-) {
-  const theme = design.blueprint.visualTheme
-  return theme?.colorTokens?.find((token) => token.role === role)?.value ?? (
-    role === 'text' ? theme?.colors[2] : role === 'background' ? theme?.colors[1] : theme?.colors[0]
-  ) ?? fallback
-}
-
-function readThemeTypography(
-  design: ComponentDesignMeta,
-  role: 'display' | 'heading' | 'body' | 'caption' | 'button',
-) {
-  const typography = design.blueprint.visualTheme?.typography ?? []
-  return typography.find((token) => token.role === role) ?? typography[0]
 }
 
 function setNestedPatchValue(target: Record<string, unknown>, path: string, value: unknown) {
@@ -1614,11 +2550,15 @@ function applyElementPatches(
   const patchMap = new Map(patches.map((item) => [item.id, item.patch]))
   for (const item of patches) {
     const root = elements.find((element) => element.id === item.id)
-    if (!root || root.type !== 'section') continue
+    if (!root || root.type !== 'section' || root.autoLayout) continue
     const nextX = Number.isFinite(item.patch.x) ? item.patch.x! : root.x
     const nextY = Number.isFinite(item.patch.y) ? item.patch.y! : root.y
-    const nextWidth = Number.isFinite(item.patch.width) ? Math.max(1, item.patch.width!) : root.width
-    const nextHeight = Number.isFinite(item.patch.height) ? Math.max(1, item.patch.height!) : root.height
+    const nextWidth = Number.isFinite(item.patch.width)
+      ? Math.max(1, item.patch.width!)
+      : root.width
+    const nextHeight = Number.isFinite(item.patch.height)
+      ? Math.max(1, item.patch.height!)
+      : root.height
     const scaleX = nextWidth / Math.max(1, root.width)
     const scaleY = nextHeight / Math.max(1, root.height)
     for (const child of elements.filter((element) => element.parentId === root.id)) {
@@ -1631,10 +2571,53 @@ function applyElementPatches(
       })
     }
   }
-  return elements.map((element) => {
+  let nextElements = elements.map((element) => {
     const patch = patchMap.get(element.id)
     return patch ? ({ ...element, ...patch } as DesignElement) : element
   })
+  const affected = new Set(patches.map((item) => item.id))
+  nextElements = nextElements.map((element) => {
+    if (!affected.has(element.id) || element.type === 'section') return element
+    const sizing = resolveLayoutSizing(element)
+    return sizing.widthMode === 'hug' || sizing.heightMode === 'hug'
+      ? ({ ...element, ...resolveElementLayoutSize(element) } as DesignElement)
+      : element
+  })
+  for (let pass = 0; pass < 4; pass += 1) {
+    const sections = nextElements.filter(
+      (element): element is import('../types').SectionElement =>
+        element.type === 'section' &&
+        Boolean(element.autoLayout) &&
+        (affected.has(element.id) ||
+          nextElements.some((child) => child.parentId === element.id && affected.has(child.id))),
+    )
+    if (!sections.length) break
+    for (const section of sections) {
+      const laidOut = applySectionAutoLayoutToElements(nextElements, section.id, section.autoLayout)
+      if (laidOut) nextElements = laidOut
+      affected.add(section.id)
+    }
+  }
+  return nextElements
+}
+
+function applySectionAutoLayoutToElements(
+  elements: DesignElement[],
+  elementId: string,
+  autoLayout: import('../types').SectionElement['autoLayout'],
+) {
+  const section = elements.find((element) => element.id === elementId)
+  if (!section || section.type !== 'section') return undefined
+  const nextSection = { ...section, autoLayout }
+  const result = layoutSection(nextSection, elements)
+  const patches = new Map(result.childPatches.map((item) => [item.id, item.patch]))
+  return elements.map((element) =>
+    element.id === elementId
+      ? { ...nextSection, ...result.sectionPatch }
+      : patches.has(element.id)
+        ? { ...element, ...patches.get(element.id) }
+        : element,
+  ) as DesignElement[]
 }
 
 function syncComponentInstancesFromElements(
@@ -1642,12 +2625,14 @@ function syncComponentInstancesFromElements(
   elements: DesignElement[],
   changedIds: Set<string>,
 ) {
-  return Object.fromEntries(Object.entries(componentInstances).map(([instanceId, instance]) => {
-      const designElements = elements.filter((element) => (
-        changedIds.has(element.id) &&
-        element.componentBinding?.instanceId === instanceId &&
-        element.componentBinding.renderMode !== 'root'
-      ))
+  return Object.fromEntries(
+    Object.entries(componentInstances).map(([instanceId, instance]) => {
+      const designElements = elements.filter(
+        (element) =>
+          changedIds.has(element.id) &&
+          element.componentBinding?.instanceId === instanceId &&
+          element.componentBinding.renderMode !== 'root',
+      )
       if (!designElements.length) return [instanceId, instance]
       const propsPatch = structuredClone(instance.design.propsPatch)
       for (const element of designElements) {
@@ -1679,11 +2664,15 @@ function syncComponentInstancesFromElements(
           if (color) setNestedPatchValue(propsPatch, binding.bindings.color, color)
         }
       }
-      return [instanceId, {
-        ...instance,
-        design: { ...instance.design, propsPatch },
-      }]
-  }))
+      return [
+        instanceId,
+        {
+          ...instance,
+          design: { ...instance.design, propsPatch },
+        },
+      ]
+    }),
+  )
 }
 
 function getElementColor(element: DesignElement) {
@@ -1691,4 +2680,21 @@ function getElementColor(element: DesignElement) {
   if (element.type === 'text') return element.style.color
   if (element.type === 'button') return element.style.background
   return undefined
+}
+
+function constrainElementsToArtboard(elements: DesignElement[], artboard: Artboard) {
+  return elements.map((element) => {
+    if (element.artboardId !== artboard.id) return element
+    // 只修正完全跑到画板外的起点，不再压缩节点尺寸。此前这里通过
+    // min(width/height, 剩余空间) 裁短文本、图片和组件，造成底部内容
+    // 被截断。画板高度应由提交阶段的 contentBottom 统一扩展。
+    const maxX = Math.max(artboard.x, artboard.x + artboard.width - Math.max(1, element.width))
+    const x = Math.max(artboard.x, Math.min(element.x, maxX))
+    const y = Math.max(artboard.y, element.y)
+    return {
+      ...element,
+      x,
+      y,
+    }
+  })
 }

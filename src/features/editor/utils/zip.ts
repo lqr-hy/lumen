@@ -13,15 +13,39 @@ export function createZip(entries: ZipEntry[]) {
     const name = encoder.encode(entry.name.replace(/^\/+/, ''))
     const checksum = crc32(entry.data)
     const local = concatBytes(
-      uint32(0x04034b50), uint16(20), uint16(0x0800), uint16(0),
-      uint16(0), uint16(0), uint32(checksum), uint32(entry.data.length),
-      uint32(entry.data.length), uint16(name.length), uint16(0), name, entry.data,
+      uint32(0x04034b50),
+      uint16(20),
+      uint16(0x0800),
+      uint16(0),
+      uint16(0),
+      uint16(0),
+      uint32(checksum),
+      uint32(entry.data.length),
+      uint32(entry.data.length),
+      uint16(name.length),
+      uint16(0),
+      name,
+      entry.data,
     )
     const central = concatBytes(
-      uint32(0x02014b50), uint16(20), uint16(20), uint16(0x0800), uint16(0),
-      uint16(0), uint16(0), uint32(checksum), uint32(entry.data.length),
-      uint32(entry.data.length), uint16(name.length), uint16(0), uint16(0),
-      uint16(0), uint16(0), uint32(0), uint32(offset), name,
+      uint32(0x02014b50),
+      uint16(20),
+      uint16(20),
+      uint16(0x0800),
+      uint16(0),
+      uint16(0),
+      uint16(0),
+      uint32(checksum),
+      uint32(entry.data.length),
+      uint32(entry.data.length),
+      uint16(name.length),
+      uint16(0),
+      uint16(0),
+      uint16(0),
+      uint16(0),
+      uint32(0),
+      uint32(offset),
+      name,
     )
     localParts.push(local)
     centralParts.push(central)
@@ -32,8 +56,14 @@ export function createZip(entries: ZipEntry[]) {
   return concatBytes(
     ...localParts,
     centralDirectory,
-    uint32(0x06054b50), uint16(0), uint16(0), uint16(entries.length),
-    uint16(entries.length), uint32(centralDirectory.length), uint32(offset), uint16(0),
+    uint32(0x06054b50),
+    uint16(0),
+    uint16(0),
+    uint16(entries.length),
+    uint16(entries.length),
+    uint32(centralDirectory.length),
+    uint32(offset),
+    uint16(0),
   )
 }
 

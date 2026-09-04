@@ -11,6 +11,7 @@
 @include meta.load-css('./base/responsive-base');
 @include meta.load-css('./layout/app-layout');
 @include meta.load-css('./pages/home');
+@include meta.load-css('./pages/responsive-visual-fixture');
 @include meta.load-css('./components/prompt-composer');
 @include meta.load-css('./pages/home-sections');
 @include meta.load-css('./editor/editor-shell');

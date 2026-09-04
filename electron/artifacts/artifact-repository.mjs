@@ -27,6 +27,7 @@ export async function writeArtifact(input) {
     ...(typeof input.mime === 'string' ? { mime: input.mime } : {}),
     ...(Number.isFinite(input.width) ? { width: input.width } : {}),
     ...(Number.isFinite(input.height) ? { height: input.height } : {}),
+    ...(input.analysis && typeof input.analysis === 'object' ? { analysis: input.analysis } : {}),
     createdAt: new Date().toISOString(),
   }
   await fs.mkdir(directory, { recursive: true })
@@ -40,7 +41,10 @@ export async function readArtifact(artifactId) {
   const directory = getArtifactDirectory(artifactId)
   try {
     const metadata = JSON.parse(await fs.readFile(path.join(directory, 'metadata.json'), 'utf8'))
-    const content = await fs.readFile(path.join(directory, `content.${extensionForKind(metadata.kind)}`), 'utf8')
+    const content = await fs.readFile(
+      path.join(directory, `content.${extensionForKind(metadata.kind)}`),
+      'utf8',
+    )
     return { ...metadata, content }
   } catch (error) {
     if (error?.code === 'ENOENT') return undefined
@@ -61,7 +65,7 @@ function extensionForKind(kind) {
 }
 
 async function writeAtomic(filePath, content) {
-  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
+  const temporaryPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`
   await fs.writeFile(temporaryPath, content, 'utf8')
   await fs.rename(temporaryPath, filePath)
 }

@@ -1,22 +1,43 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent, PointerEvent } from 'react'
-import html2canvas from 'html2canvas'
-import { Lock, LockOpen, WandSparkles } from 'lucide-react'
-import { ElementRenderer } from './ElementRenderer'
+import {
+  Check,
+  Eraser,
+  Lock,
+  LockOpen,
+  Paintbrush,
+  RotateCcw,
+  Square,
+  WandSparkles,
+  X,
+} from 'lucide-react'
+import { ElementRenderer, type ElementRendererProps } from './ElementRenderer'
+import { ArtboardFrame } from './ArtboardFrame'
 import { AiCanvasChat } from './AiCanvasChat'
 import { CanvasStartPrompt } from './CanvasStartPrompt'
 import { SelectionBox, type ResizeHandle } from './SelectionBox'
 import { useEditorStore } from '../store/editor-store'
 import type { Artboard, DesignElement, ImageElement, Point } from '../types'
 import { clampZoom, screenToWorld, zoomAtPoint } from '../utils/coordinates'
+import { rasterizeNode } from '../utils/rasterize-node'
 import {
   canRegenerateComponentSlot,
   createComponentSlotRegenerationText,
-} from '../utils/component-edit-scope'
+} from '../utils/selection-scope'
 import { cn } from '../../../lib/cn'
+import { findEditableMaskBounds, hasEditableImageMask } from '../utils/image-mask'
+import { resolveComposerQueueTarget } from '../utils/composer-target'
 
 interface DragState {
-  mode: 'pan' | 'move' | 'resize' | 'marquee' | 'move-artboard' | 'resize-artboard' | 'slice-image'
+  mode:
+    | 'pan'
+    | 'move'
+    | 'resize'
+    | 'marquee'
+    | 'move-artboard'
+    | 'resize-artboard'
+    | 'slice-image'
+    | 'paint-mask'
   pointerId: number
   startScreen: Point
   startWorld?: Point
@@ -25,6 +46,7 @@ interface DragState {
   startArtboard?: Artboard
   handle?: ResizeHandle
   appendSelection?: boolean
+  strokeIndex?: number
 }
 
 interface InfiniteCanvasProps {
@@ -48,6 +70,14 @@ interface WorldRect {
   top: number
   width: number
   height: number
+}
+
+type MaskTool = 'rectangle' | 'brush' | 'erase'
+
+interface MaskStroke {
+  mode: 'brush' | 'erase'
+  size: number
+  points: Point[]
 }
 
 const contextMenuSize = {
@@ -76,6 +106,7 @@ export function InfiniteCanvas({
   const selectElement = useEditorStore((state) => state.selectElement)
   const setSelectedElements = useEditorStore((state) => state.setSelectedElements)
   const clearSelection = useEditorStore((state) => state.clearSelection)
+  const clearArtboardSelection = useEditorStore((state) => state.clearArtboardSelection)
   const updateElements = useEditorStore((state) => state.updateElements)
   const updateElement = useEditorStore((state) => state.updateElement)
   const updateArtboard = useEditorStore((state) => state.updateArtboard)
@@ -103,6 +134,13 @@ export function InfiniteCanvas({
   const [editingElementId, setEditingElementId] = useState<string | null>(null)
   const [sliceTargetId, setSliceTargetId] = useState<string | null>(null)
   const [sliceRect, setSliceRect] = useState<WorldRect | null>(null)
+  const [slicePurpose, setSlicePurpose] = useState<'slice' | 'ai-region'>('slice')
+  const [maskTool, setMaskTool] = useState<MaskTool>('rectangle')
+  const [maskBrushSize, setMaskBrushSize] = useState(32)
+  const [maskFeather, setMaskFeather] = useState(0)
+  const [maskStrokes, setMaskStrokes] = useState<MaskStroke[]>([])
+  const setTextRangeSelection = useEditorStore((state) => state.setTextRangeSelection)
+  const setImageRegionSelection = useEditorStore((state) => state.setImageRegionSelection)
 
   const elements = useMemo(
     () => previewElements ?? document?.elements ?? [],
@@ -120,8 +158,21 @@ export function InfiniteCanvas({
   const primarySelection = selectedElements[0]
   const activeArtboard = artboards.find((artboard) => artboard.id === activeArtboardId)
   const sliceTarget = sliceTargetId
-    ? elements.find((element): element is ImageElement => element.id === sliceTargetId && element.type === 'image')
+    ? elements.find(
+        (element): element is ImageElement =>
+          element.id === sliceTargetId && element.type === 'image',
+      )
     : undefined
+  const maskToolbarPosition =
+    sliceTarget && slicePurpose === 'ai-region'
+      ? {
+          left: Math.min(
+            Math.max(12, viewport.x + sliceTarget.x * viewport.zoom),
+            Math.max(12, (viewportRef.current?.clientWidth ?? 900) - 390),
+          ),
+          top: Math.max(12, viewport.y + sliceTarget.y * viewport.zoom - 54),
+        }
+      : undefined
 
   useEffect(() => {
     viewportStateRef.current = viewport
@@ -169,6 +220,8 @@ export function InfiniteCanvas({
         setSliceTargetId(null)
         setSliceRect(null)
         setDragState(null)
+        setMaskStrokes([])
+        setMaskFeather(0)
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
         event.preventDefault()
@@ -196,7 +249,16 @@ export function InfiniteCanvas({
       window.removeEventListener('keydown', onKeyDown, keyOptions)
       window.removeEventListener('keyup', onKeyUp)
     }
-  }, [activeArtboardId, redo, removeArtboard, removeElements, selectedElementIds, setViewport, sliceTargetId, undo])
+  }, [
+    activeArtboardId,
+    redo,
+    removeArtboard,
+    removeElements,
+    selectedElementIds,
+    setViewport,
+    sliceTargetId,
+    undo,
+  ])
 
   useEffect(() => {
     const node = viewportRef.current
@@ -233,6 +295,7 @@ export function InfiniteCanvas({
     }
 
     function shouldHandleCanvasEvent(event: Event & { clientX?: number; clientY?: number }) {
+      if (globalThis.document.querySelector('[aria-modal="true"]')) return false
       const target = event.target
       if (target instanceof HTMLElement && target.closest('.zoom-control')) return false
 
@@ -276,13 +339,7 @@ export function InfiniteCanvas({
     function zoomCanvasAtPoint(canvasPoint: Point, zoomFactor: number) {
       lastCanvasZoomAtRef.current = Date.now()
       const currentViewport = viewportStateRef.current
-      applyViewport(
-        zoomAtPoint(
-          currentViewport,
-          canvasPoint,
-          currentViewport.zoom * zoomFactor,
-        ),
-      )
+      applyViewport(zoomAtPoint(currentViewport, canvasPoint, currentViewport.zoom * zoomFactor))
     }
 
     function handleWheelGesture(event: globalThis.WheelEvent) {
@@ -334,11 +391,7 @@ export function InfiniteCanvas({
       }
       if (gestureEvent.type !== 'gesturechange') return
 
-      const canvasPoint = getActiveCanvasPoint(
-        gestureEvent.clientX,
-        gestureEvent.clientY,
-        true,
-      )
+      const canvasPoint = getActiveCanvasPoint(gestureEvent.clientX, gestureEvent.clientY, true)
       if (!canvasPoint) return
 
       const scale = gestureEvent.scale ?? gestureScaleRef.current
@@ -424,11 +477,7 @@ export function InfiniteCanvas({
 
       const currentViewport = viewportStateRef.current
       setViewport(
-        zoomAtPoint(
-          currentViewport,
-          getFallbackCanvasPoint(),
-          currentViewport.zoom * scaleDelta,
-        ),
+        zoomAtPoint(currentViewport, getFallbackCanvasPoint(), currentViewport.zoom * scaleDelta),
       )
     }
 
@@ -492,6 +541,9 @@ export function InfiniteCanvas({
       if (isCanvasBackground) {
         setSliceTargetId(null)
         setSliceRect(null)
+        setMaskStrokes([])
+        setMaskFeather(0)
+        setImageRegionSelection(undefined)
       }
     }
     const shouldPan = tool === 'hand' || spacePressed || event.button === 1
@@ -508,14 +560,12 @@ export function InfiniteCanvas({
       target === event.currentTarget ||
       (target instanceof HTMLElement && target.classList.contains('canvas-grid'))
     if (isCanvasBackground) {
+      clearArtboardSelection()
       startMarquee(event)
     }
   }
 
-  const onElementPointerDown = (
-    event: PointerEvent<HTMLDivElement>,
-    element: DesignElement,
-  ) => {
+  const onElementPointerDown = (event: PointerEvent<HTMLDivElement>, element: DesignElement) => {
     if (event.button !== 0) return
     if (element.locked) return
 
@@ -531,6 +581,24 @@ export function InfiniteCanvas({
       setSliceTargetId(element.id)
       selectElement(element.id)
       event.currentTarget.setPointerCapture(event.pointerId)
+      if (slicePurpose === 'ai-region' && maskTool !== 'rectangle') {
+        const stroke: MaskStroke = {
+          mode: maskTool,
+          size: maskBrushSize,
+          points: [startWorld],
+        }
+        const strokeIndex = maskStrokes.length
+        setMaskStrokes((current) => [...current, stroke])
+        setDragState({
+          mode: 'paint-mask',
+          pointerId: event.pointerId,
+          startScreen: { x: event.clientX, y: event.clientY },
+          startWorld,
+          startElements: [element],
+          strokeIndex,
+        })
+        return
+      }
       setSliceRect({
         left: startWorld.x,
         top: startWorld.y,
@@ -562,10 +630,7 @@ export function InfiniteCanvas({
     })
   }
 
-  const onArtboardPointerDown = (
-    event: PointerEvent<HTMLDivElement>,
-    artboard: Artboard,
-  ) => {
+  const onArtboardPointerDown = (event: PointerEvent<HTMLDivElement>, artboard: Artboard) => {
     if (event.button !== 0) return
     const target = event.target
     const canStartFromTarget =
@@ -586,10 +651,7 @@ export function InfiniteCanvas({
     })
   }
 
-  const onResizeStart = (
-    event: PointerEvent<HTMLButtonElement>,
-    handle: ResizeHandle,
-  ) => {
+  const onResizeStart = (event: PointerEvent<HTMLButtonElement>, handle: ResizeHandle) => {
     if (!primarySelection && !activeArtboard) return
 
     event.stopPropagation()
@@ -639,12 +701,31 @@ export function InfiniteCanvas({
       return
     }
 
-    if (dragState.mode === 'slice-image' && dragState.startWorld && dragState.startElements?.[0]?.type === 'image') {
+    if (
+      dragState.mode === 'slice-image' &&
+      dragState.startWorld &&
+      dragState.startElements?.[0]?.type === 'image'
+    ) {
       const worldPoint = getWorldPointFromPointer(event)
       if (!worldPoint) return
       const target = dragState.startElements[0]
       const currentWorld = clampPointToRect(worldPoint, target)
       setSliceRect(createRectFromPoints(dragState.startWorld, currentWorld))
+      return
+    }
+
+    if (dragState.mode === 'paint-mask' && dragState.startElements?.[0]?.type === 'image') {
+      const worldPoint = getWorldPointFromPointer(event)
+      if (!worldPoint || dragState.strokeIndex === undefined) return
+      const point = clampPointToRect(worldPoint, dragState.startElements[0])
+      setMaskStrokes((current) =>
+        current.map((stroke, index) => {
+          if (index !== dragState.strokeIndex) return stroke
+          const previous = stroke.points.at(-1)
+          if (previous && Math.hypot(point.x - previous.x, point.y - previous.y) < 1) return stroke
+          return { ...stroke, points: [...stroke.points, point] }
+        }),
+      )
       return
     }
 
@@ -704,20 +785,33 @@ export function InfiniteCanvas({
   }
 
   const onPointerUp = async () => {
+    if (dragState?.mode === 'paint-mask') {
+      setDragState(null)
+      return
+    }
     if (dragState?.mode === 'slice-image') {
       const target = dragState.startElements?.[0]
       if (target?.type === 'image' && sliceRect && sliceRect.width >= 4 && sliceRect.height >= 4) {
-        const renderedImage = await renderElementToImage(target, { format: 'png' })
-        const slicedElement = await createImageSlice(target, renderedImage?.src ?? target.src, sliceRect, {
-          zIndex: document.elements.length
-            ? Math.max(...document.elements.map((element) => element.zIndex)) + 1
-            : target.zIndex + 1,
-        })
-        if (slicedElement) addElement(slicedElement)
+        if (slicePurpose !== 'ai-region') {
+          const renderedImage = await renderElementToImage(target, { format: 'png' })
+          const slicedElement = await createImageSlice(
+            target,
+            renderedImage?.src ?? target.src,
+            sliceRect,
+            {
+              zIndex: document.elements.length
+                ? Math.max(...document.elements.map((element) => element.zIndex)) + 1
+                : target.zIndex + 1,
+            },
+          )
+          if (slicedElement) addElement(slicedElement)
+        }
       }
       setDragState(null)
-      setSliceTargetId(null)
-      setSliceRect(null)
+      if (slicePurpose !== 'ai-region') {
+        setSliceTargetId(null)
+        setSliceRect(null)
+      }
       return
     }
 
@@ -848,11 +942,28 @@ export function InfiniteCanvas({
     if (element.type !== 'text') return
     setContextMenu(null)
     selectElement(element.id)
+    setTextRangeSelection(undefined)
     setEditingElementId(element.id)
   }
 
   const updateTextContent = (id: string, content: string) => {
+    const current = useEditorStore
+      .getState()
+      .document?.elements.find((element) => element.id === id)
+    if (current?.type === 'text' && current.content === content) return
     updateElement(id, { content } as Partial<DesignElement>)
+  }
+
+  const captureTextSelection: ElementRendererProps['onTextSelectionChange'] = (selection) => {
+    updateTextContent(selection.elementId, selection.content)
+    setTextRangeSelection({
+      elementId: selection.elementId,
+      start: selection.start,
+      end: selection.end,
+      selectedText: selection.selectedText,
+      prefix: selection.prefix,
+      suffix: selection.suffix,
+    })
   }
 
   const contextTarget = contextMenu?.elementId
@@ -867,11 +978,17 @@ export function InfiniteCanvas({
   const canUseArtboardAction = Boolean(contextMenu?.artboardId && !contextTarget)
   const canUseSelectionAction = contextSelection.length > 0
   const canSliceImage = contextTarget?.type === 'image'
+  const canEditImageRegion =
+    canSliceImage &&
+    contextTarget.designRole !== 'page-shell' &&
+    (!contextTarget.componentBinding || Boolean(contextTarget.componentBinding.bindings.image))
   const canRegenerateSlot = canRegenerateComponentSlot(contextTarget)
-  const canRegeneratePageShell = contextTarget?.type === 'image' && contextTarget.designRole === 'page-shell'
-  const pageSectionId = contextTarget?.componentBinding?.renderMode === 'root'
-    ? contextTarget.componentBinding.pageSectionId
-    : undefined
+  const canRegeneratePageShell =
+    contextTarget?.type === 'image' && contextTarget.designRole === 'page-shell'
+  const pageSectionId =
+    contextTarget?.componentBinding?.renderMode === 'root'
+      ? contextTarget.componentBinding.pageSectionId
+      : undefined
   const isMultiContext = contextSelection.length > 1
 
   const copyTargetElement = () => {
@@ -935,7 +1052,11 @@ export function InfiniteCanvas({
   }
 
   const zoomToSelection = () => {
-    const targets = selectedElements.length ? selectedElements : contextTarget ? [contextTarget] : []
+    const targets = selectedElements.length
+      ? selectedElements
+      : contextTarget
+        ? [contextTarget]
+        : []
     if (!targets.length || !viewportRef.current) return
     const rect = viewportRef.current.getBoundingClientRect()
     const minX = Math.min(...targets.map((element) => element.x))
@@ -955,16 +1076,18 @@ export function InfiniteCanvas({
 
   const getElementNode = (element: DesignElement) => {
     if (!viewportRef.current) return null
-    const nodes = Array.from(
-      viewportRef.current.querySelectorAll<HTMLElement>('[data-element-id]'),
-    )
+    const nodes = Array.from(viewportRef.current.querySelectorAll<HTMLElement>('[data-element-id]'))
     return nodes.find((node) => node.dataset.elementId === element.id) ?? null
   }
 
-  const renderElementToImage = async (element: DesignElement, options?: {
-    format?: 'png' | 'jpeg'
-    preferSourceImage?: boolean
-  }) => {
+  const renderElementToImage = async (
+    element: DesignElement,
+    options?: {
+      format?: 'png' | 'jpeg'
+      preferSourceImage?: boolean
+      scale?: 1 | 2
+    },
+  ) => {
     if (options?.preferSourceImage && element.type === 'image') {
       return {
         name: element.name || '画布图片',
@@ -974,10 +1097,13 @@ export function InfiniteCanvas({
 
     const node = getElementNode(element)
     if (!node) return null
-    const canvas = await html2canvas(node, {
-      backgroundColor: options?.format === 'jpeg' ? '#ffffff' : null,
-      useCORS: true,
-      scale: 2,
+    // 与画板快照共用 foreignObject 光栅化：html2canvas 会裁掉紧凑行高文字的字形。
+    const bounds = node.getBoundingClientRect()
+    const canvas = await rasterizeNode(node, {
+      width: bounds.width,
+      height: bounds.height,
+      background: options?.format === 'jpeg' ? '#ffffff' : null,
+      scale: options?.scale ?? 2,
     })
     const format = options?.format ?? 'png'
     return {
@@ -1064,9 +1190,60 @@ export function InfiniteCanvas({
   const sliceTargetImage = () => {
     if (!contextTarget || contextTarget.type !== 'image') return
     setSliceTargetId(contextTarget.id)
+    setSlicePurpose('slice')
+    setMaskStrokes([])
     setSliceRect(null)
     selectElement(contextTarget.id)
     closeContextMenu()
+  }
+
+  const editImageRegion = () => {
+    if (!contextTarget || !canEditImageRegion) return
+    setSliceTargetId(contextTarget.id)
+    setSlicePurpose('ai-region')
+    setMaskTool('rectangle')
+    setMaskBrushSize(32)
+    setMaskFeather(0)
+    setMaskStrokes([])
+    setSliceRect(null)
+    setImageRegionSelection(undefined)
+    selectElement(contextTarget.id)
+    closeContextMenu()
+  }
+
+  const resetImageMask = () => {
+    setSliceRect(null)
+    setMaskStrokes([])
+  }
+
+  const cancelImageMask = () => {
+    setDragState(null)
+    setSliceTargetId(null)
+    setSliceRect(null)
+    setMaskStrokes([])
+    setMaskFeather(0)
+  }
+
+  const confirmImageMask = async () => {
+    if (!sliceTarget || slicePurpose !== 'ai-region') return
+    const renderedImage = await renderElementToImage(sliceTarget, { format: 'png', scale: 1 })
+    if (!renderedImage?.src) return
+    const region = createImageRegionSelection(
+      sliceTarget,
+      sliceRect,
+      maskStrokes,
+      maskFeather,
+      renderedImage.src,
+    )
+    if (!region) return
+    setTextRangeSelection(undefined)
+    setImageRegionSelection(region)
+    selectElement(sliceTarget.id)
+    setDragState(null)
+    setSliceTargetId(null)
+    setSliceRect(null)
+    setMaskStrokes([])
+    setMaskFeather(0)
   }
 
   const regenerateComponentSlot = () => {
@@ -1076,7 +1253,8 @@ export function InfiniteCanvas({
       id: `component-edit-${Date.now()}`,
       text: createComponentSlotRegenerationText(contextTarget),
       elementId: contextTarget.id,
-      target: 'bottom',
+      target: resolveComposerQueueTarget(chatPanelOpen),
+      kind: 'component-region-regeneration',
     })
     closeContextMenu()
   }
@@ -1088,7 +1266,7 @@ export function InfiniteCanvas({
       id: `page-shell-edit-${Date.now()}`,
       text: '重新生成选中的页面背景和跨模块视觉外壳',
       elementId: contextTarget.id,
-      target: 'bottom',
+      target: resolveComposerQueueTarget(chatPanelOpen),
     })
     closeContextMenu()
   }
@@ -1101,7 +1279,7 @@ export function InfiniteCanvas({
 
   const addSelectionToChat = async () => {
     if (!contextSelection.length) return
-    const target = chatPanelOpen ? 'panel' : 'bottom'
+    const target = resolveComposerQueueTarget(chatPanelOpen)
 
     await Promise.all(
       contextSelection.map(async (element, index) => {
@@ -1117,13 +1295,13 @@ export function InfiniteCanvas({
 
         const image = await renderElementToImage(element, { preferSourceImage: true })
         if (!image) return
-    addQueuedReferenceImage({
-      id: `canvas-ref-${Date.now()}-${index}`,
-      name: image.name,
-      src: image.src,
-      elementId: element.id,
-      target,
-    })
+        addQueuedReferenceImage({
+          id: `canvas-ref-${Date.now()}-${index}`,
+          name: image.name,
+          src: image.src,
+          elementId: element.id,
+          target,
+        })
       }),
     )
     closeContextMenu()
@@ -1133,9 +1311,7 @@ export function InfiniteCanvas({
     if (!contextTarget) return
     updateElement(
       contextTarget.id,
-      axis === 'x'
-        ? { flipX: !contextTarget.flipX }
-        : { flipY: !contextTarget.flipY },
+      axis === 'x' ? { flipX: !contextTarget.flipX } : { flipY: !contextTarget.flipY },
     )
     closeContextMenu()
   }
@@ -1143,13 +1319,7 @@ export function InfiniteCanvas({
   const zoomAtViewportCenter = (nextZoom: number) => {
     if (!viewportRef.current) return
     const rect = viewportRef.current.getBoundingClientRect()
-    setViewport(
-      zoomAtPoint(
-        viewport,
-        { x: rect.width / 2, y: rect.height / 2 },
-        nextZoom,
-      ),
-    )
+    setViewport(zoomAtPoint(viewport, { x: rect.width / 2, y: rect.height / 2 }, nextZoom))
   }
 
   const adjustZoom = (factor: number) => {
@@ -1203,7 +1373,9 @@ export function InfiniteCanvas({
           }}
         />
       ) : null}
-      {document.artboards.length === 0 && document.elements.length === 0 ? <CanvasStartPrompt /> : null}
+      {document.artboards.length === 0 && document.elements.length === 0 ? (
+        <CanvasStartPrompt />
+      ) : null}
       {!hideAiChat ? <AiCanvasChat onOpenChatPanel={onOpenChatPanel} /> : null}
       <div
         className="canvas-world"
@@ -1213,23 +1385,13 @@ export function InfiniteCanvas({
         }}
       >
         {artboards.map((artboard) => (
-          <div
+          <ArtboardFrame
             key={artboard.id}
-            className={cn('artboard', activeArtboardId === artboard.id && 'active')}
-            data-artboard-id={artboard.id}
+            artboard={artboard}
+            active={activeArtboardId === artboard.id}
+            showLabel
             onPointerDown={(event) => onArtboardPointerDown(event, artboard)}
-            style={{
-              left: artboard.x,
-              top: artboard.y,
-              width: artboard.width,
-              height: artboard.height,
-              background: artboard.background,
-              borderRadius: artboard.borderRadius,
-              overflow: artboard.overflow,
-            }}
-          >
-            <div className="artboard-label">{artboard.name}</div>
-          </div>
+          />
         ))}
         {elements
           .slice()
@@ -1243,12 +1405,13 @@ export function InfiniteCanvas({
               onPointerDown={onElementPointerDown}
               onEditStart={startTextEdit}
               onTextChange={updateTextContent}
+              onTextSelectionChange={captureTextSelection}
               onTextEditEnd={() => setEditingElementId(null)}
             />
           ))}
         {sliceTarget ? (
           <div
-            className="image-slice-target"
+            className={cn('image-slice-target', slicePurpose === 'ai-region' && 'ai-mask-target')}
             style={{
               left: sliceTarget.x,
               top: sliceTarget.y,
@@ -1256,7 +1419,9 @@ export function InfiniteCanvas({
               height: sliceTarget.height,
             }}
           >
-            <span>拖拽选择切图区域</span>
+            <span>
+              {slicePurpose === 'ai-region' ? '拖拽选择 AI 重绘区域' : '拖拽选择切图区域'}
+            </span>
           </div>
         ) : null}
         {sliceRect && sliceRect.width > 0 && sliceRect.height > 0 ? (
@@ -1270,12 +1435,118 @@ export function InfiniteCanvas({
             }}
           />
         ) : null}
+        {sliceTarget && slicePurpose === 'ai-region' && maskStrokes.length ? (
+          <svg
+            className="image-mask-strokes"
+            style={{
+              left: sliceTarget.x,
+              top: sliceTarget.y,
+              width: sliceTarget.width,
+              height: sliceTarget.height,
+            }}
+            viewBox={`0 0 ${sliceTarget.width} ${sliceTarget.height}`}
+            aria-hidden="true"
+          >
+            {maskStrokes.map((stroke, index) => (
+              <path
+                key={`${stroke.mode}-${index}`}
+                className={stroke.mode}
+                d={createStrokePath(stroke, sliceTarget)}
+                strokeWidth={stroke.size}
+              />
+            ))}
+          </svg>
+        ) : null}
         {primarySelection ? (
           <SelectionBox target={primarySelection} onResizeStart={onResizeStart} />
         ) : activeArtboard ? (
           <SelectionBox target={activeArtboard} onResizeStart={onResizeStart} />
         ) : null}
       </div>
+      {maskToolbarPosition ? (
+        <div
+          className="image-mask-toolbar"
+          style={maskToolbarPosition}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <div className="image-mask-tool-modes" role="group" aria-label="Mask 工具">
+            <button
+              type="button"
+              className={maskTool === 'rectangle' ? 'active' : undefined}
+              title="矩形选区"
+              onClick={() => setMaskTool('rectangle')}
+            >
+              <Square size={15} />
+            </button>
+            <button
+              type="button"
+              className={maskTool === 'brush' ? 'active' : undefined}
+              title="画笔"
+              onClick={() => setMaskTool('brush')}
+            >
+              <Paintbrush size={15} />
+            </button>
+            <button
+              type="button"
+              className={maskTool === 'erase' ? 'active' : undefined}
+              title="擦除 Mask"
+              onClick={() => setMaskTool('erase')}
+            >
+              <Eraser size={15} />
+            </button>
+          </div>
+          <label title="笔刷大小">
+            <Paintbrush size={13} />
+            <input
+              aria-label="笔刷大小"
+              type="range"
+              min="4"
+              max="96"
+              step="2"
+              value={maskBrushSize}
+              disabled={maskTool === 'rectangle'}
+              onChange={(event) => setMaskBrushSize(Number(event.target.value))}
+            />
+            <span>{maskBrushSize}</span>
+          </label>
+          <label title="边缘羽化">
+            <span>羽化</span>
+            <input
+              aria-label="Mask 羽化"
+              type="range"
+              min="0"
+              max="32"
+              step="1"
+              value={maskFeather}
+              onChange={(event) => setMaskFeather(Number(event.target.value))}
+            />
+            <span>{maskFeather}</span>
+          </label>
+          <button type="button" title="重置 Mask" onClick={resetImageMask}>
+            <RotateCcw size={15} />
+          </button>
+          <button type="button" title="取消" onClick={cancelImageMask}>
+            <X size={15} />
+          </button>
+          <button
+            type="button"
+            className="confirm"
+            title="完成 Mask"
+            disabled={
+              !hasEditableImageMask(
+                sliceRect,
+                maskStrokes.map((stroke) => ({
+                  mode: stroke.mode,
+                  pointCount: stroke.points.length,
+                })),
+              )
+            }
+            onClick={() => void confirmImageMask()}
+          >
+            <Check size={15} />
+          </button>
+        </div>
+      ) : null}
       {contextMenu ? (
         <div
           className="canvas-context-menu"
@@ -1327,7 +1598,11 @@ export function InfiniteCanvas({
                 <span>粘贴</span>
                 <kbd>⌘ V</kbd>
               </button>
-              <button type="button" disabled={!canUseElementAction} onClick={duplicateTargetElement}>
+              <button
+                type="button"
+                disabled={!canUseElementAction}
+                onClick={duplicateTargetElement}
+              >
                 <span>创建副本</span>
                 <kbd>⌘ D</kbd>
               </button>
@@ -1363,6 +1638,12 @@ export function InfiniteCanvas({
               <hr />
               <button type="button" disabled={!canSliceImage} onClick={sliceTargetImage}>
                 <span>切图</span>
+              </button>
+              <button type="button" disabled={!canEditImageRegion} onClick={editImageRegion}>
+                <span className="canvas-context-command-label">
+                  <WandSparkles size={14} />
+                  <span>AI 局部编辑</span>
+                </span>
               </button>
               {canRegenerateSlot ? (
                 <button type="button" onClick={regenerateComponentSlot}>
@@ -1495,7 +1776,10 @@ function rectsIntersect(
   return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top
 }
 
-function clampPointToRect(point: Point, rect: { x: number; y: number; width: number; height: number }) {
+function clampPointToRect(
+  point: Point,
+  rect: { x: number; y: number; width: number; height: number },
+) {
   return {
     x: Math.min(rect.x + rect.width, Math.max(rect.x, point.x)),
     y: Math.min(rect.y + rect.height, Math.max(rect.y, point.y)),
@@ -1509,6 +1793,114 @@ function createRectFromPoints(start: Point, end: Point): WorldRect {
     width: Math.round(Math.abs(end.x - start.x)),
     height: Math.round(Math.abs(end.y - start.y)),
   }
+}
+
+function createStrokePath(stroke: MaskStroke, source: ImageElement) {
+  const points = stroke.points.map((point) => ({ x: point.x - source.x, y: point.y - source.y }))
+  if (!points.length) return ''
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y} l 0.01 0`
+  return points.map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' ')
+}
+
+function createImageRegionSelection(
+  source: ImageElement,
+  rect: WorldRect | null,
+  strokes: MaskStroke[],
+  feather: number,
+  currentImage: string,
+) {
+  const targetSize = {
+    width: Math.max(1, Math.round(source.width)),
+    height: Math.max(1, Math.round(source.height)),
+  }
+  const padding = Math.ceil(Math.max(0, feather) * 3)
+  const working = globalThis.document.createElement('canvas')
+  working.width = targetSize.width + padding * 2
+  working.height = targetSize.height + padding * 2
+  const context = working.getContext('2d')
+  if (!context) throw new Error('无法创建图片局部编辑 Mask。')
+  context.fillStyle = '#000000'
+  context.fillRect(0, 0, working.width, working.height)
+
+  if (rect && rect.width > 0 && rect.height > 0) {
+    const x = clampNumber(Math.round(rect.left - source.x), 0, targetSize.width)
+    const y = clampNumber(Math.round(rect.top - source.y), 0, targetSize.height)
+    const width = clampNumber(Math.round(rect.width), 0, targetSize.width - x)
+    const height = clampNumber(Math.round(rect.height), 0, targetSize.height - y)
+    context.clearRect(padding + x, padding + y, width, height)
+  }
+
+  for (const stroke of strokes) {
+    if (!stroke.points.length) continue
+    context.save()
+    context.globalCompositeOperation = stroke.mode === 'brush' ? 'destination-out' : 'source-over'
+    context.strokeStyle = '#000000'
+    context.fillStyle = '#000000'
+    context.lineWidth = Math.max(1, stroke.size)
+    context.lineCap = 'round'
+    context.lineJoin = 'round'
+    const points = stroke.points.map((point) => ({
+      x: padding + ((point.x - source.x) / source.width) * targetSize.width,
+      y: padding + ((point.y - source.y) / source.height) * targetSize.height,
+    }))
+    if (points.length === 1) {
+      context.beginPath()
+      context.arc(points[0].x, points[0].y, Math.max(0.5, stroke.size / 2), 0, Math.PI * 2)
+      context.fill()
+    } else {
+      context.beginPath()
+      context.moveTo(points[0].x, points[0].y)
+      points.slice(1).forEach((point) => context.lineTo(point.x, point.y))
+      context.stroke()
+    }
+    context.restore()
+  }
+
+  const softened = globalThis.document.createElement('canvas')
+  softened.width = working.width
+  softened.height = working.height
+  const softenedContext = softened.getContext('2d')
+  if (!softenedContext) throw new Error('无法处理 Mask 羽化。')
+  softenedContext.filter = feather > 0 ? `blur(${feather}px)` : 'none'
+  softenedContext.drawImage(working, 0, 0)
+
+  const canvas = globalThis.document.createElement('canvas')
+  canvas.width = targetSize.width
+  canvas.height = targetSize.height
+  const outputContext = canvas.getContext('2d', { willReadFrequently: true })
+  if (!outputContext) throw new Error('无法输出图片局部编辑 Mask。')
+  outputContext.drawImage(
+    softened,
+    padding,
+    padding,
+    targetSize.width,
+    targetSize.height,
+    0,
+    0,
+    targetSize.width,
+    targetSize.height,
+  )
+  const pixels = outputContext.getImageData(0, 0, targetSize.width, targetSize.height)
+  const bounds = findEditableMaskBounds(pixels)
+  if (!bounds) return null
+  return {
+    elementId: source.id,
+    sourceSrc: source.src,
+    normalizedRect: {
+      x: bounds.x / targetSize.width,
+      y: bounds.y / targetSize.height,
+      width: bounds.width / targetSize.width,
+      height: bounds.height / targetSize.height,
+    },
+    pixelRect: bounds,
+    targetSize,
+    currentImage,
+    maskImage: canvas.toDataURL('image/png'),
+  }
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
 }
 
 async function createImageSlice(
@@ -1525,7 +1917,10 @@ async function createImageSlice(
   const clampedLeft = Math.min(source.x + source.width, Math.max(source.x, rect.left))
   const clampedTop = Math.min(source.y + source.height, Math.max(source.y, rect.top))
   const clampedRight = Math.min(source.x + source.width, Math.max(source.x, rect.left + rect.width))
-  const clampedBottom = Math.min(source.y + source.height, Math.max(source.y, rect.top + rect.height))
+  const clampedBottom = Math.min(
+    source.y + source.height,
+    Math.max(source.y, rect.top + rect.height),
+  )
   const width = Math.round(clampedRight - clampedLeft)
   const height = Math.round(clampedBottom - clampedTop)
   if (width < 1 || height < 1) return null

@@ -1,7 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useLocation } from 'react-router-dom'
-import { Brush, Folder, Home, Images, LayoutDashboard, Plus, Sparkles, X } from 'lucide-react'
+import {
+  BookOpen,
+  Brush,
+  Folder,
+  Home,
+  Images,
+  LayoutDashboard,
+  Plus,
+  Sparkles,
+  X,
+} from 'lucide-react'
 import type { AppTabRequest } from '../../app/app-tabs'
 import { cn } from '../../lib/cn'
 
@@ -10,6 +20,7 @@ const links = [
   { to: '/generate', label: '生成', icon: Sparkles },
   { to: '/projects', label: '资产', icon: Folder },
   { to: '/templates', label: '画布', icon: Images },
+  { to: '/skills', label: '能力', icon: BookOpen },
 ]
 
 export function AppLayout() {
@@ -17,9 +28,7 @@ export function AppLayout() {
   const navigate = useNavigate()
   const editorMode = location.pathname.startsWith('/editor/')
   const electronMode = Boolean(window.aiCampaignElectron)
-  const [tabs, setTabs] = useState<AppTabRequest[]>([
-    { path: '/', title: '首页' },
-  ])
+  const [tabs, setTabs] = useState<AppTabRequest[]>([{ path: '/', title: '首页' }])
 
   const activePath = location.pathname
   const activeTabTitle = useMemo(() => {
@@ -51,9 +60,9 @@ export function AppLayout() {
     if (!electronMode) return
     setTabs((current) => {
       if (current.some((tab) => tab.path === activePath)) {
-        return current.map((tab) => (
-          tab.path === activePath ? { ...tab, title: activeTabTitle } : tab
-        ))
+        return current.map((tab) =>
+          tab.path === activePath ? { ...tab, title: activeTabTitle } : tab,
+        )
       }
       return [...current, { path: activePath, title: activeTabTitle }]
     })
@@ -89,36 +98,43 @@ export function AppLayout() {
             <Home size={20} />
           </button>
           <div className="app-tab-list">
-            {tabs.filter((tab) => tab.path !== '/').map((tab) => (
-              <button
-                key={tab.path}
-                className={cn('app-tab project-tab', activePath === tab.path && 'active')}
-                type="button"
-                onClick={() => navigate(tab.path)}
-                title={tab.title}
-              >
-                <span>{tab.title}</span>
-                <span
-                  className="tab-close"
-                  role="button"
-                  tabIndex={0}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    closeTab(tab.path)
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key !== 'Enter' && event.key !== ' ') return
-                    event.preventDefault()
-                    event.stopPropagation()
-                    closeTab(tab.path)
-                  }}
+            {tabs
+              .filter((tab) => tab.path !== '/')
+              .map((tab) => (
+                <button
+                  key={tab.path}
+                  className={cn('app-tab project-tab', activePath === tab.path && 'active')}
+                  type="button"
+                  onClick={() => navigate(tab.path)}
+                  title={tab.title}
                 >
-                  <X size={13} />
-                </span>
-              </button>
-            ))}
+                  <span>{tab.title}</span>
+                  <span
+                    className="tab-close"
+                    role="button"
+                    tabIndex={0}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      closeTab(tab.path)
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter' && event.key !== ' ') return
+                      event.preventDefault()
+                      event.stopPropagation()
+                      closeTab(tab.path)
+                    }}
+                  >
+                    <X size={13} />
+                  </span>
+                </button>
+              ))}
           </div>
-          <button className="app-tab add-tab" type="button" onClick={openNewCanvasTab} title="新建画布">
+          <button
+            className="app-tab add-tab"
+            type="button"
+            onClick={openNewCanvasTab}
+            title="新建画布"
+          >
             <Plus size={20} />
           </button>
         </div>
@@ -145,7 +161,9 @@ export function AppLayout() {
             })}
           </nav>
           <div className="sidebar-footer">
-            <button className="credit-pill" type="button">✦ 60</button>
+            <button className="credit-pill" type="button">
+              ✦ 60
+            </button>
             <div className="avatar-dot" />
           </div>
         </aside>

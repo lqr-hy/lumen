@@ -1,0 +1,11 @@
+{
+  "componentName": "EraTasklist",
+  "outputPath": "/Users/lqr/bilibili/ai-campaign-page-studio/tmp/runtime-captures/EraTasklist.png",
+  "status": "failed",
+  "diagnostics": [
+    {
+      "code": "CAPTURE_FAILED",
+      "message": "Error: Electron app.whenReady 超过 15 秒。\n    at Timeout._onTimeout (file:///Users/lqr/bilibili/ai-campaign-page-studio/scripts/capture-component-runtime.mjs:14:56)\n    at listOnTimeout (node:internal/timers:605:17)\n    at process.processTimers (node:internal/timers:541:7)"
+    }
+  ]
+}

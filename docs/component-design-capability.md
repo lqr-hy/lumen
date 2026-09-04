@@ -1,4 +1,4 @@
-# 组件设计能力投影与独立素材生成技术方案
+# 组件 Runtime 原型与混合可编辑设计技术方案
 
 > Runtime 的 Skill 发现、DMG 打包和工具执行机制见
 > [`runtime-skills.md`](runtime-skills.md)。本文只定义组件设计领域模型与处理流程。
@@ -10,26 +10,29 @@
 目标是实现：
 
 1. 从任意组件 JSON 中抽取尺寸、位置、颜色、图片和结构开关。
-2. 使用 `thumbnail` 识别组件的视觉区域，并生成可校验的结构化原型。
-3. 为每个图片属性建立独立素材槽位，逐项生成素材。
-4. 将颜色、尺寸、位置写回 Props，将图片素材写回准确的图片 Prop。
+2. 优先使用真实 Runtime DOM 和 Runtime PNG 建立权威结构原型，thumbnail 仅作次级参考。
+3. 首次设计一次生成纯氛围底图，并用 Runtime 原生节点确定性承载可编辑 UI。
+4. 将颜色、尺寸、位置写入最小 Props Patch；只有用户明确导出图片 Slot 时才生成独立素材。
 5. 支持不同组件配置、配置 Profile、继承和实例覆盖。
 6. 未识别的业务属性保持原值，不让 AI 猜测。
 
 核心原则：
 
 ```text
-组件 != 一张设计图片
-组件 = 结构 + 设计配置 + 独立素材槽位 + 不透明业务配置
+组件设计 = AI 氛围底图 + Runtime 原生 UI 节点 + 最小 Props Patch + 不透明业务配置
 ```
 
-组件在设计画布上的完整视觉由两类 Artifact 共同组成：
+组件在设计画布上的默认可见结构为：
 
 ```text
-Component Visual Shell（背景、容器、边框、光效、静态装饰，不写 Props）
-+ Props Layers（图片、颜色、几何、显隐，按完整路径写回）
-+ Runtime Regions（动态业务内容占位）
+Component Root
++ Component Backdrop Image（底色、纹理、光效、边缘装饰）
++ Runtime Surface/Progress/Text/Button/Image Nodes（可编辑 UI）
++ Runtime DesignTree（完整结构元数据）
++ Props Patch（仅配置数据，不参与画布合成）
 ```
+
+独立图片 Slot 属于首次组件设计主流程：只要当前 Profile 明确声明可生成图片 Prop，系统就生成独立素材并写回准确路径。没有图片 Slot 的通用组件仍只生成氛围底图和原生 UI。
 
 页面级背景和多组件编排见 [`page-composition-capability.md`](page-composition-capability.md)。
 
@@ -74,7 +77,7 @@ KV / 视觉参考       -> 色彩、材质、装饰和视觉风格
   -> Design Capability Extractor
   -> ComponentDesignContract
   -> Profile Resolver
-  -> Thumbnail Analyzer
+  -> Thumbnail Layout Contract / Generic Fallback
   -> ComponentBlueprint
   -> Asset Slot Plan
   -> 独立素材生成与校验
@@ -82,7 +85,7 @@ KV / 视觉参考       -> 色彩、材质、装饰和视觉风格
   -> Props Patch 双向同步
 ```
 
-程序负责属性解析、继承、Profile、尺寸和回写；AI 负责缩略图视觉理解和每个素材槽位的视觉设计。
+程序负责属性解析、继承、Profile、基础布局、尺寸和回写；AI 负责视觉主题与每个素材槽位的视觉设计。
 
 ## 4. ComponentDesignContract
 
@@ -237,6 +240,13 @@ global-default
 - 将视觉区域匹配到 Design Slot。
 - 生成可校验的原型图。
 
+基础布局采用数据驱动的两级策略：
+
+1. 已校准组件读取 Skill 内的 `runtime/layout-specs/<ComponentName>.json`。Sidecar 按 Profile 保存画布尺寸、区域层级、Slot ID、边界和默认显隐，并与 thumbnail URL 一起校验。
+2. 没有 Sidecar 时根据 Props 坐标、宽高、Slot 角色和结构开关生成通用布局 fallback；禁止在通用 Plan Builder 中判断组件名称。
+
+Sidecar 是组件原型契约，不是视觉稿。KV 仍负责配色、材质和装饰，生成出的按钮等 Props 素材仍是独立图层。状态型素材可以继续生成和导出，但通过 `visible=false` 默认隐藏，避免“谢谢参与”等弹窗态内容破坏组件初始 UI。
+
 ```ts
 interface ComponentBlueprint {
   componentName: string
@@ -254,6 +264,7 @@ interface BlueprintRegion {
   propBindings: string[]
   renderMode: 'runtime' | 'text' | 'color' | 'generated-asset'
   confidence: number
+  visible?: boolean
 }
 ```
 
@@ -342,7 +353,7 @@ freeStyleConfig.open_wlist               visibility
 ```text
 reference.prepare
 component.resolve
-component.blueprint
+component.plan
 component.plan-assets
 component.generate-assets
 component.validate-assets
@@ -367,7 +378,7 @@ canvas.present-assets
 
 多素材任务通过 `manifest.json` 声明每个独立 SVG，Runtime 将其作为多个 Artifact 返回并分别创建画布图片节点。整图任务继续使用 `design.generate`，两种输出协议不得混用。
 
-组件 Plan 会安全读取打包内 `componentsJson`，调用 Skill Tool 完成事实提取、规则分类、Profile/继承合并、素材槽位候选和诊断，再通过 Codex thumbnail 分析生成 Component Blueprint。Slot ID 和完整属性路径会使用 Contract 白名单二次校验。
+组件 Plan 会安全读取打包内 `componentsJson`，调用 Skill Tool 完成事实提取、规则分类、Profile/继承合并、素材槽位和诊断。Runtime 根据组件契约确定性生成 Blueprint 兼容结构；模型只提取 KV 视觉主题，不再决定 version、Region、Slot ID 或 Props 路径。每个图片节点独立生图和重试，连续失败时使用可局部替换的本地 SVG fallback，保证最终组件设计稿仍可写入画布。
 
 正式应用和 DMG 只通过 Agent Tool Registry 调用上述 Electron Runtime Tools，不启动系统 `node` 子进程。CLI 脚本仅用于开发测试和人工排查，不属于产品执行链路；`extract_design_contract.mjs` 只是兼容旧命令的入口。
 
@@ -375,7 +386,7 @@ Loop 规则：
 
 1. 先生成 Contract 和 Blueprint。
 2. 原型校验通过后才生成素材。
-3. 先生成一个不绑定 Props 的 Component Visual Shell，再为当前 Profile 的每个主 Asset Slot 生成独立 SVG；fallback 默认复用主素材。
+3. 为当前 Profile 的每个主 Asset Slot 生成独立素材；存在 KV/视觉参考且组件没有背景图片 Prop 时，再生成一个不绑定 Props 的纯装饰背景。
 4. 先确定性修复遗漏或重复的合法 Slot；仍存在未知 Slot、越权 Prop、尺寸或安全性错误时，整个任务失败，不写入画布。
 5. 最终输出 Props Patch，并将 Blueprint Region 转为可编辑原生图层；组合预览只用于诊断，不进入最终画布。
 
@@ -384,7 +395,7 @@ Loop 规则：
 ```text
 ComponentDesignResult
   -> applyComponentDesign
-  -> Section 根节点 + Visual Shell + 原生 Region 图层
+  -> Section 根节点 + 最底层 Design-only Background + 原生 Region 图层
   -> DesignDocument.componentInstances[instanceId] + Props Patch
   -> DesignDocument version + 1
   -> 项目快照自动保存
@@ -402,7 +413,8 @@ interface ComponentDesignResult {
   blueprint: ComponentBlueprint
   assetTasks: Array<{
     slotId: string
-    propPath: string
+    propPath?: string
+    designOnly?: boolean
   }>
   propsPatch: Record<string, unknown>
   unresolved: unknown[]
@@ -414,7 +426,7 @@ interface ComponentDesignResult {
 
 ## 12. 校验规则
 
-- 每个 Asset 必须绑定一个完整 Prop Path。
+- Props Asset 必须绑定一个完整 Prop Path；`designOnly` 背景禁止绑定 Prop Path。
 - 每个图片 Prop 最多由一个活动 Profile 的 Slot 写入。
 - 颜色必须是合法 CSS 颜色。
 - 宽高必须为正数并符合组件约束。
@@ -468,13 +480,13 @@ P2.3 已补齐实例检查与交付：
   -> 导出组件 ZIP
 ```
 
-组件 ZIP 包含 `manifest.json`、`props.patch.json`、`blueprint.json`、`component.structure.json`、设计专用 Visual Shell 和可写回 Props 的独立 Slot 图片。导出过程会将 Props Patch 中的 Data URI 改写为相对文件路径，Visual Shell 标记为 `design-only`，不得写回组件 Props。
+组件 ZIP 包含 `manifest.json`、`props.patch.json`、`blueprint.json`、`component.structure.json`、可写回 Props 的独立 Slot 图片，以及可选的 `design/background.*`。导出过程会将 Props Patch 中的 Data URI 改写为相对文件路径；装饰背景标记为 `design-only`，不得写回组件 Props。
 
 底部 JSON 图标现在打开左侧只读结构检查器，而不是立即下载。检查器支持当前选择、当前画板和整个项目三个范围，并提供搜索、复制和范围下载；所有 Data URI 都会转换为 `asset://` 摘要，避免渲染大段 Base64。旧项目中的 `Artboard.componentDesign/componentDesigns` 会在加载时迁移到 `DesignDocument.componentInstances`，新链路不再写入画板级组件元数据。
 
 ### 14.1 KV 视觉一致性
 
-组件生成时参考图职责必须分离：thumbnail 只提供组件结构、区域和 Slot 边界；用户 KV 或视觉参考图提供最终主色、辅助色、明暗关系、材质与装饰语言。Component Blueprint 使用 `visualTheme` 固化该视觉契约，并在后续 Props、Visual Shell 和独立 Slot 素材之间复用。
+组件生成时参考图职责必须分离：thumbnail 只提供组件结构、区域和 Slot 边界；用户 KV 或视觉参考图提供最终主色、辅助色、明暗关系、材质与装饰语言。Component Blueprint 使用 `visualTheme` 固化该视觉契约，并在后续 Props、原生节点、可选装饰背景和独立 Slot 素材之间复用。
 
 当存在用户视觉参考时，Runtime 要求 `visualTheme.source` 为 `kv` 或 `visual`，且至少包含两个有效颜色。所有当前 Profile 的颜色属性会按语义确定性映射到该色板，防止模型重新使用组件 JSON 或 thumbnail 中的默认配色。视觉优先级固定为：
 
@@ -482,9 +494,23 @@ P2.3 已补齐实例检查与交付：
 用户 KV / 视觉参考 > 用户文字风格 > thumbnail 配色 > 组件默认配色
 ```
 
-Visual Shell 生成后会检查 SVG 的主要 `fill`、`stroke` 和 `stop-color` 与主题色板的距离。首次偏离时 Agent 自动携带同一色板重试一次；连续两次偏离则返回 `COMPONENT_VISUAL_THEME_MISMATCH`，禁止将错误主题写入画布。
+独立 Slot 和可选装饰背景生成后会检查主要颜色与主题色板的距离。首次偏离时 Agent 自动携带同一色板重试一次；连续两次偏离则禁止将错误主题写入画布。
 
-当前仍未实现：生成前的人工 Blueprint 确认界面、Props Patch 写回线上组件实例、真实图片/动画 Provider、thumbnail/KV Vision 相似度评分，以及对单张图片内部像素的自动分层。Slot 工具级失败目前会自动重试一次，但还没有用户可见的 Slot 历史版本和手动选择能力。
+主题链路现已增加独立的 KV 像素证据，避免模型错误色板自证通过：
+
+```text
+用户 KV（仅 kv/visual，不含 thumbnail）
+  -> 模型提取字体、材质、装饰与候选色板
+  -> Runtime 解码 PNG/JPEG 并量化主导色
+  -> 候选色板与像素色板亲和度校验
+  -> 偏差过大时校准 colors/colorTokens/surfaces
+  -> 同一校准主题传播到 Props、原生节点、装饰背景和 Slot 素材
+  -> 使用像素证据复核所有生成制品
+```
+
+`VisualThemeContract.evidence` 保存 `referenceName`、本地主导色、模型亲和度和是否发生校准。发生校准时记录 `COMPONENT_VISUAL_THEME_PIXEL_CALIBRATED` 诊断。主题提取请求中的 `referenceImageIndex` 相对该次请求计算，因此只有一张 KV 时固定为 `1`，不再把 thumbnail 合并列表中的位置误写为 `2`。
+
+当前仍未实现：生成前的人工 Blueprint 确认界面、Props Patch 写回线上组件实例、语义级 KV Vision 相似度评分，以及对单张图片内部像素的自动分层。当前已实现颜色像素证据，但还不能判断品牌字体、人物、图形母题等高级视觉语义是否一致。Slot 工具级失败目前会自动重试一次，但还没有用户可见的 Slot 历史版本和手动选择能力。
 
 `role=animation` 的 Slot 当前保留原值并输出 `ANIMATION_PROVIDER_MISSING` 诊断，不使用静态 SVG 冒充动效素材。
 
@@ -571,3 +597,73 @@ node scripts/resolve_design_contract.mjs component.json --adapter ./adapter.mjs
 ```
 
 旧命令 `extract_design_contract.mjs` 保留并转发到新解析器。
+## 组件能力分流
+
+组件设计不等于生图。Runtime 会根据当前 Profile 的设计契约动态选择能力：
+
+```text
+有图片 Slot：图片素材生成 + Theme/Props + 可编辑布局
+无图片 Slot 且有 KV：Theme/颜色 Props + 可编辑布局 + 单一 Design-only 背景
+无图片 Slot 且无 KV：Theme/颜色 Props + 可编辑布局
+无图片且无颜色：布局 + 结构预览
+```
+
+无图片 Slot 且没有 KV 的组件（例如任务列表、表格、表单等）不会执行 `component.generate-assets`。流程为：
+
+```text
+reference.prepare
+-> component.resolve
+-> component.plan
+-> component.plan-assets
+-> component.apply-theme
+-> component.compose
+-> canvas.present-component
+```
+
+`component.apply-theme` 会把当前 Theme 映射到组件契约中声明的颜色 Props和原生节点。颜色 Props 仍会进入最终 `propsPatch`，组件节点保持可编辑。
+
+有图片 Slot，或存在 KV 且需要 Design-only 背景时，会动态插入：
+
+```text
+component.generate-assets
+-> component.validate-assets
+```
+
+图片主题评分只针对真实生成的图片素材执行，颜色驱动组件使用颜色 Props 和结构完整性进行校验。
+
+## 26. 生成链路诊断
+
+组件素材生成使用两级可观测性：外层时间线展示 Source Adapter 阶段，展开阶段后展示内部工具和单个素材任务。素材日志包含 Slot、目标尺寸、尝试次数、耗时、状态和错误码，不包含 API Key、Base64 或完整 Prompt。
+
+开发环境会把 `tool.trace` 同步写入：
+
+```text
+<Electron userData>/logs/agent-runs/YYYY-MM-DD/<runId>.jsonl
+```
+
+生产包默认关闭文件日志，可通过 `AI_STUDIO_AGENT_LOGS=1` 开启。组件氛围底图默认等待 60 秒，可通过 `AGENT_BACKDROP_TIMEOUT_MS` 单独覆盖；Props 等普通素材默认 90 秒，页面设计背景仍为 120 秒，二者可通过 `AGENT_ASSET_TIMEOUT_MS` 统一覆盖。组件氛围底图超时不会终止事务，而是立即使用当前 VisualTheme 编译确定性纯背景，继续生成 Props 图片、校验并提交画布；Props 图片失败仍按严格契约报错，避免向组件配置写入伪造素材。
+
+透明 Props 叶子素材携带 KV 时，如果 Provider 的编辑接口不支持透明参数，但生成接口支持透明参数，Runtime 不再把 KV 原图送入 `images/edits`。它会保留已经提取并校准的 `visualTheme`，改走 `images/generations + background=transparent`。局部 Mask 编辑和显式 `edit-base` 不允许使用该降级，避免把图片编辑错误改成重新生成。
+
+当多个素材都由 Runtime 叠加准确文案，且角色、尺寸和透明契约完全一致时，它们属于同一无文字底图组。各任务仍独立生成；只有某项连续失败而同组另一项成功时，失败项才复用成功底图并重新叠加自身文案。不同角色、尺寸或不含准确文案的图片禁止复用。
+
+组件图片 Slot 默认使用 `model-exact` 策略：模型直接生成包含 Contract `exactText` 的完整图片；Props Patch、画布和导出只保留一个 Image 节点。Scene Compiler 删除与图片 Slot 重叠的 Runtime Text，避免第二份文案。`embedded-exact` 只作为显式的 Provider 兼容策略保留。
+
+`model-exact` 按钮图片按 Slot 尺寸直接生成并校验透明度与文案要求，不执行本地文字合成。只有 Contract 将文案声明为独立 Text Prop 时，画布才保留可编辑 Text 节点。
+
+当前 `gpt-image-2` 服务对 `background=transparent` 的执行并不稳定。透明组件叶子素材使用纯色键生成和本地 Alpha 去色：Raster Worker 先校验边缘色键覆盖率，再执行软遮罩与去色边；去色结果仍需通过透明覆盖率、白底和棋盘格质量门禁。Codex 系统 `imagegen` Skill 依赖宿主专有 `image_gen` 工具，应用不会读取或假定该工具存在，只复用了其可移植的透明处理方法。
+## 混合可编辑组件交付（当前默认）
+
+组件首次设计不再使用“独立素材 + Runtime Text/Button/Color 节点 + SVG Preview”的合成模式。当前默认链路为：
+
+1. 加载 Component JSON 与 Props Contract。
+2. 挂载真实 Runtime DOM，提取 DesignTree 并捕获裁切后的 Runtime PNG。
+3. Runtime PNG 负责结构、节点数量、位置、字号和原文案；thumbnail 仅作次级参考，二者都不能直接作为最终画布图片。
+4. 生图请求只携带 KV/Visual Reference；Runtime PNG、thumbnail 和节点结构摘要不能进入氛围底图请求。模型只生成底色、纹理、光效和边缘装饰，禁止任何需要与 DOM 坐标对齐的 UI 结构。
+5. 画布写入一张氛围底图、当前 Profile 声明的独立 Props 图片，再写入 Runtime 提取的 Surface、Progress、Text、非图片 Button 和业务 Image。原生 UI 按 KV Theme Token 重着色。
+6. 绑定图片 Slot 的 Runtime Button/Image 必须编译为生成的 Image Region，禁止降级为原生文本 Button；素材同时写入准确 Props Path。
+7. 氛围底图经 Vision Gate 检出 UI 污染时，只重生成底图一次，不重复生成 Runtime 节点和 Props 图片。第二次仍污染则自动使用 VisualTheme Token 编译确定性渐变/光效背景，并记录 `COMPONENT_BACKDROP_DETERMINISTIC_FALLBACK`，不得让整个组件任务失败。
+
+Runtime DesignTree 继续保存在 `componentDesign.designTree`，用于诊断、重新生成和开发导出；写入画布时只筛选有真实内容的 Text、Button 和 Image 节点，过滤无视觉职责的包装容器，避免出现重复文案或 45 个无意义节点。
+
+这项模式同时保证视觉一致性和基础可编辑性。Runtime Text、Button、Shape 和业务 Image 可直接选择编辑；Props 图片可单独重生成和导出；氛围底图通过选择范围和 Mask 编辑。

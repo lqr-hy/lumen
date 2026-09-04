@@ -1,0 +1,10 @@
+node_modules
+dist
+release
+tmp
+coverage
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.zip

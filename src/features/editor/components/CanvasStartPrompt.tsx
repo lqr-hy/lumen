@@ -1,9 +1,4 @@
-import {
-  FolderPlus,
-  ImagePlus,
-  Upload,
-  WandSparkles,
-} from 'lucide-react'
+import { FolderPlus, ImagePlus, Upload, WandSparkles } from 'lucide-react'
 
 export function CanvasStartPrompt() {
   return (

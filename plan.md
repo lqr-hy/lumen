@@ -244,12 +244,7 @@ interface Artboard {
 ### 7.4 元素
 
 ```ts
-type DesignElement =
-  | TextElement
-  | ImageElement
-  | ShapeElement
-  | ButtonElement
-  | GroupElement
+type DesignElement = TextElement | ImageElement | ShapeElement | ButtonElement | GroupElement
 ```
 
 ```ts
@@ -406,11 +401,7 @@ interface PanState {
 缩放必须以鼠标所在位置为中心，而不是以左上角为中心。
 
 ```ts
-function zoomAtPoint(
-  viewport: ViewportState,
-  screenPoint: Point,
-  nextZoom: number,
-): ViewportState {
+function zoomAtPoint(viewport: ViewportState, screenPoint: Point, nextZoom: number): ViewportState {
   const before = screenToWorld(screenPoint, viewport)
 
   const nextViewport = {

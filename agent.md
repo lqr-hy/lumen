@@ -83,7 +83,15 @@ Skill 的目录、发现、DMG 打包和 Runtime Tool 规范见
 interface AgentSession {
   id: string
   goal?: string
-  status: 'idle' | 'collecting' | 'ready' | 'planning' | 'running' | 'waiting-user' | 'failed' | 'completed'
+  status:
+    | 'idle'
+    | 'collecting'
+    | 'ready'
+    | 'planning'
+    | 'running'
+    | 'waiting-user'
+    | 'failed'
+    | 'completed'
   plan: AgentStep[]
   currentStepId?: string
   references: AgentReference[]
@@ -267,21 +275,17 @@ IPC 增加 `runtime:agentEvent`。聊天 token 继续使用 `runtime:streamToken
 
 ```ts
 type PlacementMode =
-  | 'auto'
-  | 'new-artboard'
-  | 'append-section'
-  | 'duplicate-variant'
-  | 'asset-board'
+  'auto' | 'new-artboard' | 'append-section' | 'duplicate-variant' | 'asset-board'
 ```
 
 决策优先级为：用户本轮明确表达 > 分段控件 > 默认追加当前画板。这样用户可以直接说“再生成一个页面”，也可以在自然语言不明确时手动选择目标。
 
-| 用户意图 | Placement Mode | 画布行为 |
-| --- | --- | --- |
-| 再生成一个页面、UI、第二屏 | `new-artboard` | 新建独立画板，不覆盖现有页面 |
-| 当前页面继续往下、增加模块 | `append-section` | 复用当前目标画板，在已有内容下方追加 |
-| 再做一个版本、换个方案 | `duplicate-variant` | 复制源画板作为新变体，生成结果只替换变体内容 |
-| 单独生成按钮、图标、背景素材 | `asset-board` | 创建或复用该对话的素材画板，每个素材保持独立节点 |
+| 用户意图                     | Placement Mode      | 画布行为                                         |
+| ---------------------------- | ------------------- | ------------------------------------------------ |
+| 再生成一个页面、UI、第二屏   | `new-artboard`      | 新建独立画板，不覆盖现有页面                     |
+| 当前页面继续往下、增加模块   | `append-section`    | 复用当前目标画板，在已有内容下方追加             |
+| 再做一个版本、换个方案       | `duplicate-variant` | 复制源画板作为新变体，生成结果只替换变体内容     |
+| 单独生成按钮、图标、背景素材 | `asset-board`       | 创建或复用该对话的素材画板，每个素材保持独立节点 |
 
 新画板使用 `375px` 逻辑宽度和 `812px` 初始高度。完整页面和追加模块按图片比例自然扩展画板高度；`750px` 二倍图会映射为 `375px` 逻辑宽度。
 

@@ -525,5 +525,10 @@
       "$EvaActivatedLayerId",
       "$EvaUpdateSelfProps"
     ]
-  }
+  },
+  "componentJs": "https://s1.hdslb.com/bfs/activity-plat/static/6277ec353371773b1b2c677044fbccd8/EraLottery_VmIQt6Wyff.js",
+  "componentCss": "https://s1.hdslb.com/bfs/activity-plat/static/6277ec353371773b1b2c677044fbccd8/EraLottery_cepgsfPt4q.css",
+  "formControl": "https://s1.hdslb.com/bfs/activity-plat/static/6277ec353371773b1b2c677044fbccd8/EraLottery_BiqrgZ0MWv.js",
+  "layerControl": "https://s1.hdslb.com/bfs/activity-plat/static/6277ec353371773b1b2c677044fbccd8/EraLottery_iSUN2ixtH5.js",
+  "customFormControllerMap": "https://s1.hdslb.com/bfs/activity-plat/static/6277ec353371773b1b2c677044fbccd8/EraLottery_3ZGisb3R6E.js"
 }

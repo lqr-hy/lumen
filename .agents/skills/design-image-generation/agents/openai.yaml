@@ -1,0 +1,4 @@
+interface:
+  display_name: "通用设计生图"
+  short_description: "编译 UI、KV、页面背景、透明素材和图片编辑任务"
+  default_prompt: "使用 $design-image-generation 根据参考图职责、目标尺寸和当前生图模型生成可交付画布的图片。"

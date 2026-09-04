@@ -1,15 +1,20 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ImagePlus } from 'lucide-react'
+import { ImagePlus, WandSparkles } from 'lucide-react'
 import { openAppTab } from '../app/app-tabs'
 import { generateDesign } from '../features/ai/api'
 import { useEditorStore } from '../features/editor/store/editor-store'
-import {
-  DEFAULT_ARTBOARD_HEIGHT,
-  DEFAULT_ARTBOARD_WIDTH,
-} from '../features/editor/constants'
+import { DEFAULT_ARTBOARD_HEIGHT, DEFAULT_ARTBOARD_WIDTH } from '../features/editor/constants'
 import type { GenerateRequest } from '../features/ai/types'
 import { PromptComposer } from '../components/ui/PromptComposer'
+import type { ComposerMention } from '../features/ai/composer-draft'
+import { useRuntimeSettings } from '../features/ai/runtime-settings'
+import { ComposerRuntimeControls } from '../features/editor/components/ComposerRuntimeControls'
+import { VisualOptimizationDialog } from '../features/editor/components/VisualOptimizationDialog'
+import {
+  compileVisualDirectionPrompt,
+  type VisualRedesignBrief,
+} from '../features/editor/utils/visual-brief'
 
 const quickStarts = [
   {
@@ -49,6 +54,10 @@ export function HomePage() {
   const setDocument = useEditorStore((state) => state.setDocument)
   const [loading, setLoading] = useState(false)
   const [referenceImages, setReferenceImages] = useState<string[]>([])
+  const [mentions, setMentions] = useState<ComposerMention[]>([])
+  const [visualDirectionOpen, setVisualDirectionOpen] = useState(false)
+  const { runtimeModel, imageModel, stylePackId, setRuntimeModel, setImageModel, setStylePackId } =
+    useRuntimeSettings()
   const [form, setForm] = useState<GenerateRequest>({
     prompt: '',
     type: 'landing-page',
@@ -65,9 +74,7 @@ export function HomePage() {
     try {
       const result = await generateDesign({
         ...form,
-        prompt:
-          form.prompt.trim() ||
-          '根据参考图和当前趋势生成一套可编辑的活动页设计稿',
+        prompt: form.prompt.trim() || '根据参考图和当前趋势生成一套可编辑的活动页设计稿',
         referenceImages,
       })
       setDocument(result.document)
@@ -97,13 +104,52 @@ export function HomePage() {
           ariaLabel="设计需求"
           value={form.prompt}
           images={referenceImages}
+          mentions={mentions}
           loading={loading}
           placeholder="上传参考图、输入文字或 @ 主体，创意无限可能"
+          actionSlot={
+            <>
+              <button
+                type="button"
+                className="prompt-action-button visual-direction-action"
+                title="视觉方向"
+                aria-label="视觉方向"
+                onClick={() => setVisualDirectionOpen(true)}
+              >
+                <WandSparkles size={17} />
+              </button>
+              <ComposerRuntimeControls
+                runtimeModel={runtimeModel}
+                imageModel={imageModel}
+                stylePackId={stylePackId}
+                onRuntimeModelChange={setRuntimeModel}
+                onImageModelChange={setImageModel}
+                onStylePackChange={setStylePackId}
+              />
+            </>
+          }
           onChange={(prompt) => setForm({ ...form, prompt })}
+          onMentionsChange={setMentions}
           onImagesChange={setReferenceImages}
           onSubmit={onSubmit}
         />
       </section>
+
+      {visualDirectionOpen ? (
+        <VisualOptimizationDialog
+          onClose={() => setVisualDirectionOpen(false)}
+          onNormalize={() => 0}
+          onCreateVariant={(brief: VisualRedesignBrief) => {
+            setForm((current) => ({
+              ...current,
+              prompt: [compileVisualDirectionPrompt(brief), current.prompt.trim()]
+                .filter(Boolean)
+                .join('\n\n'),
+            }))
+            setVisualDirectionOpen(false)
+          }}
+        />
+      ) : null}
 
       <section className="workspace-section">
         <h2>快速开始</h2>
@@ -136,10 +182,12 @@ export function HomePage() {
           <button
             className="recent-card"
             type="button"
-            onClick={() => openAppTab({
-              path: '/editor/recent-qinglan-packaging',
-              title: '青岚品牌包装',
-            })}
+            onClick={() =>
+              openAppTab({
+                path: '/editor/recent-qinglan-packaging',
+                title: '青岚品牌包装',
+              })
+            }
           >
             <img
               src="https://images.unsplash.com/photo-1584305574647-0cc949a2bb9f?auto=format&fit=crop&w=760&q=80"

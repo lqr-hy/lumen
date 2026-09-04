@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "triggers": [
+    "生成图片",
+    "生成设计图",
+    "生图",
+    "重新生成图片",
+    "局部重生成",
+    "透明背景",
+    "独立素材",
+    "kv 设计",
+    "参考图生成",
+    "image generation"
+  ],
+  "tools": [
+    {
+      "name": "design-image-generation.compile-brief",
+      "description": "将图片任务、参考图职责、目标尺寸和模型选择编译为稳定的 Provider Prompt。",
+      "module": "runtime/entry.mjs",
+      "export": "compileImageGenerationBrief"
+    }
+  ]
+}

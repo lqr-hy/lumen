@@ -1,31 +1,24 @@
-import { FocusEvent, PointerEvent, useEffect, useState } from 'react'
-import { Square } from 'lucide-react'
-import { applyChatEdit } from '../../ai/api'
-import { getAgentEventStatus } from '../../ai/agent-events'
+import { FocusEvent, PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { executeDesignChatTurn } from '../../ai/design-chat-controller'
+import { createChatRun } from '../../ai/agent-run'
 import { useEditorStore } from '../store/editor-store'
 import type { EditorChatThread } from '../store/editor-store'
 import { PromptComposer, type PromptTextReference } from '../../../components/ui/PromptComposer'
 import { getPromptReferenceImages } from '../utils/chat-references'
-import { RuntimeModelSelect, type RuntimeModelSelection } from './RuntimeModelSelect'
+import { getComponentReferences } from '../../ai/composer-draft'
+import { useComponentMentions } from '../hooks/use-component-mentions'
+import { ComposerRuntimeControls } from './ComposerRuntimeControls'
+import { useRuntimeSettings } from '../../ai/runtime-settings'
 import { DEFAULT_ARTBOARD_HEIGHT, DEFAULT_ARTBOARD_WIDTH } from '../constants'
-import { PlacementModeControl } from './PlacementModeControl'
-import { resolvePlacementIntent, type PlacementMode } from '../utils/placement-intent'
-import { createComponentEditScope } from '../utils/component-edit-scope'
-import { applyIncrementalCanvasDeliverable } from '../utils/incremental-delivery'
-
-interface ChatImage {
-  id: string
-  name: string
-  src: string
-  elementId?: string
-}
-
-interface ChatThread {
-  id: string
-  title: string
-  prompt: string
-  imageIds: string[]
-}
+import {
+  createComponentRegionBatchScope,
+  createSelectionScope,
+  getSelectionScopeElementIds,
+  isComponentSlotRegenerationReference,
+} from '../utils/selection-scope'
+import { upsertQueuedComposerReference } from '../utils/composer-target'
+import { InvalidSelectionScopeChip, SelectionScopeChip } from './SelectionScopeChip'
+import { VisualGenerationSummary } from './ChatPanel'
 
 interface AiCanvasChatProps {
   onOpenChatPanel?: () => void
@@ -33,58 +26,98 @@ interface AiCanvasChatProps {
 
 export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
   const document = useEditorStore((state) => state.document)
-  const ensureChatThreadArtboard = useEditorStore((state) => state.ensureChatThreadArtboard)
-  const applyGeneratedImage = useEditorStore((state) => state.applyGeneratedImage)
-  const applyComponentDesign = useEditorStore((state) => state.applyComponentDesign)
-  const applyPageDesign = useEditorStore((state) => state.applyPageDesign)
-  const applyComponentSlotImage = useEditorStore((state) => state.applyComponentSlotImage)
   const selectElement = useEditorStore((state) => state.selectElement)
+  const setSelectedElements = useEditorStore((state) => state.setSelectedElements)
+  const clearSelection = useEditorStore((state) => state.clearSelection)
+  const consumeSelectionScope = useEditorStore((state) => state.consumeSelectionScope)
   const selectedElementIds = useEditorStore((state) => state.selectedElementIds)
-  const addChatThread = useEditorStore((state) => state.addChatThread)
+  const selectionScopeArmed = useEditorStore((state) => state.selectionScopeArmed)
+  const textRangeSelection = useEditorStore((state) => state.textRangeSelection)
+  const imageRegionSelection = useEditorStore((state) => state.imageRegionSelection)
+  const activeArtboardId = useEditorStore((state) => state.activeArtboardId)
+  const selectedArtboardId = useEditorStore((state) => state.selectedArtboardId)
+  const chatThreads = useEditorStore((state) => state.chatThreads)
+  const activeChatThreadId = useEditorStore((state) => state.activeChatThreadId)
+  const setActiveChatThread = useEditorStore((state) => state.setActiveChatThread)
   const updateChatThread = useEditorStore((state) => state.updateChatThread)
   const queuedReferenceImages = useEditorStore((state) => state.queuedReferenceImages)
-  const consumeQueuedReferenceImages = useEditorStore(
-    (state) => state.consumeQueuedReferenceImages,
-  )
+  const consumeQueuedReferenceImages = useEditorStore((state) => state.consumeQueuedReferenceImages)
   const queuedChatTexts = useEditorStore((state) => state.queuedChatTexts)
   const consumeQueuedChatTexts = useEditorStore((state) => state.consumeQueuedChatTexts)
   const [expanded, setExpanded] = useState(false)
-  const [prompt, setPrompt] = useState('')
   const [loading, setLoading] = useState(false)
+  const { componentMentionOptions, importComponent } = useComponentMentions(document?.id)
   const [activeRunSessionId, setActiveRunSessionId] = useState<string>()
   const [threadMenuOpen, setThreadMenuOpen] = useState(false)
-  const [uploadedImages, setUploadedImages] = useState<ChatImage[]>([])
-  const [activeImageIds, setActiveImageIds] = useState<string[]>([])
-  const [textReferences, setTextReferences] = useState<PromptTextReference[]>([])
+  const threadSwitcherRef = useRef<HTMLDivElement>(null)
   const [composerCursorOffset, setComposerCursorOffset] = useState(0)
-  const [activeThreadId, setActiveThreadId] = useState('thread-default')
-  const [runtimeModel, setRuntimeModel] = useState<RuntimeModelSelection>({
-    provider: 'codex',
-    model: 'gpt-5.5',
-  })
-  const [imageModel, setImageModel] = useState<RuntimeModelSelection>({
-    provider: 'biliImage',
-    model: 'gpt-image-2',
-  })
-  const [placementMode, setPlacementMode] = useState<PlacementMode>('auto')
-  const [threads, setThreads] = useState<ChatThread[]>([
-    {
-      id: 'thread-default',
-      title: document?.title ?? '未命名对话',
-      prompt: '结合当前画布继续创作',
-      imageIds: [],
-    },
-  ])
+  const { runtimeModel, imageModel, stylePackId, setRuntimeModel, setImageModel, setStylePackId } =
+    useRuntimeSettings()
+  const activeThread =
+    chatThreads.find((thread) => thread.id === activeChatThreadId) ?? chatThreads[0]
+  const prompt = activeThread?.prompt ?? ''
+  const activeImages = useMemo(
+    () => activeThread?.referenceImages ?? [],
+    [activeThread?.referenceImages],
+  )
+  const textReferences = useMemo(
+    () => activeThread?.textReferences ?? [],
+    [activeThread?.textReferences],
+  )
+  const mentions = useMemo(() => activeThread?.mentions ?? [], [activeThread?.mentions])
+  const directSelectionScope =
+    document && selectionScopeArmed
+      ? createSelectionScope(document, selectedElementIds, textRangeSelection, imageRegionSelection)
+      : undefined
+  const regenerationReferences = textReferences.filter(isComponentSlotRegenerationReference)
+  const regenerationScope = document
+    ? createComponentRegionBatchScope(
+        document,
+        regenerationReferences.flatMap((reference) =>
+          reference.elementId ? [reference.elementId] : [],
+        ),
+      )
+    : undefined
+  const selectionScope = regenerationScope ?? directSelectionScope
+  const visibleTextReferences = textReferences.filter(
+    (reference) => !isComponentSlotRegenerationReference(reference),
+  )
 
-  const activeImages = uploadedImages.filter((image) => activeImageIds.includes(image.id))
-  const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? threads[0]
+  const updateActiveThread = useCallback(
+    (updater: (thread: EditorChatThread) => EditorChatThread) => {
+      if (!activeThread) return
+      updateChatThread(activeThread.id, updater)
+    },
+    [activeThread, updateChatThread],
+  )
+
+  useEffect(() => {
+    if (!threadMenuOpen) return
+
+    const handlePointerDown = (event: globalThis.PointerEvent) => {
+      const target = event.target
+      if (target instanceof Node && !threadSwitcherRef.current?.contains(target)) {
+        setThreadMenuOpen(false)
+      }
+    }
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setThreadMenuOpen(false)
+    }
+
+    globalThis.document.addEventListener('pointerdown', handlePointerDown)
+    globalThis.document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      globalThis.document.removeEventListener('pointerdown', handlePointerDown)
+      globalThis.document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [threadMenuOpen])
 
   useEffect(() => {
     if (!queuedReferenceImages.some((image) => image.target === 'bottom')) return
     const images = consumeQueuedReferenceImages('bottom')
-    if (!images.length) return
-    setUploadedImages((current) => {
-      const nextImages = [...current]
+    if (!images.length || !activeThread) return
+    updateActiveThread((thread) => {
+      const nextImages = [...thread.referenceImages]
       images.forEach((image) => {
         if (!nextImages.some((item) => item.src === image.src)) {
           nextImages.push({
@@ -95,261 +128,189 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
           })
         }
       })
-      return nextImages
-    })
-    setActiveImageIds((current) => {
-      const nextIds = [...current]
-      images.forEach((image) => {
-        if (!nextIds.includes(image.id)) nextIds.push(image.id)
-      })
-      return nextIds
+      return { ...thread, referenceImages: nextImages }
     })
     setExpanded(true)
-  }, [consumeQueuedReferenceImages, queuedReferenceImages])
+  }, [activeThread, consumeQueuedReferenceImages, queuedReferenceImages, updateActiveThread])
 
   useEffect(() => {
     if (!queuedChatTexts.some((item) => item.target === 'bottom')) return
     const texts = consumeQueuedChatTexts('bottom')
-    if (!texts.length) return
-    setTextReferences((current) => {
-      const nextReferences = [...current]
+    if (!texts.length || !activeThread) return
+    updateActiveThread((thread) => {
+      let nextReferences = [...thread.textReferences]
       texts.forEach((item) => {
-        const text = item.text.trim()
-        if (!text) return
-        if (nextReferences.some((reference) => reference.elementId === item.elementId)) return
-        nextReferences.push({
-          id: item.id,
-          text,
-          elementId: item.elementId,
-          insertOffset: Math.min(composerCursorOffset, prompt.length),
-        })
+        nextReferences = upsertQueuedComposerReference(
+          nextReferences,
+          item,
+          Math.min(composerCursorOffset, thread.prompt.length),
+        )
       })
-      return nextReferences
+      return { ...thread, textReferences: nextReferences }
     })
+    const regenerationIds = [
+      ...textReferences
+        .filter(isComponentSlotRegenerationReference)
+        .flatMap((reference) => (reference.elementId ? [reference.elementId] : [])),
+      ...texts
+        .filter((item) => item.kind === 'component-region-regeneration')
+        .flatMap((item) => (item.elementId ? [item.elementId] : [])),
+    ]
+    if (regenerationIds.length) setSelectedElements([...new Set(regenerationIds)])
     setExpanded(true)
-  }, [composerCursorOffset, consumeQueuedChatTexts, prompt.length, queuedChatTexts])
+  }, [
+    activeThread,
+    composerCursorOffset,
+    consumeQueuedChatTexts,
+    queuedChatTexts,
+    setSelectedElements,
+    textReferences,
+    updateActiveThread,
+  ])
 
   async function submitPrompt() {
-    if (loading) return
-    const requestImages = getPromptReferenceImages(prompt, activeImages)
+    if (loading || !activeThread) return
+    const frozenSelectionScope = document
+      ? (createComponentRegionBatchScope(
+          document,
+          regenerationReferences.flatMap((reference) =>
+            reference.elementId ? [reference.elementId] : [],
+          ),
+        ) ??
+        createSelectionScope(
+          document,
+          selectionScopeArmed ? selectedElementIds : [],
+          useEditorStore.getState().textRangeSelection,
+          useEditorStore.getState().imageRegionSelection,
+        ))
+      : undefined
+    if (
+      ((selectionScopeArmed && selectedElementIds.length > 0) || regenerationReferences.length) &&
+      !frozenSelectionScope
+    )
+      return
+    const requestImages = getPromptReferenceImages(prompt, activeImages, mentions)
+    const componentReferences = getComponentReferences(mentions)
+    consumeSelectionScope()
 
     const request = {
       prompt:
-        [textReferences.map((reference) => reference.text).join(' '), prompt.trim()]
+        [visibleTextReferences.map((reference) => reference.text).join(' '), prompt.trim()]
           .filter(Boolean)
-          .join(' ') || '结合当前画布和参考图继续创作',
+          .join(' ') ||
+        (regenerationReferences.length ? '重新生成选中的组件素材' : '结合当前画布和参考图继续创作'),
       type: 'landing-page',
       size: { width: DEFAULT_ARTBOARD_WIDTH, height: DEFAULT_ARTBOARD_HEIGHT },
       style: '自动',
       referenceImages: requestImages.map((image) => image.src),
       referenceImageNames: requestImages.map((image) => image.name),
+      referenceImageRoles: requestImages.map((image) => image.role ?? 'visual'),
     }
 
-    const nextThread: ChatThread = {
-      id: `thread-${Date.now()}`,
-      title: request.prompt.slice(0, 18) || '未命名对话',
-      prompt: request.prompt,
-      imageIds: [...activeImageIds],
-    }
-    const panelThreadId = `panel-thread-${Date.now()}`
-    setActiveRunSessionId(panelThreadId)
+    const threadId = activeThread.id
+    setActiveRunSessionId(threadId)
     const pendingMessageId = `agent-pending-${Date.now()}`
-    const panelThread: EditorChatThread = {
-      id: panelThreadId,
-      title: request.prompt.slice(0, 18) || '未命名对话',
-      artboardIds: [],
-      placementMode,
+    const runId = `chat-run-${Date.now()}`
+    const draftSnapshot = {
+      prompt,
+      mentions: [...mentions],
+      referenceImages: [...activeImages],
+      textReferences: [...textReferences],
+      visualOptimizationDraft: activeThread.visualOptimizationDraft,
+    }
+    updateActiveThread((thread) => ({
+      ...thread,
+      title: thread.messages.length ? thread.title : request.prompt.slice(0, 18) || '未命名对话',
       prompt: '',
+      editorState: undefined,
+      mentions: [],
       referenceImages: [],
-      textReferences: textReferences.map((reference) => ({ ...reference })),
+      textReferences: [],
       messages: [
+        ...thread.messages,
         {
           id: `user-${Date.now()}`,
           role: 'user',
           text: request.prompt,
+          mentions: mentions.map((mention) => ({ ...mention })),
           referenceImages: requestImages.map((image) => ({ ...image })),
         },
         {
           id: pendingMessageId,
           role: 'agent',
-          text: '正在思考...',
+          text: '',
           pending: true,
+          runId,
+          selectionScope: frozenSelectionScope,
         },
       ],
-    }
-
-    setThreads((current) => [nextThread, ...current].slice(0, 5))
-    setActiveThreadId(nextThread.id)
-    addChatThread(panelThread)
-    const placement = resolvePlacementIntent(request.prompt, placementMode)
-    const target = ensureChatThreadArtboard(panelThreadId, placement.mode)
-    const requestDocument = useEditorStore.getState().document
-    const targetArtboard = requestDocument?.artboards.find(
-      (artboard) => artboard.id === target?.artboardId,
-    )
+      runs: { ...thread.runs, [runId]: createChatRun(runId, pendingMessageId) },
+    }))
+    const initialDocument = useEditorStore.getState().document
+    if (!initialDocument) return
+    const requestDocument = useEditorStore.getState().document ?? initialDocument
     onOpenChatPanel?.()
-    setPrompt('')
-    setTextReferences([])
-    setActiveImageIds([])
     setExpanded(false)
     setThreadMenuOpen(false)
     setLoading(true)
     try {
-      if (!requestDocument || !target || !targetArtboard) {
-        throw new Error('无法创建或选择目标画板')
-      }
-      let streamedText = ''
-      let pendingStreamText = ''
-      let streamTimer: number | undefined
-      const renderStreamText = (nextText: string) => {
-        updateChatThread(panelThreadId, (thread) => ({
-          ...thread,
-          messages: thread.messages.map((message) =>
-            message.id === pendingMessageId
-              ? {
-                  ...message,
-                  text: nextText,
-                }
-              : message,
-          ),
-        }))
-      }
-      const scheduleStreamFlush = () => {
-        if (streamTimer) return
-        streamTimer = window.setInterval(() => {
-          if (!pendingStreamText) {
-            window.clearInterval(streamTimer)
-            streamTimer = undefined
-            return
-          }
-          const nextChunk = pendingStreamText.slice(0, 4)
-          pendingStreamText = pendingStreamText.slice(nextChunk.length)
-          streamedText += nextChunk
-          renderStreamText(streamedText)
-        }, 16)
-      }
-      const drainStreamText = () =>
-        new Promise<void>((resolve) => {
-          if (!pendingStreamText && !streamTimer) {
-            resolve()
-            return
-          }
-          const checkTimer = window.setInterval(() => {
-            if (pendingStreamText || streamTimer) return
-            window.clearInterval(checkTimer)
-            resolve()
-          }, 16)
-        })
-      const result = await applyChatEdit({
-        sessionId: panelThreadId,
-        provider: runtimeModel.provider,
-        model: runtimeModel.model,
-        imageProvider: imageModel.provider,
-        imageModel: imageModel.model,
-        prompt: request.prompt,
-        document: requestDocument,
-        referenceImages: request.referenceImages,
-        referenceImageNames: request.referenceImageNames,
-        textReferences,
-        selectedElementIds,
-        editScope: createComponentEditScope(requestDocument, selectedElementIds),
-        canvasTarget: {
-          artboardId: target.artboardId,
-          createdForThread: target.created,
-          width: targetArtboard.width,
-          height: targetArtboard.height,
-          autoHeight: targetArtboard.autoHeight,
-          placementMode: target.mode,
-          placementSource: placement.source,
+      await executeDesignChatTurn(
+        {
+          sessionId: threadId,
+          provider: runtimeModel.provider,
+          model: runtimeModel.model,
+          imageProvider: imageModel.provider,
+          imageModel: imageModel.model,
+          stylePackId: stylePackId || undefined,
+          prompt: request.prompt,
+          document: requestDocument,
+          history: activeThread.messages
+            .filter((message) => !message.pending)
+            .map((message) => ({
+              role: message.role,
+              text: message.text,
+              referenceImages: message.referenceImages?.map((image) => ({
+                name: image.name,
+                src: image.src,
+              })),
+              componentReferences: getComponentReferences(message.mentions ?? []),
+            })),
+          mentions,
+          componentReferences,
+          referenceImages: request.referenceImages,
+          referenceImageNames: request.referenceImageNames,
+          referenceImageRoles: request.referenceImageRoles,
+          textReferences,
+          selectedElementIds,
+          activeArtboardId,
+          selectedArtboardId,
+          editScope: frozenSelectionScope,
+          componentRegionAction:
+            frozenSelectionScope?.type === 'component-region-batch'
+              ? { kind: 'regenerate-component-regions', targets: frozenSelectionScope.targets }
+              : undefined,
         },
-      }, {
-        onToken: (token) => {
-          pendingStreamText += token
-          scheduleStreamFlush()
-        },
-        onAgentEvent: (event) => {
-          const status = getAgentEventStatus(event)
-          if (!status) return
-          streamedText = status
-          pendingStreamText = ''
-          renderStreamText(status)
-        },
-        onDeliverable: (deliverable) => {
-          const observation = applyIncrementalCanvasDeliverable(target, deliverable)
-          streamedText = observation.summary
-          pendingStreamText = ''
-          renderStreamText(observation.summary)
-          return observation
-        },
-      })
-      await drainStreamText()
-      if (result.kind === 'page' && result.pageDesign && result.pageComponents && result.pageShell) {
-        const rootIds = applyPageDesign(
-          target,
-          result.pageDesign,
-          result.pageComponents.map((component) => ({
-            index: component.index,
-            pageSectionId: component.pageSectionId,
-            componentDesign: component.componentDesign,
-            assets: component.images,
-            visualShell: component.visualShell,
-          })),
-          result.pageShell,
-        )
-        const appliedDocument = useEditorStore.getState().document
-        const hasPageShell = appliedDocument?.elements.some((element) => (
-          element.artboardId === target.artboardId && element.designRole === 'page-shell'
-        ))
-        if (rootIds.length !== result.pageComponents.length || !hasPageShell) {
-          throw new Error('页面生成结果未完整写入目标画板。')
-        }
-      } else if (result.kind === 'component-slot' && result.editScope && result.image) {
-        applyComponentSlotImage(result.editScope.elementId, result.image)
-      } else if (result.kind === 'component' && result.componentDesign) {
-        const rootId = applyComponentDesign(
-          target,
-          result.componentDesign,
-          result.images ?? [],
-          result.visualShell,
-          result.editScope?.type === 'component-instance' ? result.editScope.instanceId : undefined,
-        )
-        const appliedRoot = useEditorStore.getState().document?.elements.find((element) => (
-          element.id === rootId && element.artboardId === target.artboardId
-        ))
-        if (!rootId || !appliedRoot) throw new Error('组件生成结果未写入目标画板。')
-      } else if (result.kind === 'image') {
-        for (const image of result.images ?? (result.image ? [result.image] : [])) {
-          applyGeneratedImage(target, image)
-        }
-      }
-      const agentText = result.message || streamedText
-      updateChatThread(panelThreadId, (thread) => ({
+        { threadId, messageId: pendingMessageId, runId, updateThread: updateChatThread },
+      )
+      updateChatThread(threadId, (thread) => ({
         ...thread,
-        messages: thread.messages.map((message) =>
-          message.id === pendingMessageId
-            ? {
-                id: `agent-${Date.now()}`,
-                role: 'agent',
-                text: agentText,
-                confirmation: result.confirmation,
-              }
-            : message,
-        ),
+        visualOptimizationDraft: undefined,
       }))
-    } catch (error) {
-      const errorText = error instanceof Error ? error.message : '聊天接口调用失败'
-      updateChatThread(panelThreadId, (thread) => ({
+    } catch {
+      updateChatThread(threadId, (thread) => ({
         ...thread,
-        messages: thread.messages.map((message) =>
-          message.id === pendingMessageId
-            ? {
-                id: `agent-${Date.now()}`,
-                role: 'agent',
-                text: errorText,
-              }
-            : message,
-        ),
+        prompt: thread.prompt || draftSnapshot.prompt,
+        mentions: thread.mentions?.length ? thread.mentions : draftSnapshot.mentions,
+        referenceImages: thread.referenceImages.length
+          ? thread.referenceImages
+          : draftSnapshot.referenceImages,
+        textReferences: thread.textReferences.length
+          ? thread.textReferences
+          : draftSnapshot.textReferences,
+        visualOptimizationDraft:
+          thread.visualOptimizationDraft ?? draftSnapshot.visualOptimizationDraft,
       }))
+      setExpanded(true)
     } finally {
       setActiveRunSessionId(undefined)
       setLoading(false)
@@ -357,35 +318,43 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
   }
 
   function syncComposerImages(nextSources: string[], nextNames: string[] = []) {
-    const currentBySrc = new Map(uploadedImages.map((image) => [image.src, image]))
-    const newImages = nextSources
-      .filter((src) => !currentBySrc.has(src))
-      .map((src, index) => ({
-        id: `upload-${Date.now()}-${index}`,
-        name: nextNames[nextSources.indexOf(src)] || `参考图 ${uploadedImages.length + index + 1}`,
-        src,
-        elementId: undefined,
-      }))
-    const newBySrc = new Map(newImages.map((image) => [image.src, image]))
-    const nextImages = nextSources
-      .map((src) => currentBySrc.get(src) ?? newBySrc.get(src))
-      .filter((image): image is ChatImage => Boolean(image))
-    setUploadedImages((current) => {
-      const nextBySrc = new Map(current.map((image) => [image.src, image]))
-      nextImages.forEach((image, index) => {
-        nextBySrc.set(image.src, {
-          ...image,
-          name: nextNames[index] || image.name || nextBySrc.get(image.src)?.name || `参考图 ${index + 1}`,
-        })
-      })
-      return Array.from(nextBySrc.values())
+    updateActiveThread((thread) => {
+      const currentBySrc = new Map(thread.referenceImages.map((image) => [image.src, image]))
+      return {
+        ...thread,
+        referenceImages: nextSources.map(
+          (src, index) =>
+            currentBySrc.get(src) ?? {
+              id: `upload-${Date.now()}-${index}`,
+              name: nextNames[index] || `参考图 ${index + 1}`,
+              src,
+              role: 'visual',
+            },
+        ),
+      }
     })
-    setActiveImageIds(nextImages.map((image) => image.id))
+    setExpanded(true)
+  }
+
+  function setReferenceImageRole(
+    index: number,
+    role: NonNullable<(typeof activeImages)[number]['role']>,
+  ) {
+    updateActiveThread((thread) => ({
+      ...thread,
+      referenceImages: thread.referenceImages.map((image, imageIndex) =>
+        imageIndex === index
+          ? { ...image, role }
+          : (role === 'kv' || role === 'prototype') && image.role === role
+            ? { ...image, role: 'visual' }
+            : image,
+      ),
+    }))
     setExpanded(true)
   }
 
   function onPromptChange(value: string) {
-    setPrompt(value)
+    updateActiveThread((thread) => ({ ...thread, prompt: value }))
   }
 
   function activateTextReference(reference: PromptTextReference) {
@@ -414,17 +383,13 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
     }, 160)
   }
 
-  function selectThread(thread: ChatThread) {
-    setActiveThreadId(thread.id)
-    setPrompt(thread.prompt)
-    setActiveImageIds(thread.imageIds)
+  function selectThread(thread: EditorChatThread) {
+    setActiveChatThread(thread.id)
     setThreadMenuOpen(false)
     setExpanded(true)
   }
 
-  const activeThreadImage = activeThread
-    ? uploadedImages.find((image) => activeThread.imageIds.includes(image.id))
-    : null
+  const activeThreadImage = activeThread?.referenceImages[0]
 
   return (
     <div
@@ -432,11 +397,16 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
       onPointerDown={stopCanvasPointer}
       onFocus={() => setExpanded(true)}
     >
-      {threads.length > 1 && activeThread ? (
-        <div className="chat-thread-switcher">
+      {chatThreads.length > 1 && activeThread ? (
+        <div
+          ref={threadSwitcherRef}
+          className={`chat-thread-switcher${threadMenuOpen ? ' is-open' : ''}`}
+        >
           <button
             className="active-thread-pill"
             type="button"
+            aria-expanded={threadMenuOpen}
+            aria-controls="chat-thread-list"
             onPointerDown={(event) => {
               event.preventDefault()
               event.stopPropagation()
@@ -451,14 +421,14 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
             <small>↗</small>
           </button>
           {threadMenuOpen ? (
-            <div className="chat-thread-list">
-              {threads.map((thread) => {
-                const threadImage = uploadedImages.find((image) => thread.imageIds.includes(image.id))
+            <div id="chat-thread-list" className="chat-thread-list">
+              {chatThreads.map((thread) => {
+                const threadImage = thread.referenceImages[0]
                 return (
                   <button
                     key={thread.id}
                     type="button"
-                    className={thread.id === activeThreadId ? 'active' : undefined}
+                    className={thread.id === activeChatThreadId ? 'active' : undefined}
                     onPointerDown={(event) => {
                       event.preventDefault()
                       event.stopPropagation()
@@ -467,7 +437,7 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
                   >
                     {threadImage ? <img src={threadImage.src} alt="" /> : <span />}
                     <strong>{thread.title}</strong>
-                    <small>{thread.id === activeThreadId ? '当前' : '打开对话'}</small>
+                    <small>{thread.id === activeChatThreadId ? '当前' : '打开对话'}</small>
                   </button>
                 )
               })}
@@ -477,9 +447,6 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
       ) : null}
 
       <div className="ai-chat-form-wrap">
-        {expanded ? (
-          <PlacementModeControl value={placementMode} onChange={setPlacementMode} compact />
-        ) : null}
         <PromptComposer
           compact={!expanded}
           iconOnlyActions
@@ -488,45 +455,134 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
           value={prompt}
           images={activeImages.map((image) => image.src)}
           imageNames={activeImages.map((image) => image.name)}
-          mentionOptions={activeImages.map((image) => ({
-            id: image.id,
-            name: image.name,
-            image: image.src,
-          }))}
-          textReferences={textReferences}
+          imageRoles={activeImages.map((image) => image.role ?? 'visual')}
+          mentionOptions={[
+            ...componentMentionOptions,
+            ...activeImages.map((image, index) => ({
+              id: image.id,
+              resourceId: image.id,
+              type: 'image' as const,
+              group: 'image' as const,
+              name: `图${index + 1} · ${image.name}`,
+              label: `图${index + 1}`,
+              image: image.src,
+            })),
+            ...(document?.elements.slice(-20).map((element) => ({
+              id: `canvas:${element.id}`,
+              resourceId: element.id,
+              type: 'canvas-node' as const,
+              group: 'canvas' as const,
+              name: element.name || element.id,
+              label: element.name || element.id,
+              description: element.type,
+            })) ?? []),
+          ]}
+          mentions={mentions}
+          textReferences={visibleTextReferences}
           loading={loading}
           placeholder="结合参考、输入文字或 @ 主体，说说今天想做什么。"
+          contextSlot={
+            <>
+              {activeThread?.visualOptimizationDraft ? (
+                <VisualGenerationSummary
+                  draft={activeThread.visualOptimizationDraft}
+                  references={getPromptReferenceImages(prompt, activeImages, mentions)}
+                  hasAttachedReferences={activeImages.length > 0}
+                  onRemove={
+                    loading
+                      ? undefined
+                      : () =>
+                          updateActiveThread((thread) => ({
+                            ...thread,
+                            prompt: '',
+                            editorState: undefined,
+                            mentions: [],
+                            visualOptimizationDraft: undefined,
+                          }))
+                  }
+                />
+              ) : null}
+              {selectionScope ? (
+              <SelectionScopeChip
+                scope={selectionScope}
+                action={regenerationReferences.length ? 'regenerate' : 'edit'}
+                onLocate={() => setSelectedElements(getSelectionScopeElementIds(selectionScope))}
+                onLocateTarget={(elementId) => selectElement(elementId)}
+                onRemoveTarget={(elementId) => {
+                  const remaining = regenerationReferences.filter(
+                    (reference) => reference.elementId !== elementId,
+                  )
+                  updateActiveThread((thread) => ({
+                    ...thread,
+                    textReferences: thread.textReferences.filter(
+                      (reference) =>
+                        !isComponentSlotRegenerationReference(reference) ||
+                        reference.elementId !== elementId,
+                    ),
+                  }))
+                  const remainingIds = remaining.flatMap((reference) =>
+                    reference.elementId ? [reference.elementId] : [],
+                  )
+                  if (remainingIds.length) setSelectedElements(remainingIds)
+                  else clearSelection()
+                }}
+                onClear={() => {
+                  clearSelection()
+                  if (regenerationReferences.length) {
+                    updateActiveThread((thread) => ({
+                      ...thread,
+                      textReferences: thread.textReferences.filter(
+                        (reference) => !isComponentSlotRegenerationReference(reference),
+                      ),
+                    }))
+                  }
+                }}
+              />
+              ) : selectionScopeArmed && selectedElementIds.length ? (
+                <InvalidSelectionScopeChip onClear={clearSelection} />
+              ) : null}
+            </>
+          }
           showActions={expanded}
           actionSlot={
             expanded ? (
               <>
-                <RuntimeModelSelect value={runtimeModel} onChange={setRuntimeModel} compact purpose="chat" />
-                <RuntimeModelSelect value={imageModel} onChange={setImageModel} compact purpose="image" />
-                {loading ? (
-                  <button
-                    className="mode-button"
-                    type="button"
-                    title="取消当前任务"
-                    onClick={() => activeRunSessionId && window.aiCampaignRuntime?.cancelAgent(activeRunSessionId)}
-                  >
-                    <Square size={14} />
-                    <span>停止</span>
-                  </button>
-                ) : null}
+                <ComposerRuntimeControls
+                  runtimeModel={runtimeModel}
+                  imageModel={imageModel}
+                  stylePackId={stylePackId}
+                  onRuntimeModelChange={setRuntimeModel}
+                  onImageModelChange={setImageModel}
+                  onStylePackChange={setStylePackId}
+                />
               </>
             ) : null
           }
           onFocus={() => setExpanded(true)}
           onBlur={onComposerBlur}
           onChange={onPromptChange}
+          onMentionsChange={(nextMentions) =>
+            updateActiveThread((thread) => ({ ...thread, mentions: nextMentions }))
+          }
+          onImportComponent={importComponent}
+          onMentionSelect={(option) => {
+            if (option.type === 'canvas-node') selectElement(option.resourceId ?? option.id)
+          }}
           onImagesChange={syncComposerImages}
+          onImageRoleChange={setReferenceImageRole}
           onImageClick={activateImageReference}
           onTextReferenceClick={activateTextReference}
           onTextReferenceRemove={(id) =>
-            setTextReferences((current) => current.filter((reference) => reference.id !== id))
+            updateActiveThread((thread) => ({
+              ...thread,
+              textReferences: thread.textReferences.filter((reference) => reference.id !== id),
+            }))
           }
           onCursorChange={setComposerCursorOffset}
           onSubmit={submitPrompt}
+          onStop={() =>
+            activeRunSessionId && window.aiCampaignRuntime?.cancelAgent(activeRunSessionId)
+          }
         />
       </div>
     </div>

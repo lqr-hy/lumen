@@ -32,9 +32,16 @@ export async function loadAgentSession(sessionId) {
           code: 'AGENT_INTERRUPTED_BY_RESTART',
           message: '应用在任务执行期间重启，任务已暂停，可点击“继续”恢复。',
         }
-        hydrated.plan = (hydrated.plan ?? []).map((step) => step.status === 'running'
-          ? { ...step, status: 'failed', error: '应用重启导致任务中断。' }
-          : step)
+        hydrated.plan = (hydrated.plan ?? []).map((step) =>
+          step.status === 'running'
+            ? {
+                ...step,
+                status: 'failed',
+                error: '应用重启导致任务中断。',
+                completedAt: new Date().toISOString(),
+              }
+            : step,
+        )
         await saveAgentSession(hydrated)
       }
       return hydrated
@@ -61,38 +68,51 @@ export async function saveAgentSession(session) {
 async function externalizeSessionReferences(session) {
   return {
     ...session,
-    references: await Promise.all((session.references ?? []).map(async (reference) => {
-      if (typeof reference.data !== 'string' || !reference.data.startsWith('data:')) return reference
-      const parsed = parseDataUri(reference.data)
-      if (!parsed) return reference
-      const hash = crypto.createHash('sha256').update(parsed.data).digest('hex')
-      const directory = path.join(sessionAssetsRoot, hash.slice(0, 2))
-      const filePath = path.join(directory, hash)
-      await fs.mkdir(directory, { recursive: true })
-      try {
-        await fs.access(filePath)
-      } catch {
-        const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
-        await fs.writeFile(temporaryPath, parsed.data)
-        await fs.rename(temporaryPath, filePath)
-      }
-      const metadata = { ...reference }
-      delete metadata.data
-      return { ...metadata, assetRef: `sha256:${hash}`, contentHash: hash, mime: reference.mime || parsed.mime }
-    })),
+    references: await Promise.all(
+      (session.references ?? []).map(async (reference) => {
+        if (typeof reference.data !== 'string' || !reference.data.startsWith('data:'))
+          return reference
+        const parsed = parseDataUri(reference.data)
+        if (!parsed) return reference
+        const hash = crypto.createHash('sha256').update(parsed.data).digest('hex')
+        const directory = path.join(sessionAssetsRoot, hash.slice(0, 2))
+        const filePath = path.join(directory, hash)
+        await fs.mkdir(directory, { recursive: true })
+        try {
+          await fs.access(filePath)
+        } catch {
+          const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
+          await fs.writeFile(temporaryPath, parsed.data)
+          await fs.rename(temporaryPath, filePath)
+        }
+        const metadata = { ...reference }
+        delete metadata.data
+        return {
+          ...metadata,
+          assetRef: `sha256:${hash}`,
+          contentHash: hash,
+          mime: reference.mime || parsed.mime,
+        }
+      }),
+    ),
   }
 }
 
 async function hydrateSessionReferences(session) {
   return {
     ...session,
-    references: await Promise.all((session.references ?? []).map(async (reference) => {
-      if (reference.data || typeof reference.assetRef !== 'string') return reference
-      const hash = reference.assetRef.startsWith('sha256:') ? reference.assetRef.slice(7) : ''
-      if (!/^[a-f0-9]{64}$/.test(hash)) return reference
-      const data = await fs.readFile(path.join(sessionAssetsRoot, hash.slice(0, 2), hash))
-      return { ...reference, data: `data:${reference.mime || 'image/png'};base64,${data.toString('base64')}` }
-    })),
+    references: await Promise.all(
+      (session.references ?? []).map(async (reference) => {
+        if (reference.data || typeof reference.assetRef !== 'string') return reference
+        const hash = reference.assetRef.startsWith('sha256:') ? reference.assetRef.slice(7) : ''
+        if (!/^[a-f0-9]{64}$/.test(hash)) return reference
+        const data = await fs.readFile(path.join(sessionAssetsRoot, hash.slice(0, 2), hash))
+        return {
+          ...reference,
+          data: `data:${reference.mime || 'image/png'};base64,${data.toString('base64')}`,
+        }
+      }),
+    ),
   }
 }
 

@@ -10,15 +10,29 @@ contextBridge.exposeInMainWorld('aiCampaignProjects', {
   save: (snapshot) => ipcRenderer.invoke('project:save', snapshot),
   delete: (projectId) => ipcRenderer.invoke('project:delete', projectId),
   listVersions: (projectId) => ipcRenderer.invoke('project:listVersions', projectId),
-  loadVersion: (projectId, versionId) => ipcRenderer.invoke('project:loadVersion', projectId, versionId),
+  loadVersion: (projectId, versionId) =>
+    ipcRenderer.invoke('project:loadVersion', projectId, versionId),
 })
 
 contextBridge.exposeInMainWorld('aiCampaignRuntime', {
   getPublicState: () => ipcRenderer.invoke('runtime:getPublicState'),
+  listUserExtensions: () => ipcRenderer.invoke('runtime:listUserExtensions'),
+  importUserSkill: () => ipcRenderer.invoke('runtime:importUserSkill'),
+  importStylePack: () => ipcRenderer.invoke('runtime:importStylePack'),
+  exportStylePack: (id) => ipcRenderer.invoke('runtime:exportStylePack', id),
+  setUserExtensionEnabled: (kind, id, enabled) =>
+    ipcRenderer.invoke('runtime:setUserExtensionEnabled', kind, id, enabled),
+  removeUserExtension: (kind, id) => ipcRenderer.invoke('runtime:removeUserExtension', kind, id),
+  listComponentPacks: (projectId) => ipcRenderer.invoke('runtime:listComponentPacks', projectId),
+  importProjectComponent: (input) => ipcRenderer.invoke('runtime:importProjectComponent', input),
+  adaptComponentExport: (input) => ipcRenderer.invoke('runtime:adaptComponentExport', input),
   cancelAgent: (sessionId) => ipcRenderer.invoke('runtime:cancelAgent', sessionId),
-  ackDeliverable: (deliveryId, observation) => (
-    ipcRenderer.invoke('runtime:ackDeliverable', deliveryId, observation)
-  ),
+  ackDeliverable: (deliveryId, observation) =>
+    ipcRenderer.invoke('runtime:ackDeliverable', deliveryId, observation),
+  ackCanvasTarget: (requestId, resolution) =>
+    ipcRenderer.invoke('runtime:ackCanvasTarget', requestId, resolution),
+  ackCanvasSnapshot: (requestId, resolution) =>
+    ipcRenderer.invoke('runtime:ackCanvasSnapshot', requestId, resolution),
   startStream: (payload) => ipcRenderer.invoke('runtime:startStream', payload),
   onStreamToken: (listener) => {
     const wrapped = (_event, data) => listener(data)
@@ -44,5 +58,15 @@ contextBridge.exposeInMainWorld('aiCampaignRuntime', {
     const wrapped = (_event, data) => listener(data)
     ipcRenderer.on('runtime:deliverable', wrapped)
     return () => ipcRenderer.off('runtime:deliverable', wrapped)
+  },
+  onCanvasTargetRequest: (listener) => {
+    const wrapped = (_event, data) => listener(data)
+    ipcRenderer.on('runtime:canvasTargetRequest', wrapped)
+    return () => ipcRenderer.off('runtime:canvasTargetRequest', wrapped)
+  },
+  onCanvasSnapshotRequest: (listener) => {
+    const wrapped = (_event, data) => listener(data)
+    ipcRenderer.on('runtime:canvasSnapshotRequest', wrapped)
+    return () => ipcRenderer.off('runtime:canvasSnapshotRequest', wrapped)
   },
 })

@@ -85,20 +85,32 @@ for (const variant of variants) {
       }),
     })
     const text = await response.text()
-    console.log(JSON.stringify({
-      name: variant.name,
-      status: response.status,
-      statusText: response.statusText,
-      contentType: response.headers.get('content-type') || '',
-      elapsedMs: Date.now() - startedAt,
-      bodyLength: text.length,
-      bodyPreview: text.slice(0, 1200),
-    }, null, 2))
+    console.log(
+      JSON.stringify(
+        {
+          name: variant.name,
+          status: response.status,
+          statusText: response.statusText,
+          contentType: response.headers.get('content-type') || '',
+          elapsedMs: Date.now() - startedAt,
+          bodyLength: text.length,
+          bodyPreview: text.slice(0, 1200),
+        },
+        null,
+        2,
+      ),
+    )
   } catch (error) {
-    console.log(JSON.stringify({
-      name: variant.name,
-      error: error instanceof Error ? error.message : String(error),
-    }, null, 2))
+    console.log(
+      JSON.stringify(
+        {
+          name: variant.name,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        null,
+        2,
+      ),
+    )
   }
 }
 

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
+import { BrainCircuit, Image } from 'lucide-react'
+import type { RuntimeModelSelection } from '../../ai/types'
+import { CompactSelectMenu } from './CompactSelectMenu'
 
-export interface RuntimeModelSelection {
-  provider: string
-  model: string
-}
+export type { RuntimeModelSelection } from '../../ai/types'
 
 interface RuntimeProviderState {
   id: string
@@ -13,7 +13,8 @@ interface RuntimeProviderState {
   apiKeyEnv: string
   capabilities: {
     chat: boolean
-    svgDesign: boolean
+    vision?: boolean
+    structuredOutput?: boolean
     rasterImage: boolean
   }
 }
@@ -21,7 +22,6 @@ interface RuntimeProviderState {
 interface RuntimeModelSelectProps {
   value: RuntimeModelSelection
   onChange: (selection: RuntimeModelSelection) => void
-  compact?: boolean
   purpose?: 'chat' | 'image'
 }
 
@@ -33,22 +33,19 @@ const BUILT_IN_IMAGE_PROVIDER: RuntimeProviderState = {
   apiKeyEnv: 'BILI_IMAGE_API_KEY',
   capabilities: {
     chat: false,
-    svgDesign: false,
+    vision: false,
+    structuredOutput: false,
     rasterImage: true,
   },
 }
 
-export function RuntimeModelSelect({
-  value,
-  onChange,
-  compact = false,
-  purpose = 'chat',
-}: RuntimeModelSelectProps) {
+export function RuntimeModelSelect({ value, onChange, purpose = 'chat' }: RuntimeModelSelectProps) {
   const [providers, setProviders] = useState<RuntimeProviderState[]>([])
 
   useEffect(() => {
     let cancelled = false
-    window.aiCampaignRuntime?.getPublicState()
+    window.aiCampaignRuntime
+      ?.getPublicState()
       .then((state) => {
         if (cancelled) return
         setProviders(state.providers)
@@ -61,30 +58,26 @@ export function RuntimeModelSelect({
     }
   }, [])
 
-  const options = useMemo(
-    () => {
-      const effectiveProviders = purpose === 'image' && !providers.some((provider) => (
-        provider.capabilities?.rasterImage
-      ))
+  const options = useMemo(() => {
+    const effectiveProviders =
+      purpose === 'image' && !providers.some((provider) => provider.capabilities?.rasterImage)
         ? [...providers, BUILT_IN_IMAGE_PROVIDER]
         : providers
-      return effectiveProviders.filter((provider) => (
-      purpose === 'image'
-        ? provider.capabilities?.rasterImage
-        : provider.capabilities?.chat
-    )).flatMap((provider) =>
-      provider.models.map((model) => ({
-        key: `${provider.id}:${model}`,
-        provider: provider.id,
-        model,
-        label: purpose === 'image' ? `生图 / ${model}` : `推理 / ${model}`,
-        hasApiKey: provider.hasApiKey,
-        apiKeyEnv: provider.apiKeyEnv,
-      })),
+    return effectiveProviders
+      .filter((provider) =>
+        purpose === 'image' ? provider.capabilities?.rasterImage : provider.capabilities?.chat,
       )
-    },
-    [providers, purpose],
-  )
+      .flatMap((provider) =>
+        provider.models.map((model) => ({
+          key: `${provider.id}:${model}`,
+          provider: provider.id,
+          model,
+          label: purpose === 'image' ? `生图 / ${model}` : `推理 / ${model}`,
+          hasApiKey: provider.hasApiKey,
+          apiKeyEnv: provider.apiKeyEnv,
+        })),
+      )
+  }, [providers, purpose])
 
   useEffect(() => {
     if (!options.length) return
@@ -104,25 +97,40 @@ export function RuntimeModelSelect({
     ? `${value.provider}:${value.model}`
     : options[0].key
 
+  const selected = options.find((option) => option.key === selectedKey) ?? options[0]
+  const ariaLabel = purpose === 'image' ? '生图模型' : '推理模型'
   return (
-    <label className={compact ? 'runtime-model-select compact' : 'runtime-model-select'}>
-      <span>{purpose === 'image' ? '生图模型' : '推理模型'}</span>
-      <select
-        aria-label={purpose === 'image' ? '生图模型' : '推理模型'}
-        title={purpose === 'image' ? '生图模型' : '推理模型'}
-        value={selectedKey}
-        onChange={(event) => {
-          const option = options.find((item) => item.key === event.target.value)
-          if (!option) return
-          onChange({ provider: option.provider, model: option.model })
-        }}
-      >
-        {options.map((option) => (
-          <option key={option.key} value={option.key}>
-            {option.hasApiKey ? option.label : `${option.label}（缺少 ${option.apiKeyEnv}）`}
-          </option>
-        ))}
-      </select>
-    </label>
+    <CompactSelectMenu
+      ariaLabel={ariaLabel}
+      className={purpose === 'image' ? 'image-model' : 'chat-model'}
+      icon={purpose === 'image' ? <Image size={14} /> : <BrainCircuit size={14} />}
+      value={selectedKey}
+      displayValue={shortModelLabel(selected.model)}
+      options={options.map((option) => ({
+        value: option.key,
+        label: shortModelLabel(option.model),
+        description: option.hasApiKey ? option.model : `缺少 ${option.apiKeyEnv}`,
+        disabled: !option.hasApiKey,
+      }))}
+      onChange={(key) => selectOption(key, options, onChange)}
+    />
   )
+}
+
+function selectOption(
+  key: string,
+  options: Array<{ key: string; provider: string; model: string }>,
+  onChange: RuntimeModelSelectProps['onChange'],
+) {
+  const option = options.find((item) => item.key === key)
+  if (option) onChange({ provider: option.provider, model: option.model })
+}
+
+function shortModelLabel(model: string) {
+  if (/nano-banana-pro/i.test(model)) return 'Banana Pro'
+  if (/gpt-image-2/i.test(model)) return 'Image-2'
+  return model
+    .replace(/^gpt-/i, 'GPT-')
+    .replace(/claude-/i, 'Claude ')
+    .replace(/-/g, ' ')
 }

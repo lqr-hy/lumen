@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 const DESIGN_KINDS = new Set(['width', 'height', 'x', 'y', 'spacing', 'radius', 'color', 'image'])
 const GENERIC_TOKENS = new Set([
   'style', 'config', 'free', 'normal', 'component', 'image', 'pic', 'asset', 'static',
-  'button', 'btn', 'draw', 'open', 'show', 'visible', 'enable', 'lottery',
+  'button', 'btn', 'open', 'show', 'visible', 'enable',
   '样式', '配置', '组件', '图片', '按钮', '展示', '显示', '开启',
 ])
 
@@ -73,15 +73,6 @@ export function resolveDesignContract(component, facts, options = {}) {
   const diagnostics = []
 
   for (const fact of facts.leaves) {
-    if (fact.customController) {
-      passthroughProps.push(fact.path)
-      diagnostics.push({
-        code: 'CUSTOM_CONTROLLER_SCHEMA_MISSING',
-        path: fact.path,
-        message: `保留 ${fact.path}；需要 ${fact.customController} 的公开 Schema 才能继续解析。`,
-      })
-      continue
-    }
     const classification = registry.classify(fact)
     if (!classification.selected) {
       if (isDesignCandidate(fact)) {
@@ -121,6 +112,9 @@ export function resolveDesignContract(component, facts, options = {}) {
   let contract = {
     componentName: component.name,
     label: component.label,
+    sourceFormat: 'json-schema',
+    schemaVersion: component.__schemaMeta?.schemaVersion,
+    repeaters: component.__schemaMeta?.repeaters || [],
     thumbnail: component.thumbnail,
     sourceHash: facts.sourceHash,
     profiles,
@@ -334,8 +328,8 @@ function relationTokens(property, profileRoot) {
 }
 
 function inferSlotRole(tokens, rawSemantic) {
-  if (hasAny(tokens, ['button', 'btn', '按钮', 'one', 'ten'])) return 'button'
-  if (/button|btn|按钮|抽\s*1\s*次|抽一次|抽\s*10\s*次|十连抽/i.test(rawSemantic)) return 'button'
+  if (hasAny(tokens, ['button', 'btn', '按钮'])) return 'button'
+  if (/button|btn|按钮/i.test(rawSemantic)) return 'button'
   if (hasAny(tokens, ['background', 'bg', '背景'])) return 'background'
   if (hasAny(tokens, ['animation', '动效'])) return 'animation'
   if (hasAny(tokens, ['thanks', 'decorate', 'decoration', '谢谢', '装饰'])) return 'decoration'
@@ -355,8 +349,6 @@ function readDefaultValue(prop, editors) {
 function semanticTokens(value) {
   const normalized = splitIdentifier(value)
     .toLowerCase()
-    .replace(/抽\s*1\s*次|抽一次/g, ' one ')
-    .replace(/抽\s*10\s*次|十连抽/g, ' ten ')
     .replace(/[^a-z0-9\u4e00-\u9fff]+/g, ' ')
   return Array.from(new Set(normalized.split(/\s+/).filter((token) => token.length > 1 && !GENERIC_TOKENS.has(token))))
 }

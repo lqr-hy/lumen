@@ -8,12 +8,12 @@
 
 当前项目是 Vite + React + Electron。本文描述的 Provider、IPC、Agent 与 Skill Runtime 已落地；文中的“后续扩展”仍是路线图。
 
-项目快照、Artifact、Agent Run 检查点和取消协议见 [`agent-engineering-runtime.md`](agent-engineering-runtime.md)。Provider 公共状态包含 `chat/vision/svgDesign/rasterImage` 能力位；当前 Codex 负责对话、规划和 SVG 回退，`Bilibili Image / gpt-image-2` 负责真实位图生成。
+项目快照、Artifact、Agent Run 检查点和取消协议见 [`agent-engineering-runtime.md`](agent-engineering-runtime.md)。Provider 公共状态包含 `chat/vision/structuredOutput/rasterImage` 能力位；推理模型通过 Pi Models 负责对话、规划和 Tool Calling，`Bilibili Image` 通过 Pi ImagesModels 负责真实位图生成。
 
 - 前端入口运行在 renderer 进程。
 - Electron 主进程位于 `electron/main.mjs`。
 - `electron/preload.mjs` 已通过 `contextBridge` 暴露了 `window.aiCampaignElectron`。
-- 当前 AI 请求在 `src/features/ai/api.ts` 中直接读取 `import.meta.env.VITE_COPILOT_API_URL` 并从浏览器侧请求接口。
+- Renderer 的 `src/features/ai/api.ts` 只负责构造 IPC Payload，不读取 AI Key，也不直接访问模型 URL。
 
 核心改造是：密钥只在 Electron 主进程读取，renderer 不直接接触 key；页面只传用户选择的 `provider/model` 和业务请求内容。
 
@@ -30,7 +30,7 @@
    - 直接继承启动 Electron 进程时可见的 `process.env`。
 
 3. 前端只传选择，不传凭证
-   - renderer 调用 `window.aiCampaignRuntime.request(...)`。
+   - renderer 调用 `window.aiCampaignElectron.runtime.startStream(...)`。
    - 请求中包含 `provider`、`model`、`prompt`、画布上下文等。
    - 主进程负责查白名单、读环境变量、拼装认证头和请求协议。
 
@@ -81,7 +81,7 @@ electron/runtime/providers.mjs
 export const PROVIDERS = {
   codex: {
     label: 'Codex',
-    wireApi: 'responses',
+    wireApi: 'openai-responses',
     defaultBaseUrl: 'https://api-ai-coding.bilibili.co/api/v1/codex',
     baseUrlEnv: 'AICODING_BASE_URL',
     apiKeyEnv: 'AICODING_API_KEY',
@@ -89,7 +89,7 @@ export const PROVIDERS = {
   },
   claudeCode: {
     label: 'Claude Code',
-    wireApi: 'anthropic_messages',
+    wireApi: 'anthropic-messages',
     defaultBaseUrl: 'https://api.anthropic.com',
     baseUrlEnv: 'ANTHROPIC_BASE_URL',
     apiKeyEnv: 'ANTHROPIC_API_KEY',
@@ -97,7 +97,7 @@ export const PROVIDERS = {
   },
   copilot: {
     label: 'Copilot',
-    wireApi: 'copilot_prediction',
+    wireApi: 'copilot-prediction',
     defaultBaseUrl: 'https://copilot.bilibili.co/api/v1/prediction/e3558bcf-64ee-4522-85a5-e07ccfc7d99f',
     baseUrlEnv: 'COPILOT_API_URL',
     apiKeyEnv: 'COPILOT_API_KEY',
@@ -164,27 +164,33 @@ electron/
   - 不向 renderer 返回 key。
 
 - `request.mjs`
-  - 主进程实际发起网络请求。
-  - 根据 `wireApi` 适配不同协议。
-  - 注入认证头。
-  - 处理流式响应。
-  - 统一错误结构。
+  - 单一 Runtime 请求入口，分发 Pi Agent、Pi 文本任务和 Pi ImagesModels。
+  - 校验 Provider、模型、任务类型和能力，不实现 CLI 或手写推理流协议。
 
 - `skills.mjs`
   - 扫描开发目录或 DMG Resources 中的 Skill。
-  - 自动/显式选择 Skill，并复制到 Codex 隔离 Job。
-  - 在 Electron Node Runtime 中执行受信任的 Skill Tool。
+  - 构建 Skill Catalog，支持自动/显式选择、激活和渐进读取引用资料。
+  - Skill 不复制到临时 Job；Pi Agent 通过受控 Tool 直接读取已注册 Skill。
+
+- `pi/*.mjs`
+  - 组装 RuntimeContext，运行 Pi Agent，直接通过 URL + Key 调用 Pi Models。
+  - 注册 Skill 与设计工作流工具，并镜像保存 Pi Session 消息。
 
 - `agent*.mjs`
-  - 保存 Session、Goal、Plan、Reference、Observation 和 Artifact。
-  - 驱动工具循环、超时、重试及“继续”恢复。
+  - 作为 `studio_run_design_workflow` 内部的确定性领域执行器。
+  - 保存 Goal、Plan、Observation、Checkpoint 和 Artifact，处理 ACK、重试及恢复。
 
-建议支持的 `wireApi`：
+当前支持的 `wireApi`：
 
-- `responses`：Codex / OpenAI Responses API 兼容协议。
-- `anthropic_messages`：Claude / Anthropic Messages API 兼容协议。
-- `copilot_prediction`：当前 Copilot prediction 接口协议。
+- `openai-responses`：Codex / OpenAI Responses API，由 Pi 官方适配器执行；B 站 Codex Provider 仅增加网关要求的 Codex 请求体与 Header 映射。
+- `anthropic-messages`：Claude / Anthropic Messages API，由 Pi 官方适配器执行。
+- `copilot-prediction`：当前 Copilot prediction 接口的受控直接 Provider。
 - `openai_images`：OpenAI Images 兼容协议；无参考图调用 `/images/generations`，有参考图调用 `/images/edits`。
+
+Codex Provider 不补写 terminal event。B 站网关必须返回真实的 `response.completed` 或
+`response.incomplete`；HTTP 200 空 Body 会作为上游协议错误返回。当前 B 站 Key 不是 OpenAI OAuth
+JWT，因此不使用 Pi 的 `openai-codex-responses` OAuth 适配器，而是在 Pi `openai-responses` 请求入口
+映射网关所需的 `instructions`、`OpenAI-Beta`、`originator` 和 Session Header。
 
 ## 推理模型与生图模型
 
@@ -199,7 +205,7 @@ Renderer 分别提交两套选择：
 }
 ```
 
-- Conversation、Blueprint、VisualTheme、ReAct Decision 使用推理模型 `provider/model`。
+- Conversation、Blueprint、VisualTheme 和 Pi Tool Calling 使用推理模型 `provider/model`。
 - `generate_image`、`generate_assets` 使用 `imageProvider/imageModel`。
 - `gpt-image-2` 与 `nano-banana-pro` 共用 `biliImage` Provider、Base URL 和 Key，只切换请求体中的 `model`。
 - 多素材任务通过 `imageTasks[]` 描述名称、目标尺寸、透明背景和独立提示词，主进程最多并发三张，按输入顺序返回。
@@ -208,15 +214,18 @@ Renderer 分别提交两套选择：
 
 ## IPC 接口
 
-主进程注册：
+主进程注册流式入口：
 
 ```js
 ipcMain.handle('runtime:getPublicState', async () => {
   return getPublicRuntimeState()
 })
 
-ipcMain.handle('runtime:request', async (_event, payload) => {
-  return requestWithRuntime(payload)
+ipcMain.handle('runtime:startStream', async (event, payload) => {
+  return startRuntimeStream(payload, {
+    onToken: (token) => event.sender.send('runtime:streamToken', token),
+    onAgentEvent: (agentEvent) => event.sender.send('runtime:agentEvent', agentEvent),
+  })
 })
 ```
 
@@ -225,7 +234,7 @@ preload 暴露：
 ```js
 contextBridge.exposeInMainWorld('aiCampaignRuntime', {
   getPublicState: () => ipcRenderer.invoke('runtime:getPublicState'),
-  request: (payload) => ipcRenderer.invoke('runtime:request', payload),
+  startStream: (payload) => ipcRenderer.invoke('runtime:startStream', payload),
 })
 ```
 
@@ -274,7 +283,8 @@ type PublicRuntimeState = {
 
 ## 画布放置上下文
 
-Renderer 在请求前解析用户希望把结果放到哪里，并通过 `canvasTarget` 把确定后的目标传给 Runtime：
+Renderer 在请求前只提交只读 `CanvasContext`。Pi 在工具调用中输出动态 `placement`，Runtime 完成
+Revision、目标归属和操作约束校验后，通过 Target Handshake 获得 `canvasTarget`：
 
 ```ts
 type CanvasTarget = {
@@ -285,12 +295,18 @@ type CanvasTarget = {
   autoHeight?: boolean
   placementMode: 'new-artboard' | 'append-section' | 'duplicate-variant' | 'asset-board'
   placementSource: 'prompt' | 'control' | 'default'
+  operationId: string
+  leaseId: string
+  documentRevision: number
 }
 ```
 
-输入框提供 `自动 / 新页面 / 当前画板 / 新变体 / 素材` 五段控件。自动模式先识别本轮自然语言；明确提示词始终高于控件，避免用户说“再生成一个页面”时仍误写到旧画板。自然语言和控件都没有明确指定时，默认使用 `append-section`；若该对话没有目标画板，则自动创建 `375 x 812` 标准画板。
+输入框不要求用户选择放置模式。Agent 根据当前轮完整语义、画板候选和 Selection 动态选择
+`create/insert/revise/variant/assets/resume`。`insert/revise/variant/resume` 缺少明确目标时直接失败，
+不再默认 `append-section`，也不从历史线程静默选择画板。
 
-`canvasTarget` 属于 Agent Session 上下文。首次请求、继续执行和失败重试都使用同一 `artboardId` 与 `placementMode`，Provider 只负责生成符合模式的 SVG 制品，实际创建画板、追加高度和放置图片仍由 Renderer Store 完成。
+`canvasTarget` 作为带版本的 Lease 记录在 Agent Session。继续和重试只能恢复有效 Lease；新建任务重新
+规划目标。Provider 负责生成制品，实际创建画板、追加高度和放置节点仍由 Renderer Store 完成。
 
 ## Skill 与生产资源路径
 
@@ -308,33 +324,14 @@ process.resourcesPath/skills
 process.resourcesPath/componentsJson
 ```
 
-Skill 位于 `app.asar` 外部的只读应用资源中。每次 Codex Job 只获得所选 Skill 的副本，API Key、环境变量快照和 Agent Session 不会复制进 Skill。详细规范见 [`runtime-skills.md`](runtime-skills.md)。
+Skill 位于 `app.asar` 外部的只读应用资源中。Pi Agent 只获得 Skill Catalog，并通过受控 Tool 渐进激活正文或读取 references；API Key、环境变量快照和 Agent Session 不进入 Skill。详细规范见 [`runtime-skills.md`](runtime-skills.md)。
 
 这套机制不改变凭证原则：Provider 仍直接读取 Electron 进程可见的本地环境变量，不增加 `config.toml`，Skill 也不能读取或声明用户凭证。
 
 ## 前端迁移方案
 
-当前 `src/features/ai/api.ts` 中的 `readCopilotStream` 直接访问 `COPILOT_API_URL`。改造后建议分两步：
-
-1. 抽象 AI transport
-
-```ts
-type AiTransport = {
-  readChatEditStream(request: ChatEditRequest, callbacks: ChatEditCallbacks): Promise<string>
-}
-```
-
-2. Electron 环境优先走 runtime
-
-```ts
-if (window.aiCampaignRuntime) {
-  return readRuntimeStream(request, callbacks)
-}
-
-return readBrowserFallbackStream(request, callbacks)
-```
-
-浏览器 fallback 可以继续使用 `VITE_COPILOT_API_URL`，但只能用于无密钥、测试或内部可公开接口。
+`src/features/ai/api.ts` 只调用 Electron Runtime。非 Electron 环境明确返回“Runtime 不可用”，不再
+保留浏览器 Copilot 直连或 `VITE_*` URL fallback，避免绕过 Provider 白名单、凭证隔离和 Pi Tool Calling。
 
 ## 流式响应
 
@@ -444,9 +441,9 @@ type RuntimeRequest = {
    - 保留现有 `window.aiCampaignElectron`
 
 5. 修改前端 AI API
-   - `applyChatEdit` 优先走 Electron runtime
-   - 聊天框把 `provider/model` 放入 runtime request
-   - 非 Electron 环境保留现有 Copilot fallback
+   - `applyChatEdit` 只走 Electron Runtime
+   - 聊天框把 `provider/model` 放入 Runtime Request
+   - 非 Electron 环境不发起模型请求
 
 6. 增加类型声明
    - 在 `src/vite-env.d.ts` 增加 `Window.aiCampaignRuntime`
