@@ -114,11 +114,45 @@
 
 .layer-artboard-row,
 .layer-item-row {
+  position: relative;
   display: flex;
   align-items: center;
   min-height: 30px;
   min-width: 0;
   border-radius: 7px;
+}
+
+.layer-item-row.dragging {
+  opacity: 0.45;
+}
+
+.layer-item-row.drop-before {
+  box-shadow: inset 0 2px 0 #2563eb;
+}
+
+.layer-item-row.drop-after {
+  box-shadow: inset 0 -2px 0 #2563eb;
+}
+
+.layer-item-row.drop-inside {
+  background: #dbeafe;
+  box-shadow: inset 0 0 0 1px #2563eb;
+}
+
+.layer-drag-handle,
+.layer-drag-placeholder {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+}
+
+.layer-drag-handle {
+  cursor: grab;
+  color: #94a3b8;
+}
+
+.layer-item-row:active .layer-drag-handle {
+  cursor: grabbing;
 }
 
 .layer-artboard-row.active,

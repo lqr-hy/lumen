@@ -4,6 +4,10 @@
 
 | 文档 | 职责 |
 | --- | --- |
+| [`code-reading-guide.md`](code-reading-guide.md) | 按应用入口、Agent、Runtime、画布、持久化和代码生成整理主要模块职责与推荐阅读顺序 |
+| [`project-flowcharts.md`](project-flowcharts.md) | 当前项目从聊天输入、Pi 决策、确定性工作流到 Canvas ACK、持久化和恢复的完整流程图 |
+| [`layer-hierarchy-and-grouping.md`](layer-hierarchy-and-grouping.md) | 图层排序、拖拽 Reparent、持久 Group、层级绘制和生成结构保护方案 |
+| [`infinite-canvas-performance.md`](infinite-canvas-performance.md) | 多画板场景的 React Compiler、视口合帧、画板裁剪、拖拽索引、图层索引和性能验收方案 |
 | [`capability-status.md`](capability-status.md) | 当前已实现、部分实现、未实现能力及对应验证入口，作为项目进度唯一索引 |
 | [`multi-framework-codegen-runtime-components.md`](multi-framework-codegen-runtime-components.md) | 基于 Canonical Scene Graph 的 HTML/CSS、React、Vue 编译层，以及 Runtime Component 黑盒引用和 Props 导出方案 |
 | [`unified-render-ir.md`](unified-render-ir.md) | 用 Render IR 收敛画布、快照、版本对比与代码导出的样式真源，消除代码产物与画布视觉不一致 |
@@ -34,7 +38,7 @@
 
 ## 阅读顺序
 
-1. 先阅读 `capability-status.md`，确认能力是否已经实现，再进入对应领域文档。
+1. 先阅读 `code-reading-guide.md` 和 `project-flowcharts.md` 建立代码地图，再阅读 `capability-status.md` 确认能力是否已经实现。
 2. 阅读 `agent-canvas-transaction-architecture.md`，理解当前交互问题和下一阶段唯一主链。
 3. 阅读 `runtime-context.md`，理解浏览器 Renderer 为什么不能直接读取本地密钥。
 4. 再阅读 `../agent.md`，理解一次对话如何变成可恢复的工具循环。

@@ -27,6 +27,18 @@ import {
 import { cn } from '../../../lib/cn'
 import { findEditableMaskBounds, hasEditableImageMask } from '../utils/image-mask'
 import { resolveComposerQueueTarget } from '../utils/composer-target'
+import {
+  collectLayerSubtreeElements,
+  flattenElementsForPainting,
+  isGroupElement,
+  isLayerStructureEditable,
+  type LayerOrderAction,
+} from '../utils/layer-tree'
+import {
+  rectIntersectsWorldBounds,
+  resolveVisibleArtboards,
+  resolveVisibleWorldBounds,
+} from '../utils/canvas-visibility'
 
 interface DragState {
   mode:
@@ -43,6 +55,8 @@ interface DragState {
   startWorld?: Point
   startViewport?: { x: number; y: number; zoom: number }
   startElements?: DesignElement[]
+  startElementById?: ReadonlyMap<string, DesignElement>
+  resizeDescendantIds?: ReadonlySet<string>
   startArtboard?: Artboard
   handle?: ResizeHandle
   appendSelection?: boolean
@@ -65,6 +79,17 @@ interface CanvasContextMenuState {
   openLeft?: boolean
 }
 
+interface ElementDragPreviewNode {
+  node: HTMLElement
+  transform: string
+  willChange: string
+}
+
+interface ElementDragPreview {
+  nodes: ElementDragPreviewNode[]
+  selectionBox?: ElementDragPreviewNode
+}
+
 interface WorldRect {
   left: number
   top: number
@@ -82,9 +107,11 @@ interface MaskStroke {
 
 const contextMenuSize = {
   width: 248,
-  height: 410,
+  height: 460,
   submenuWidth: 176,
 }
+
+const CANVAS_OVERSCAN_PX = 600
 
 export function InfiniteCanvas({
   chatPanelOpen,
@@ -95,6 +122,12 @@ export function InfiniteCanvas({
   const document = useEditorStore((state) => state.document)
   const viewport = useEditorStore((state) => state.viewport)
   const viewportStateRef = useRef(viewport)
+  const panViewportFrameRef = useRef<number | undefined>(undefined)
+  const pendingPanViewportRef = useRef<typeof viewport | undefined>(undefined)
+  const elementDragFrameRef = useRef<number | undefined>(undefined)
+  const pendingElementDragDeltaRef = useRef<Point | undefined>(undefined)
+  const lastElementDragDeltaRef = useRef<Point>({ x: 0, y: 0 })
+  const elementDragPreviewRef = useRef<ElementDragPreview | undefined>(undefined)
   const gestureScaleRef = useRef(1)
   const pointerInCanvasRef = useRef(false)
   const lastCanvasPointRef = useRef<Point | null>(null)
@@ -111,6 +144,9 @@ export function InfiniteCanvas({
   const updateElement = useEditorStore((state) => state.updateElement)
   const updateArtboard = useEditorStore((state) => state.updateArtboard)
   const addElement = useEditorStore((state) => state.addElement)
+  const groupElements = useEditorStore((state) => state.groupElements)
+  const ungroupElement = useEditorStore((state) => state.ungroupElement)
+  const changeLayerOrder = useEditorStore((state) => state.changeLayerOrder)
   const removeElements = useEditorStore((state) => state.removeElements)
   const removeArtboard = useEditorStore((state) => state.removeArtboard)
   const addQueuedReferenceImage = useEditorStore((state) => state.addQueuedReferenceImage)
@@ -139,6 +175,7 @@ export function InfiniteCanvas({
   const [maskBrushSize, setMaskBrushSize] = useState(32)
   const [maskFeather, setMaskFeather] = useState(0)
   const [maskStrokes, setMaskStrokes] = useState<MaskStroke[]>([])
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 })
   const setTextRangeSelection = useEditorStore((state) => state.setTextRangeSelection)
   const setImageRegionSelection = useEditorStore((state) => state.setImageRegionSelection)
 
@@ -155,6 +192,69 @@ export function InfiniteCanvas({
     () => elements.filter((element) => selectedElementIds.includes(element.id)),
     [elements, selectedElementIds],
   )
+  const selectedElementIdSet = useMemo(() => new Set(selectedElementIds), [selectedElementIds])
+  const paintElements = useMemo(() => flattenElementsForPainting(elements), [elements])
+  const knownArtboardIds = useMemo(
+    () => new Set(artboards.map((artboard) => artboard.id)),
+    [artboards],
+  )
+  const retainedArtboardIds = useMemo(() => {
+    const retained = new Set<string>()
+    if (activeArtboardId) retained.add(activeArtboardId)
+    for (const element of document?.elements ?? []) {
+      if (
+        element.artboardId &&
+        (selectedElementIdSet.has(element.id) || dragState?.startElementById?.has(element.id))
+      ) {
+        retained.add(element.artboardId)
+      }
+    }
+    return retained
+  }, [activeArtboardId, document?.elements, dragState?.startElementById, selectedElementIdSet])
+  const visibleWorldBounds = useMemo(
+    () => resolveVisibleWorldBounds(viewport, canvasSize, CANVAS_OVERSCAN_PX),
+    [canvasSize, viewport],
+  )
+  const visibleArtboards = useMemo(
+    () => resolveVisibleArtboards(artboards, visibleWorldBounds, retainedArtboardIds),
+    [artboards, retainedArtboardIds, visibleWorldBounds],
+  )
+  const paintElementsByArtboard = useMemo(() => {
+    const byArtboard = new Map<string, Array<{ element: DesignElement; paintIndex: number }>>()
+    const unbound: Array<{ element: DesignElement; paintIndex: number }> = []
+    paintElements.forEach((element, paintIndex) => {
+      if (element.artboardId && knownArtboardIds.has(element.artboardId)) {
+        const entries = byArtboard.get(element.artboardId) ?? []
+        entries.push({ element, paintIndex })
+        byArtboard.set(element.artboardId, entries)
+      } else {
+        unbound.push({ element, paintIndex })
+      }
+    })
+    return { byArtboard, unbound }
+  }, [knownArtboardIds, paintElements])
+  const visiblePaintElements = useMemo(() => {
+    const visible = visibleArtboards.flatMap(
+      (artboard) => paintElementsByArtboard.byArtboard.get(artboard.id) ?? [],
+    )
+    for (const entry of paintElementsByArtboard.unbound) {
+      if (
+        selectedElementIdSet.has(entry.element.id) ||
+        dragState?.startElementById?.has(entry.element.id) ||
+        !visibleWorldBounds ||
+        rectIntersectsWorldBounds(entry.element, visibleWorldBounds)
+      ) {
+        visible.push(entry)
+      }
+    }
+    return visible
+  }, [
+    dragState?.startElementById,
+    paintElementsByArtboard,
+    selectedElementIdSet,
+    visibleArtboards,
+    visibleWorldBounds,
+  ])
   const primarySelection = selectedElements[0]
   const activeArtboard = artboards.find((artboard) => artboard.id === activeArtboardId)
   const sliceTarget = sliceTargetId
@@ -178,6 +278,34 @@ export function InfiniteCanvas({
     viewportStateRef.current = viewport
     setZoomInput(String(Math.round(viewport.zoom * 100)))
   }, [viewport])
+
+  useEffect(
+    () => () => {
+      if (panViewportFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(panViewportFrameRef.current)
+      }
+      if (elementDragFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(elementDragFrameRef.current)
+      }
+      restoreElementDragPreview(elementDragPreviewRef.current)
+    },
+    [],
+  )
+
+  useEffect(() => {
+    const node = viewportRef.current
+    if (!node) return undefined
+    const updateSize = () => {
+      const next = { width: node.clientWidth, height: node.clientHeight }
+      setCanvasSize((current) =>
+        current.width === next.width && current.height === next.height ? current : next,
+      )
+    }
+    updateSize()
+    const observer = new ResizeObserver(updateSize)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [documentId])
 
   useEffect(() => {
     function zoomCanvasFromKeyboard(zoomFactor: number) {
@@ -228,6 +356,26 @@ export function InfiniteCanvas({
         if (event.shiftKey) redo()
         else undo()
       }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'g') {
+        event.preventDefault()
+        if (event.shiftKey && selectedElementIds.length === 1) {
+          ungroupElement(selectedElementIds[0])
+        } else if (!event.shiftKey && selectedElementIds.length >= 2) {
+          groupElements(selectedElementIds)
+        }
+      }
+      if ((event.metaKey || event.ctrlKey) && ['[', ']'].includes(event.key)) {
+        event.preventDefault()
+        const action: LayerOrderAction =
+          event.key === ']'
+            ? event.shiftKey
+              ? 'front'
+              : 'forward'
+            : event.shiftKey
+              ? 'back'
+              : 'backward'
+        changeLayerOrder(selectedElementIds, action)
+      }
       if (event.key === 'Delete' || event.key === 'Backspace') {
         if (selectedElementIds.length) removeElements(selectedElementIds)
         else if (activeArtboardId) removeArtboard(activeArtboardId)
@@ -251,12 +399,15 @@ export function InfiniteCanvas({
     }
   }, [
     activeArtboardId,
+    changeLayerOrder,
+    groupElements,
     redo,
     removeArtboard,
     removeElements,
     selectedElementIds,
     setViewport,
     sliceTargetId,
+    ungroupElement,
     undo,
   ])
 
@@ -266,10 +417,19 @@ export function InfiniteCanvas({
     const canvasNode = node
     const listenerOptions: AddEventListenerOptions = { passive: false, capture: true }
     const handledEvents = new WeakSet<Event>()
+    let viewportFrame: number | undefined
+    let pendingViewport: typeof viewportStateRef.current | undefined
 
     function applyViewport(nextViewport: typeof viewportStateRef.current) {
       viewportStateRef.current = nextViewport
-      setViewport(nextViewport)
+      pendingViewport = nextViewport
+      if (viewportFrame !== undefined) return
+      viewportFrame = window.requestAnimationFrame(() => {
+        viewportFrame = undefined
+        if (!pendingViewport) return
+        setViewport(pendingViewport)
+        pendingViewport = undefined
+      })
     }
 
     function eventPathIncludesCanvas(event: Event) {
@@ -431,6 +591,7 @@ export function InfiniteCanvas({
     canvasNode.addEventListener('gestureend', handleWebkitGesture, listenerOptions)
 
     return () => {
+      if (viewportFrame !== undefined) window.cancelAnimationFrame(viewportFrame)
       canvasNode.removeEventListener('contextmenu', blockContextMenu)
       canvasNode.removeEventListener('pointerenter', rememberCanvasPointer)
       canvasNode.removeEventListener('pointermove', rememberCanvasPointer)
@@ -514,6 +675,95 @@ export function InfiniteCanvas({
       startScreen: { x: event.clientX, y: event.clientY },
       startViewport: viewport,
     })
+  }
+
+  const schedulePanViewport = (nextViewport: typeof viewport) => {
+    viewportStateRef.current = nextViewport
+    pendingPanViewportRef.current = nextViewport
+    if (panViewportFrameRef.current !== undefined) return
+    panViewportFrameRef.current = window.requestAnimationFrame(() => {
+      panViewportFrameRef.current = undefined
+      const pending = pendingPanViewportRef.current
+      pendingPanViewportRef.current = undefined
+      if (pending) setViewport(pending)
+    })
+  }
+
+  const flushPanViewport = () => {
+    if (panViewportFrameRef.current !== undefined) {
+      window.cancelAnimationFrame(panViewportFrameRef.current)
+      panViewportFrameRef.current = undefined
+    }
+    const pending = pendingPanViewportRef.current
+    pendingPanViewportRef.current = undefined
+    if (pending) setViewport(pending)
+  }
+
+  const prepareElementDragPreview = (targets: DesignElement[]) => {
+    restoreElementDragPreview(elementDragPreviewRef.current)
+    const targetIds = new Set(targets.map((element) => element.id))
+    const nodes = Array.from(
+      viewportRef.current?.querySelectorAll<HTMLElement>('[data-element-id]') ?? [],
+    )
+      .filter((node) => Boolean(node.dataset.elementId && targetIds.has(node.dataset.elementId)))
+      .map(captureElementDragPreviewNode)
+    const selectionBox = viewportRef.current?.querySelector<HTMLElement>('.selection-box')
+    elementDragPreviewRef.current = {
+      nodes,
+      selectionBox: selectionBox ? captureElementDragPreviewNode(selectionBox) : undefined,
+    }
+    lastElementDragDeltaRef.current = { x: 0, y: 0 }
+    pendingElementDragDeltaRef.current = undefined
+  }
+
+  const applyElementDragPreview = (delta: Point) => {
+    const preview = elementDragPreviewRef.current
+    if (!preview) return
+    if (!preview.selectionBox) {
+      const selectionBox = viewportRef.current?.querySelector<HTMLElement>('.selection-box')
+      if (selectionBox) preview.selectionBox = captureElementDragPreviewNode(selectionBox)
+    }
+    const translate = `translate3d(${delta.x}px, ${delta.y}px, 0)`
+    for (const snapshot of [...preview.nodes, ...(preview.selectionBox ? [preview.selectionBox] : [])]) {
+      snapshot.node.style.willChange = 'transform'
+      snapshot.node.style.transform = snapshot.transform
+        ? `${translate} ${snapshot.transform}`
+        : translate
+      snapshot.node.dataset.dragPreview = 'true'
+    }
+  }
+
+  const scheduleElementDragPreview = (delta: Point) => {
+    lastElementDragDeltaRef.current = delta
+    pendingElementDragDeltaRef.current = delta
+    if (elementDragFrameRef.current !== undefined) return
+    elementDragFrameRef.current = window.requestAnimationFrame(() => {
+      elementDragFrameRef.current = undefined
+      const pending = pendingElementDragDeltaRef.current
+      pendingElementDragDeltaRef.current = undefined
+      if (pending) applyElementDragPreview(pending)
+    })
+  }
+
+  const flushElementDragPreview = () => {
+    if (elementDragFrameRef.current !== undefined) {
+      window.cancelAnimationFrame(elementDragFrameRef.current)
+      elementDragFrameRef.current = undefined
+    }
+    const pending = pendingElementDragDeltaRef.current
+    pendingElementDragDeltaRef.current = undefined
+    if (pending) applyElementDragPreview(pending)
+    return lastElementDragDeltaRef.current
+  }
+
+  const clearElementDragPreview = () => {
+    if (elementDragFrameRef.current !== undefined) {
+      window.cancelAnimationFrame(elementDragFrameRef.current)
+      elementDragFrameRef.current = undefined
+    }
+    pendingElementDragDeltaRef.current = undefined
+    restoreElementDragPreview(elementDragPreviewRef.current)
+    elementDragPreviewRef.current = undefined
   }
 
   const startMarquee = (event: PointerEvent<HTMLDivElement>) => {
@@ -617,9 +867,13 @@ export function InfiniteCanvas({
 
     selectElement(element.id, { append: event.shiftKey })
 
-    const selected = selectedElementIds.includes(element.id)
+    const selectedRoots = selectedElementIds.includes(element.id)
       ? document.elements.filter((item) => selectedElementIds.includes(item.id))
       : [element]
+    const selected = collectLayerSubtreeElements(
+      document.elements,
+      selectedRoots.map((item) => item.id),
+    )
 
     event.currentTarget.setPointerCapture(event.pointerId)
     setDragState({
@@ -627,7 +881,9 @@ export function InfiniteCanvas({
       pointerId: event.pointerId,
       startScreen: { x: event.clientX, y: event.clientY },
       startElements: selected,
+      startElementById: new Map(selected.map((item) => [item.id, item])),
     })
+    prepareElementDragPreview(selected)
   }
 
   const onArtboardPointerDown = (event: PointerEvent<HTMLDivElement>, artboard: Artboard) => {
@@ -657,11 +913,21 @@ export function InfiniteCanvas({
     event.stopPropagation()
     event.currentTarget.setPointerCapture(event.pointerId)
     if (primarySelection) {
+      const resizeDescendantIds =
+        primarySelection.type === 'section' && !primarySelection.autoLayout
+          ? new Set(
+              collectLayerSubtreeElements(document.elements, [primarySelection.id])
+                .filter((element) => element.id !== primarySelection.id)
+                .map((element) => element.id),
+            )
+          : new Set<string>()
       setDragState({
         mode: 'resize',
         pointerId: event.pointerId,
         startScreen: { x: event.clientX, y: event.clientY },
         startElements: [primarySelection],
+        startElementById: new Map([[primarySelection.id, primarySelection]]),
+        resizeDescendantIds,
         handle,
       })
       return
@@ -693,7 +959,7 @@ export function InfiniteCanvas({
     }
 
     if (dragState.mode === 'pan' && dragState.startViewport) {
-      setViewport({
+      schedulePanViewport({
         ...dragState.startViewport,
         x: dragState.startViewport.x + event.clientX - dragState.startScreen.x,
         y: dragState.startViewport.y + event.clientY - dragState.startScreen.y,
@@ -759,32 +1025,38 @@ export function InfiniteCanvas({
     if (!dragState.startElements) return
 
     if (dragState.mode === 'move') {
-      setPreviewElements(
-        document.elements.map((element) => {
-          const started = dragState.startElements?.find((item) => item.id === element.id)
-          if (!started) return element
-          return {
-            ...started,
-            x: Math.round(started.x + deltaX),
-            y: Math.round(started.y + deltaY),
-          }
-        }),
-      )
+      scheduleElementDragPreview({ x: Math.round(deltaX), y: Math.round(deltaY) })
       return
     }
 
     const target = dragState.startElements[0]
     if (dragState.mode === 'resize' && target && dragState.handle) {
+      const resized = resizeRect(target, dragState.handle, deltaX, deltaY, 24)
+      const descendants = dragState.resizeDescendantIds ?? new Set<string>()
+      const scaleX = resized.width / Math.max(1, target.width)
+      const scaleY = resized.height / Math.max(1, target.height)
       setPreviewElements(
         document.elements.map((element) => {
-          if (element.id !== target.id) return element
-          return resizeRect(target, dragState.handle!, deltaX, deltaY, 24)
+          if (element.id === target.id) return resized
+          if (!descendants.has(element.id)) return element
+          return {
+            ...element,
+            x: resized.x + (element.x - target.x) * scaleX,
+            y: resized.y + (element.y - target.y) * scaleY,
+            width: Math.max(1, element.width * scaleX),
+            height: Math.max(1, element.height * scaleY),
+          }
         }),
       )
     }
   }
 
   const onPointerUp = async () => {
+    if (dragState?.mode === 'pan') {
+      flushPanViewport()
+      setDragState(null)
+      return
+    }
     if (dragState?.mode === 'paint-mask') {
       setDragState(null)
       return
@@ -857,6 +1129,24 @@ export function InfiniteCanvas({
       }
       setDragState(null)
       setMarqueeRect(null)
+      return
+    }
+
+    if (dragState?.mode === 'move' && dragState.startElements) {
+      const delta = flushElementDragPreview()
+      clearElementDragPreview()
+      if (delta.x !== 0 || delta.y !== 0) {
+        updateElements(
+          dragState.startElements.map((element) => ({
+            id: element.id,
+            patch: {
+              x: Math.round(element.x + delta.x),
+              y: Math.round(element.y + delta.y),
+            },
+          })),
+        )
+      }
+      setDragState(null)
       return
     }
 
@@ -990,38 +1280,61 @@ export function InfiniteCanvas({
       ? contextTarget.componentBinding.pageSectionId
       : undefined
   const isMultiContext = contextSelection.length > 1
+  const contextParent = contextSelection[0]?.parentId
+    ? elements.find((element) => element.id === contextSelection[0].parentId)
+    : undefined
+  const canReorderContext =
+    contextSelection.length > 0 &&
+    contextSelection.every(isLayerStructureEditable) &&
+    contextSelection.every(
+      (element) =>
+        element.artboardId === contextSelection[0].artboardId &&
+        element.parentId === contextSelection[0].parentId,
+    ) &&
+    (!contextSelection[0].parentId || isLayerStructureEditable(contextParent))
+  const canGroupContext = contextSelection.length >= 2 && canReorderContext
+  const canUngroupContext =
+    isGroupElement(contextTarget) && isLayerStructureEditable(contextTarget)
 
   const copyTargetElement = () => {
     if (!canUseSelectionAction) return
-    setCopiedElements(contextSelection)
+    setCopiedElements(expandLayerSelection(elements, contextSelection))
     closeContextMenu()
-  }
-
-  const createElementCopy = (source: DesignElement, position?: Point, index = 0) => {
-    const maxZIndex = Math.max(0, ...elements.map((element) => element.zIndex))
-    addElement({
-      ...source,
-      id: `${source.type}-${Date.now()}-${index}`,
-      name: `${source.name} 副本`,
-      x: Math.round(position?.x ?? source.x + 24),
-      y: Math.round(position?.y ?? source.y + 24),
-      zIndex: maxZIndex + index + 1,
-    } as DesignElement)
   }
 
   const createElementCopies = (sources: DesignElement[], position?: Point) => {
     if (!sources.length) return
-    const minX = Math.min(...sources.map((element) => element.x))
-    const minY = Math.min(...sources.map((element) => element.y))
-    sources.forEach((source, index) => {
-      const nextPosition = position
-        ? {
-            x: position.x + source.x - minX,
-            y: position.y + source.y - minY,
-          }
-        : undefined
-      createElementCopy(source, nextPosition, index)
+    const expanded = expandLayerSelection(elements, sources)
+    const sourceIds = new Set(expanded.map((element) => element.id))
+    const roots = expanded.filter(
+      (element) => !element.parentId || !sourceIds.has(element.parentId),
+    )
+    const minX = Math.min(...expanded.map((element) => element.x))
+    const minY = Math.min(...expanded.map((element) => element.y))
+    const offsetX = position ? position.x - minX : 24
+    const offsetY = position ? position.y - minY : 24
+    const copySeed = Date.now()
+    const idMap = new Map(
+      expanded.map((element, index) => [element.id, `${element.type}-${copySeed}-${index}`]),
+    )
+    const rootIds = new Set(roots.map((element) => element.id))
+    let rootIndex = 0
+    const maxZIndex = Math.max(0, ...elements.map((element) => element.zIndex))
+    expanded.forEach((source) => {
+      const copiedParentId = source.parentId ? idMap.get(source.parentId) : undefined
+      const nextRootIndex = rootIds.has(source.id) ? rootIndex++ : undefined
+      addElement({
+        ...source,
+        id: idMap.get(source.id)!,
+        name: `${source.name} 副本`,
+        parentId: copiedParentId ?? source.parentId,
+        x: Math.round(source.x + offsetX),
+        y: Math.round(source.y + offsetY),
+        zIndex:
+          nextRootIndex === undefined ? source.zIndex : maxZIndex + nextRootIndex + 1,
+      } as DesignElement)
     })
+    setSelectedElements(roots.map((root) => idMap.get(root.id)!))
   }
 
   const pasteElement = () => {
@@ -1033,6 +1346,27 @@ export function InfiniteCanvas({
   const duplicateTargetElement = () => {
     if (!canUseSelectionAction) return
     createElementCopies(contextSelection)
+    closeContextMenu()
+  }
+
+  const groupContextSelection = () => {
+    if (!canGroupContext) return
+    groupElements(contextSelection.map((element) => element.id))
+    closeContextMenu()
+  }
+
+  const ungroupContextTarget = () => {
+    if (!contextTarget || !canUngroupContext) return
+    ungroupElement(contextTarget.id)
+    closeContextMenu()
+  }
+
+  const reorderContextSelection = (action: LayerOrderAction) => {
+    if (!canUseSelectionAction) return
+    changeLayerOrder(
+      contextSelection.map((element) => element.id),
+      action,
+    )
     closeContextMenu()
   }
 
@@ -1380,11 +1714,13 @@ export function InfiniteCanvas({
       <div
         className="canvas-world"
         data-export-root
+        data-rendered-artboard-count={visibleArtboards.length}
+        data-rendered-element-count={visiblePaintElements.length}
         style={{
           transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
         }}
       >
-        {artboards.map((artboard) => (
+        {visibleArtboards.map((artboard) => (
           <ArtboardFrame
             key={artboard.id}
             artboard={artboard}
@@ -1393,22 +1729,23 @@ export function InfiniteCanvas({
             onPointerDown={(event) => onArtboardPointerDown(event, artboard)}
           />
         ))}
-        {elements
-          .slice()
-          .sort((a, b) => a.zIndex - b.zIndex)
-          .map((element) => (
-            <ElementRenderer
-              key={element.id}
-              element={element}
-              selected={selectedElementIds.includes(element.id)}
-              editing={editingElementId === element.id}
-              onPointerDown={onElementPointerDown}
-              onEditStart={startTextEdit}
-              onTextChange={updateTextContent}
-              onTextSelectionChange={captureTextSelection}
-              onTextEditEnd={() => setEditingElementId(null)}
-            />
-          ))}
+        {visiblePaintElements.map(({ element, paintIndex }) => (
+          <ElementRenderer
+            key={element.id}
+            element={
+              element.zIndex === paintIndex
+                ? element
+                : ({ ...element, zIndex: paintIndex } as DesignElement)
+            }
+            selected={selectedElementIdSet.has(element.id)}
+            editing={editingElementId === element.id}
+            onPointerDown={onElementPointerDown}
+            onEditStart={startTextEdit}
+            onTextChange={updateTextContent}
+            onTextSelectionChange={captureTextSelection}
+            onTextEditEnd={() => setEditingElementId(null)}
+          />
+        ))}
         {sliceTarget ? (
           <div
             className={cn('image-slice-target', slicePurpose === 'ai-region' && 'ai-mask-target')}
@@ -1567,6 +1904,15 @@ export function InfiniteCanvas({
                 <span>创建副本</span>
                 <kbd>⌘ D</kbd>
               </button>
+              <button type="button" disabled={!canGroupContext} onClick={groupContextSelection}>
+                <span>组合</span>
+                <kbd>⌘ G</kbd>
+              </button>
+              <LayerOrderMenu
+                disabled={!canReorderContext}
+                openLeft={contextMenu.openLeft}
+                onSelect={reorderContextSelection}
+              />
               <button type="button" onClick={downloadSelectionImage}>
                 <span>合并导出</span>
                 <kbd>⌘ ⇧ E</kbd>
@@ -1606,6 +1952,17 @@ export function InfiniteCanvas({
                 <span>创建副本</span>
                 <kbd>⌘ D</kbd>
               </button>
+              {canUngroupContext ? (
+                <button type="button" onClick={ungroupContextTarget}>
+                  <span>取消组合</span>
+                  <kbd>⌘ ⇧ G</kbd>
+                </button>
+              ) : null}
+              <LayerOrderMenu
+                disabled={!canReorderContext}
+                openLeft={contextMenu.openLeft}
+                onSelect={reorderContextSelection}
+              />
               <div
                 className={cn(
                   'canvas-context-item submenu-trigger',
@@ -1731,6 +2088,56 @@ export function InfiniteCanvas({
   )
 }
 
+function LayerOrderMenu({
+  disabled,
+  openLeft,
+  onSelect,
+}: {
+  disabled: boolean
+  openLeft?: boolean
+  onSelect: (action: LayerOrderAction) => void
+}) {
+  return (
+    <div className={cn('canvas-context-item submenu-trigger', openLeft && 'open-left')}>
+      <button className="has-submenu" type="button" disabled={disabled}>
+        <span>图层顺序</span>
+        <small />
+      </button>
+      {!disabled ? (
+        <div className="canvas-context-submenu">
+          <button type="button" onClick={() => onSelect('front')}>
+            <span>置于顶层</span>
+            <kbd>⌘ ⇧ ]</kbd>
+          </button>
+          <button type="button" onClick={() => onSelect('forward')}>
+            <span>上移一层</span>
+            <kbd>⌘ ]</kbd>
+          </button>
+          <button type="button" onClick={() => onSelect('backward')}>
+            <span>下移一层</span>
+            <kbd>⌘ [</kbd>
+          </button>
+          <button type="button" onClick={() => onSelect('back')}>
+            <span>置于底层</span>
+            <kbd>⌘ ⇧ [</kbd>
+          </button>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function expandLayerSelection(elements: DesignElement[], selected: DesignElement[]) {
+  const selectedIds = new Set(selected.map((element) => element.id))
+  const roots = selected.filter(
+    (element) => !element.parentId || !selectedIds.has(element.parentId),
+  )
+  return collectLayerSubtreeElements(
+    elements,
+    roots.map((element) => element.id),
+  )
+}
+
 function resizeRect<T extends { x: number; y: number; width: number; height: number }>(
   target: T,
   handle: ResizeHandle,
@@ -1766,6 +2173,26 @@ function resizeRect<T extends { x: number; y: number; width: number; height: num
     y: Math.round(y),
     width: Math.round(width),
     height: Math.round(height),
+  }
+}
+
+function captureElementDragPreviewNode(node: HTMLElement): ElementDragPreviewNode {
+  return {
+    node,
+    transform: node.style.transform,
+    willChange: node.style.willChange,
+  }
+}
+
+function restoreElementDragPreview(preview: ElementDragPreview | undefined) {
+  if (!preview) return
+  for (const snapshot of [
+    ...preview.nodes,
+    ...(preview.selectionBox ? [preview.selectionBox] : []),
+  ]) {
+    snapshot.node.style.transform = snapshot.transform
+    snapshot.node.style.willChange = snapshot.willChange
+    delete snapshot.node.dataset.dragPreview
   }
 }
 

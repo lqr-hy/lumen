@@ -6,6 +6,7 @@ const OPERATION_KINDS = new Set([
   'move',
   'delete',
   'add',
+  'add-image',
   'replace-image',
   'replace-text-range',
   'replace-image-region',
@@ -95,6 +96,21 @@ export function validateDesignPatch(patch, canvasSnapshot) {
       }
       continue
     }
+    if (operation.kind === 'add-image') {
+      const parent = elements.get(operation.element?.parentId)
+      if (operation.element?.type !== 'image')
+        issues.push(`${operation.id} 的新增节点必须是图片`)
+      if (!parent) issues.push(`${operation.id} 的 parentId 不存在`)
+      if (parent && parent.designRole !== 'design-block')
+        issues.push(`${operation.id} 只能向设计模块新增图片`)
+      if (allowedTargets && !allowedTargets.has(operation.element?.parentId)) {
+        issues.push(`${operation.id} 的新增图片超出当前选区`)
+      }
+      if (parent && !containsElementBounds(parent, operation.element)) {
+        issues.push(`${operation.id} 的新增图片超出目标模块边界`)
+      }
+      continue
+    }
     if (allowedTargets && !allowedTargets.has(operation.elementId)) {
       issues.push(`${operation.id} 的目标节点超出当前选区`)
       continue
@@ -167,6 +183,17 @@ function normalizeOperation(value, index) {
   if (value.kind === 'add') {
     const element = normalizeAddedElement(value.element, index)
     return element ? { id, kind: 'add', element } : undefined
+  }
+  if (value.kind === 'add-image') {
+    const element = normalizeAddedImage(value.element, index)
+    return element
+      ? {
+          id,
+          kind: 'add-image',
+          prompt: cleanText(value.prompt, '生成并添加模块图片'),
+          element,
+        }
+      : undefined
   }
   const elementId = cleanText(value.elementId)
   if (!elementId) return undefined
@@ -435,6 +462,45 @@ function normalizeAddedElement(value, index) {
       style: normalizeButtonStyle(value.style),
     }
   return undefined
+}
+
+function normalizeAddedImage(value, index) {
+  if (!value || value.type !== 'image' || typeof value.parentId !== 'string') return undefined
+  return {
+    id: cleanText(value.id, `patch-image-${index + 1}`),
+    type: 'image',
+    name: cleanText(value.name, '新增图片'),
+    parentId: cleanText(value.parentId),
+    x: finiteNumber(value.x) ?? 0,
+    y: finiteNumber(value.y) ?? 0,
+    width: clamp(finiteNumber(value.width) ?? 320, 1, 10000),
+    height: clamp(finiteNumber(value.height) ?? 180, 1, 10000),
+    zIndex: finiteNumber(value.zIndex) ?? 10,
+    src: '',
+    objectFit: ['cover', 'contain', 'fill'].includes(value.objectFit)
+      ? value.objectFit
+      : 'cover',
+    objectPosition: cleanText(value.objectPosition, 'center'),
+    borderRadius: clamp(finiteNumber(value.borderRadius) ?? 0, 0, 1000),
+    ...(value.designBlockId ? { designBlockId: cleanText(value.designBlockId) } : {}),
+    ...(value.designRole === 'component-decoration'
+      ? { designRole: 'component-decoration' }
+      : {}),
+    ...(value.layoutConstraints && typeof value.layoutConstraints === 'object'
+      ? { layoutConstraints: value.layoutConstraints }
+      : {}),
+  }
+}
+
+function containsElementBounds(parent, child) {
+  if (!child) return false
+  const epsilon = 0.5
+  return (
+    child.x >= parent.bounds.x - epsilon &&
+    child.y >= parent.bounds.y - epsilon &&
+    child.x + child.width <= parent.bounds.x + parent.bounds.width + epsilon &&
+    child.y + child.height <= parent.bounds.y + parent.bounds.height + epsilon
+  )
 }
 
 function normalizeTextStyle(value) {

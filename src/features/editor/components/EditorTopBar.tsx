@@ -34,6 +34,7 @@ interface EditorTopBarProps {
   chatPanelOpen: boolean
   leftPanelVisible: boolean
   rightPanelVisible: boolean
+  rightPanelAvailable: boolean
   onToggleLeftPanel: () => void
   onToggleRightPanel: () => void
   onToggleAllPanels: () => void
@@ -48,6 +49,7 @@ export function EditorTopBar({
   chatPanelOpen,
   leftPanelVisible,
   rightPanelVisible,
+  rightPanelAvailable,
   onToggleLeftPanel,
   onToggleRightPanel,
   onToggleAllPanels,
@@ -104,10 +106,12 @@ export function EditorTopBar({
   const canvasMode = document.settings?.canvasMode ?? 'light'
   const gridVisible = document.settings?.gridVisible ?? true
   const anyPanelVisible = leftPanelVisible || rightPanelVisible
-  // 版本对比/当前画板优化只接受用户明确选中的画板。
-  // activeArtboardId 可能只是历史激活状态，不能作为隐式参考对象。
-  const explicitArtboardId =
-    selectedArtboardId ?? (selectedElementIds.length === 0 ? activeArtboardId : undefined)
+  // 选中节点时，以节点所属画板作为视觉优化来源；否则子模块选区会错误地
+  // 回退到历史 activeArtboard，聊天面板展示的来源也会与用户当前选择不一致。
+  const selectedElementArtboardId = selectedElementIds
+    .map((elementId) => document.elements.find((element) => element.id === elementId)?.artboardId)
+    .find(Boolean)
+  const explicitArtboardId = selectedArtboardId ?? selectedElementArtboardId ?? activeArtboardId
   const visualArtboard = newDesignMode
     ? undefined
     : explicitArtboardId
@@ -187,7 +191,14 @@ export function EditorTopBar({
           <button
             className="topbar-icon-button"
             type="button"
-            title={rightPanelVisible ? '隐藏右侧面板' : '显示右侧面板'}
+            title={
+              rightPanelAvailable
+                ? rightPanelVisible
+                  ? '隐藏右侧面板'
+                  : '显示右侧面板'
+                : '选择画板或图层后显示属性面板'
+            }
+            disabled={!rightPanelAvailable}
             onClick={onToggleRightPanel}
           >
             <PanelRight size={16} />
@@ -359,6 +370,7 @@ export function EditorTopBar({
               placementMode: 'duplicate-variant',
               lastPlacementMode: 'duplicate-variant',
               visualOptimizationDraft: {
+                mode: 'variant',
                 sourceArtboardId: variant.id,
                 sourceArtboardName: variant.name,
                 brief,

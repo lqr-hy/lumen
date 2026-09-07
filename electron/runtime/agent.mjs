@@ -26,6 +26,10 @@ const DEFAULT_TOOL_TIMEOUT_MS = 5 * 60 * 1000
 // 页面组件工具内部包含多个组件流水线，不能复用单组件的 5 分钟限制。
 const MAX_TOOL_ATTEMPTS = 2
 
+/**
+ * 确定性设计工作流的总入口。
+ * 负责恢复领域 Session、确认画布目标、生成计划，并在同一 Session 上执行到终态。
+ */
 export async function runDesignWorkflow(payload, callbacks = {}, dependencies) {
   validateAgentPayload(payload)
   ensureTurnBudget(payload)
@@ -100,13 +104,58 @@ export async function runDesignWorkflow(payload, callbacks = {}, dependencies) {
   }
 }
 
+/**
+ * 将 Pi 提供的 WorkflowDecision 规范化为领域决策。
+ * Pi 不可用时才使用确定性 Intent Router，并始终补齐版本化 Placement。
+ */
 export function resolveWorkflowDecision(payload, session = {}) {
+  // 视觉优化入口已经提供结构化 Brief；由显式 Context 区分新建设计与 Variant，
+  // 优先级高于 Prompt 中的 H5/页面等关键词，避免自然语言覆盖用户选择。
+  if (payload.visualBrief && typeof payload.visualBrief === 'object') {
+    const visualContext = payload.visualOptimizationContext
+    const createNewDesign = visualContext?.mode === 'new-design'
+    const targetArtboardId = createNewDesign
+      ? undefined
+      : visualContext?.sourceArtboardId ||
+        payload.canvasTarget?.artboardId ||
+        payload.selectedArtboardId ||
+        payload.activeArtboardId
+    return {
+      version: 2,
+      action: 'create-ui',
+      taskKind: 'generic-ui',
+      confidence: 1,
+      reason: 'visual-optimization-structured-context',
+      source: 'visual-optimization',
+      placement: targetArtboardId
+        ? {
+            operation: 'variant',
+            scope: 'artboard',
+            targetArtboardId,
+            reason: '视觉优化创建独立 Variant，保留原画板。',
+            confidence: 1,
+          }
+        : {
+            operation: 'create',
+            scope: 'document',
+            reason: createNewDesign
+              ? '视觉优化新建设计，创建独立画板。'
+              : '视觉优化缺少目标画板，创建独立画板。',
+            confidence: 1,
+          },
+      visualBrief: payload.visualBrief,
+      visualAssetPlan: payload.visualAssetPlan,
+    }
+  }
   const supplied = payload.workflowDecision
   if (supplied) {
     if (!isPlacementDecision(supplied.placement)) {
       throw createRuntimeError('PLACEMENT_DECISION_MISSING', '设计工作流缺少有效的画布放置决策。')
     }
-    const reconciled = reconcileSuppliedWorkflowDecision(supplied, payload)
+    const reconciled = reconcileComponentWorkflowDecision(
+      reconcileSuppliedWorkflowDecision(supplied, payload),
+      payload,
+    )
     if (
       ['create-component', 'create-page'].includes(reconciled.action) &&
       (payload.selectedArtboardId || payload.activeArtboardId) &&
@@ -122,16 +171,20 @@ export function resolveWorkflowDecision(payload, session = {}) {
     }
     return reconciled
   }
-  const deterministic = routeAgentIntent({
-    prompt: payload.question,
-    editScope: payload.editScope,
-    componentReferences: payload.componentReferences,
-    session: {
-      taskKind: session.taskKind,
-      canvasSnapshot: payload.canvasSnapshot || session.canvasSnapshot,
-      componentDesign: session.componentDesign,
-    },
-  })
+  const deterministic = reconcileComponentWorkflowDecision(
+    routeAgentIntent({
+      prompt: payload.question,
+      editScope: payload.editScope,
+      componentReferences: payload.componentReferences,
+      session: {
+        taskKind: session.taskKind,
+        canvasSnapshot: payload.canvasSnapshot || session.canvasSnapshot,
+        componentDesign: session.componentDesign,
+        visualBrief: payload.visualBrief,
+      },
+    }),
+    payload,
+  )
   // 只依据画布选择状态决定组件目标，不猜测自然语言。
   if (
     ['create-component', 'create-page'].includes(deterministic.action) &&
@@ -157,6 +210,45 @@ export function resolveWorkflowDecision(payload, session = {}) {
   }
 }
 
+/** 用结构化组件引用数量校正组件工作流，防止普通 H5 被“页面”字样误导。 */
+function reconcileComponentWorkflowDecision(decision, payload) {
+  if (!['create-page', 'create-component'].includes(decision.action)) return decision
+  const references = Array.isArray(payload.componentReferences)
+    ? payload.componentReferences.filter((item) => item?.packId && item?.componentName)
+    : []
+  if (references.length === 0) {
+    return {
+      ...decision,
+      action: 'create-ui',
+      taskKind: 'generic-ui',
+      reason: 'runtime-unbound-page-routed-to-generic-ui',
+      target: undefined,
+      surfaceKind: decision.surfaceKind || inferFallbackSurfaceKind(payload.question),
+      designArchetype: decision.designArchetype || '由用户目标推导',
+    }
+  }
+  if (references.length === 1) {
+    return {
+      ...decision,
+      action: 'create-component',
+      taskKind: 'component-design',
+      reason: 'runtime-single-component-routed-to-component-design',
+      target: { componentName: references[0].componentName },
+    }
+  }
+  return {
+    ...decision,
+    action: 'create-page',
+    taskKind: 'page-design',
+    reason:
+      decision.action === 'create-page'
+        ? decision.reason
+        : 'runtime-multiple-components-routed-to-page-design',
+    target: undefined,
+  }
+}
+
+/** 将被误判为有限结构修改的“整页重设计”纠正为保留原稿的 Variant 流程。 */
 function reconcileSuppliedWorkflowDecision(decision, payload) {
   if (decision.action !== 'revise-ui-structure' || !isFullUiRedesignRequest(payload.question)) {
     return decision
@@ -185,6 +277,10 @@ function reconcileSuppliedWorkflowDecision(decision, payload) {
   }
 }
 
+/**
+ * 在工作流开始前向 Renderer 请求目标画板，并把返回的 Lease 记录到 Canvas Transaction。
+ * 后续所有 Deliverable 都只能写入这个经过确认的目标。
+ */
 async function resolveWorkflowCanvasTarget(session, payload, decision, callbacks) {
   const incomingTarget = isCanvasTarget(payload.canvasTarget) ? payload.canvasTarget : undefined
   const previousTarget = isCanvasTarget(session.canvasTarget) ? session.canvasTarget : undefined
@@ -243,6 +339,7 @@ async function resolveWorkflowCanvasTarget(session, payload, decision, callbacks
   return undefined
 }
 
+/** 为离线 Intent Router 补充确定性的创建、修订、素材或恢复放置策略。 */
 function fallbackPlacementForDecision(decision, payload, session) {
   const selectionTarget = payload.canvasSnapshot?.artboardId
   const sessionTarget = session.canvasTarget?.artboardId
@@ -289,6 +386,7 @@ function isPlacementDecision(value) {
   )
 }
 
+/** 取消当前领域 Workflow；若尚未进入领域执行器，则继续取消对应 Pi Agent。 */
 export function cancelDesignWorkflow(sessionId) {
   const controller = activeSessions.get(sessionId)
   if (controller) {
@@ -298,6 +396,10 @@ export function cancelDesignWorkflow(sessionId) {
   return cancelPiAgent(sessionId)
 }
 
+/**
+ * 执行 Workflow Graph 主循环：选择 Ready Step、执行 Tool、保存 Checkpoint、
+ * 处理动态步骤与画布 ACK，最终提交或失败当前 Canvas Transaction。
+ */
 async function executePlan(session, payload, callbacks, dependencies, runtimePlugins) {
   const registry = createAgentToolRegistry({
     ...dependencies,
@@ -613,6 +715,9 @@ async function executePlan(session, payload, callbacks, dependencies, runtimePlu
     touch(session)
     emit(callbacks, { type: 'task.completed', sessionId: session.id })
     await saveAndEmitSession(session, callbacks)
+    const canvasQualityReport = [...(session.canvasObservations ?? [])]
+      .reverse()
+      .find((observation) => observation.data?.qualityReport)?.data?.qualityReport
     return {
       text: pagePresentation
         ? pagePresentation.failedComponents?.length
@@ -648,6 +753,7 @@ async function executePlan(session, payload, callbacks, dependencies, runtimePlu
       pageComponents: pagePresentation?.components,
       pageShellArtifact: pagePresentation?.pageShellArtifact,
       genericUiSchema: session.genericUiSchema,
+      visualAssetReport: session.visualAssetReport,
       designSpec: session.designSpec,
       editScope:
         pageShellPresentation?.editScope ??
@@ -659,7 +765,7 @@ async function executePlan(session, payload, callbacks, dependencies, runtimePlu
       generationBrief: session.generationBrief,
       designPatch: patchPresentation?.patch,
       designSpecPatch: specPatchPresentation?.patch,
-      qualityReview: presentation?.review,
+      qualityReview: presentation?.review ?? canvasQualityReport,
       refined: presentation?.refined ?? false,
       canvasDelivered: typeof callbacks.onDeliverable === 'function',
       agent: publicSession(session),
@@ -704,6 +810,10 @@ async function executePlan(session, payload, callbacks, dependencies, runtimePlu
   }
 }
 
+/**
+ * 从持久化 Checkpoint 恢复步骤内存。
+ * 输入哈希或依赖输出变化时，从首个失效步骤开始重置所有下游步骤。
+ */
 async function restoreStepMemory(session, payload) {
   const memory = new Map()
   if (!session.runId) return memory
@@ -746,6 +856,7 @@ async function restoreStepMemory(session, payload) {
   return memory
 }
 
+/** 将页面组件中间结果转换为增量 Deliverable，并等待 Renderer 写入 ACK。 */
 async function deliverPageComponent(session, step, data, callbacks, iteration) {
   if (typeof callbacks.onDeliverable !== 'function') return undefined
   const deliveryId = stableDeliveryId(session.runId, step.id)
@@ -788,6 +899,7 @@ async function deliverPageComponent(session, step, data, callbacks, iteration) {
   }
 }
 
+/** 在组件生成前增量交付 Page Shell，并把 Renderer 结果规范化为 Observation。 */
 async function deliverPageShell(session, step, data, callbacks, iteration) {
   if (typeof callbacks.onDeliverable !== 'function') return undefined
   const deliveryId = stableDeliveryId(session.runId, step.id)
@@ -812,6 +924,7 @@ async function deliverPageShell(session, step, data, callbacks, iteration) {
   })
 }
 
+/** 将各类最终展示步骤统一转换为 Canvas Deliverable，并等待 Renderer ACK。 */
 async function deliverPresentation(session, step, data, callbacks, iteration) {
   if (typeof callbacks.onDeliverable !== 'function') return undefined
   const id = stableDeliveryId(session.runId, step.id)
@@ -889,6 +1002,7 @@ async function deliverPresentation(session, step, data, callbacks, iteration) {
           sceneGraph: data.sceneGraph,
           runtimeDraft: summarizeRuntimeDraft(data.runtimeDraft),
           expectedNodeCount: data.expectedNodeCount ?? data.sceneGraph.nodes?.length ?? 0,
+          visualAssetReport: data.visualAssetReport,
         }
       : {
           ...base,
@@ -905,6 +1019,7 @@ async function deliverPresentation(session, step, data, callbacks, iteration) {
           sceneGraph: data.sceneGraph,
           runtimeDraft: summarizeRuntimeDraft(data.runtimeDraft),
           expectedNodeCount: data.expectedNodeCount ?? data.sceneGraph.nodes?.length ?? 0,
+          visualAssetReport: data.visualAssetReport,
         }
       : {
           ...base,
@@ -959,6 +1074,10 @@ function stableDeliveryId(runId, stepId) {
   return `deliverable-${hashValue({ runId, stepId }).slice(0, 24)}`
 }
 
+/**
+ * 将成功写入画布的 ACK 合并回轻量 CanvasSnapshot，
+ * 让后续步骤看到最新 Revision 和节点摘要，而不传递完整 DesignDocument。
+ */
 function mergeCanvasSnapshot(session, observation) {
   const data = observation.data ?? {}
   const previousElements = Array.isArray(session.canvasSnapshot?.elements)
@@ -1030,6 +1149,7 @@ function mergeCanvasSnapshot(session, observation) {
   }
 }
 
+/** 把 Renderer 的写入结果转换为可持久化、可展示的统一 Canvas Observation。 */
 function normalizeCanvasObservation({
   observation,
   deliveryId,
@@ -1071,6 +1191,7 @@ function summarizeObservationData(data) {
   }
 }
 
+/** 记录质量评估摘要，并发出独立事件供执行时间线展示。 */
 function recordDesignEvaluation(session, step, data, callbacks) {
   const report = data?.qualityReview ?? data?.componentDesign?.qualityReview
   if (report?.evalVersion !== 1 || !report.dimensions) return
@@ -1096,6 +1217,7 @@ function recordDesignEvaluation(session, step, data, callbacks) {
   emit(callbacks, { type: 'design.eval.completed', sessionId: session.id, evaluation })
 }
 
+/** 应用 Tool 返回的局部 Repair 决策，并精确失效需要重跑的步骤。 */
 function applyToolDecision(session, currentStep, decision) {
   if (!decision || decision.action !== 'repair') return
   const maxAttempts = Number.isFinite(decision.maxAttempts) ? decision.maxAttempts : 2
@@ -1126,6 +1248,9 @@ function applyToolDecision(session, currentStep, decision) {
   }
 }
 
+/**
+ * 计算步骤缓存键。目标、选区、风格、参考图、模型和上游输出任一变化都会使缓存失效。
+ */
 function computeStepInputHash(session, payload, step) {
   const dependencyHashes = []
   for (const candidate of session.plan ?? []) {
@@ -1141,6 +1266,8 @@ function computeStepInputHash(session, payload, step) {
     canvasTarget: session.canvasTarget,
     editScope: session.editScope,
     stylePack: session.activeStylePack,
+    visualBrief: session.visualBrief,
+    visualAssetPlan: session.visualAssetPlan,
     references: (session.references ?? []).map((reference) => ({
       id: reference.id,
       role: reference.role,
@@ -1177,6 +1304,7 @@ function stableStringify(value) {
     .join(',')}}`
 }
 
+/** 把 Tool 动态生成的页面组件或 Repair 步骤插入当前计划，并保证步骤 ID 幂等。 */
 function insertDynamicSteps(session, afterStepId, nextSteps) {
   if (!Array.isArray(nextSteps) || !nextSteps.length) return 0
   const existingIds = new Set(session.plan.map((step) => step.id))
@@ -1202,6 +1330,7 @@ function insertDynamicSteps(session, afterStepId, nextSteps) {
   return additions.length
 }
 
+/** 将大体积 Raster/SVG 从 Checkpoint 外置到 Artifact Repository，只保留引用。 */
 async function externalizeArtifacts(value, session) {
   if (Array.isArray(value)) {
     return Promise.all(value.map((item) => externalizeArtifacts(item, session)))
@@ -1230,6 +1359,7 @@ async function externalizeArtifacts(value, session) {
   return Object.fromEntries(entries)
 }
 
+/** 读取 Artifact 引用并还原为 Tool 可继续消费的完整结果。 */
 async function hydrateArtifacts(value) {
   if (Array.isArray(value)) return Promise.all(value.map(hydrateArtifacts))
   if (!value || typeof value !== 'object') return value
@@ -1252,6 +1382,9 @@ async function hydrateArtifacts(value) {
   return Object.fromEntries(entries)
 }
 
+/**
+ * 在预算、取消和超时约束下执行领域 Tool；仅对可重试错误执行有限次数重试。
+ */
 async function executeToolWithRetry(
   registry,
   step,
@@ -1321,6 +1454,7 @@ function getToolAttempts(toolName) {
     : MAX_TOOL_ATTEMPTS
 }
 
+/** 为一次 Tool 调用建立超时边界，并通过 AbortController 终止底层任务。 */
 function withTimeout(promise, timeoutMs, message, controller) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -1341,6 +1475,7 @@ function withTimeout(promise, timeoutMs, message, controller) {
   })
 }
 
+/** 原子保存领域 Session，并向 Renderer 投影公开状态。 */
 async function saveAndEmitSession(session, callbacks) {
   touch(session)
   await saveAgentSession(session)
@@ -1476,6 +1611,13 @@ function isDesignEditScope(value) {
   }
   if (value.type === 'generic-node') {
     return true
+  }
+  if (value.type === 'design-block') {
+    return Boolean(
+      typeof value.blockId === 'string' &&
+      value.blockId.trim() &&
+      Array.isArray(value.imageElementIds),
+    )
   }
   if (value.type === 'text-range') {
     return Boolean(

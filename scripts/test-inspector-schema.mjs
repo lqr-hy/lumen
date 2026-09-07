@@ -49,6 +49,38 @@ try {
   }
   const context = { update() {}, setAutoLayout() {} }
 
+  let uploadedImage
+  const imageSchema = resolveElementInspectorSchema(
+    {
+      id: 'image',
+      type: 'image',
+      name: '主图',
+      x: 0,
+      y: 0,
+      width: 320,
+      height: 180,
+      zIndex: 2,
+      src: 'https://example.com/old.png',
+    },
+    {
+      ...context,
+      replaceImage(image) {
+        uploadedImage = image
+      },
+    },
+  )
+  const imageUploadField = imageSchema
+    .find((section) => section.id === 'image')
+    .fields.find((field) => field.id === 'preview')
+  imageUploadField.onImageUpload({
+    name: 'new.png',
+    src: 'data:image/png;base64,AA==',
+    mimeType: 'image/png',
+    bytes: 1,
+  })
+  assert.equal(uploadedImage.name, 'new.png')
+  assert.equal(uploadedImage.src, 'data:image/png;base64,AA==')
+
   const standalone = resolveElementInspectorSchema(button, context)
   const standaloneLayout = standalone.find((section) => section.id === 'layout').fields
   assert.equal(
@@ -145,6 +177,7 @@ try {
         autoLayoutCoordinatesHidden: true,
         responsiveSizeLimitsOnly: true,
         fixedModeClearsLimits: true,
+        imageUploadWired: true,
       },
       null,
       2,

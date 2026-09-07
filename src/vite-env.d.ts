@@ -167,6 +167,7 @@ interface Window {
       awaitingConfirmation?: import('./features/ai/types').BlueprintConfirmation
       editScope?: import('./features/ai/types').SelectionScope
       genericUiSchema?: import('./features/editor/types').GenericUiSchema
+      visualAssetReport?: import('./features/ai/types').GenericUiRuntimeCanvasDeliverable['visualAssetReport']
       agent?: {
         id: string
         goal?: string
@@ -273,6 +274,13 @@ interface Window {
               uiSchema: import('./features/editor/types').GenericUiSchema
               expectedBlockIds: string[]
               failedSectionIndexes: number[]
+            }
+          | {
+              kind: 'generic-ui-runtime'
+              sceneGraph: import('./features/editor/scene/scene-graph').SceneGraph
+              runtimeDraft?: { version: 1; title: string; viewport: { width: number; height: number } }
+              expectedNodeCount: number
+              visualAssetReport?: import('./features/ai/types').GenericUiRuntimeCanvasDeliverable['visualAssetReport']
             }
           | {
               kind: 'page-finalize'

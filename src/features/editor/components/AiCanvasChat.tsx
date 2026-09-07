@@ -15,10 +15,12 @@ import {
   createSelectionScope,
   getSelectionScopeElementIds,
   isComponentSlotRegenerationReference,
+  isAssetRegenerationPrompt,
 } from '../utils/selection-scope'
 import { upsertQueuedComposerReference } from '../utils/composer-target'
 import { InvalidSelectionScopeChip, SelectionScopeChip } from './SelectionScopeChip'
 import { VisualGenerationSummary } from './ChatPanel'
+import { buildVisualAssetPlan } from '../utils/visual-brief'
 
 interface AiCanvasChatProps {
   onOpenChatPanel?: () => void
@@ -170,10 +172,12 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
 
   async function submitPrompt() {
     if (loading || !activeThread) return
+    const useAssetScope = isAssetRegenerationPrompt(prompt)
+    const turnRegenerationReferences = useAssetScope ? regenerationReferences : []
     const frozenSelectionScope = document
       ? (createComponentRegionBatchScope(
           document,
-          regenerationReferences.flatMap((reference) =>
+          turnRegenerationReferences.flatMap((reference) =>
             reference.elementId ? [reference.elementId] : [],
           ),
         ) ??
@@ -185,7 +189,8 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
         ))
       : undefined
     if (
-      ((selectionScopeArmed && selectedElementIds.length > 0) || regenerationReferences.length) &&
+      ((selectionScopeArmed && selectedElementIds.length > 0) ||
+        turnRegenerationReferences.length) &&
       !frozenSelectionScope
     )
       return
@@ -198,13 +203,15 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
         [visibleTextReferences.map((reference) => reference.text).join(' '), prompt.trim()]
           .filter(Boolean)
           .join(' ') ||
-        (regenerationReferences.length ? '重新生成选中的组件素材' : '结合当前画布和参考图继续创作'),
+        (turnRegenerationReferences.length
+          ? '重新生成选中的组件素材'
+          : '结合当前画布和参考图继续创作'),
       type: 'landing-page',
       size: { width: DEFAULT_ARTBOARD_WIDTH, height: DEFAULT_ARTBOARD_HEIGHT },
       style: '自动',
       referenceImages: requestImages.map((image) => image.src),
       referenceImageNames: requestImages.map((image) => image.name),
-      referenceImageRoles: requestImages.map((image) => image.role ?? 'visual'),
+      referenceImageRoles: requestImages.map((image) => image.role ?? 'auto'),
     }
 
     const threadId = activeThread.id
@@ -286,9 +293,33 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
           selectedArtboardId,
           editScope: frozenSelectionScope,
           componentRegionAction:
-            frozenSelectionScope?.type === 'component-region-batch'
+            useAssetScope && frozenSelectionScope?.type === 'component-region-batch'
               ? { kind: 'regenerate-component-regions', targets: frozenSelectionScope.targets }
               : undefined,
+          visualBrief: draftSnapshot.visualOptimizationDraft?.brief,
+          visualAssetPlan: (() => {
+            const draft = draftSnapshot.visualOptimizationDraft
+            const target = requestDocument.artboards.find(
+              (item) => item.id === draft?.sourceArtboardId,
+            )
+            return draft
+              ? buildVisualAssetPlan(
+                  draft.brief,
+                  target ?? { width: DEFAULT_ARTBOARD_WIDTH, height: DEFAULT_ARTBOARD_HEIGHT },
+                )
+              : undefined
+          })(),
+          visualOptimizationContext: draftSnapshot.visualOptimizationDraft
+            ? {
+                mode:
+                  draftSnapshot.visualOptimizationDraft.mode ??
+                  (draftSnapshot.visualOptimizationDraft.sourceArtboardId
+                    ? 'variant'
+                    : 'new-design'),
+                sourceArtboardId:
+                  draftSnapshot.visualOptimizationDraft.sourceArtboardId || undefined,
+              }
+            : undefined,
         },
         { threadId, messageId: pendingMessageId, runId, updateThread: updateChatThread },
       )
@@ -328,7 +359,7 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
               id: `upload-${Date.now()}-${index}`,
               name: nextNames[index] || `参考图 ${index + 1}`,
               src,
-              role: 'visual',
+              role: 'auto',
             },
         ),
       }
@@ -345,7 +376,7 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
       referenceImages: thread.referenceImages.map((image, imageIndex) =>
         imageIndex === index
           ? { ...image, role }
-          : (role === 'kv' || role === 'prototype') && image.role === role
+          : (role === 'kv' || role === 'prototype' || role === 'edit-base') && image.role === role
             ? { ...image, role: 'visual' }
             : image,
       ),
@@ -455,7 +486,7 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
           value={prompt}
           images={activeImages.map((image) => image.src)}
           imageNames={activeImages.map((image) => image.name)}
-          imageRoles={activeImages.map((image) => image.role ?? 'visual')}
+          imageRoles={activeImages.map((image) => image.role ?? 'auto')}
           mentionOptions={[
             ...componentMentionOptions,
             ...activeImages.map((image, index) => ({
@@ -480,6 +511,10 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
           mentions={mentions}
           textReferences={visibleTextReferences}
           loading={loading}
+          editBaseRoleEnabled={
+            directSelectionScope?.type === 'image-region' ||
+            /(?:编辑|修改|修图|替换|擦除|扩图|局部重绘).{0,16}(?:图片|这张图)/iu.test(prompt)
+          }
           placeholder="结合参考、输入文字或 @ 主体，说说今天想做什么。"
           contextSlot={
             <>
@@ -503,41 +538,41 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
                 />
               ) : null}
               {selectionScope ? (
-              <SelectionScopeChip
-                scope={selectionScope}
-                action={regenerationReferences.length ? 'regenerate' : 'edit'}
-                onLocate={() => setSelectedElements(getSelectionScopeElementIds(selectionScope))}
-                onLocateTarget={(elementId) => selectElement(elementId)}
-                onRemoveTarget={(elementId) => {
-                  const remaining = regenerationReferences.filter(
-                    (reference) => reference.elementId !== elementId,
-                  )
-                  updateActiveThread((thread) => ({
-                    ...thread,
-                    textReferences: thread.textReferences.filter(
-                      (reference) =>
-                        !isComponentSlotRegenerationReference(reference) ||
-                        reference.elementId !== elementId,
-                    ),
-                  }))
-                  const remainingIds = remaining.flatMap((reference) =>
-                    reference.elementId ? [reference.elementId] : [],
-                  )
-                  if (remainingIds.length) setSelectedElements(remainingIds)
-                  else clearSelection()
-                }}
-                onClear={() => {
-                  clearSelection()
-                  if (regenerationReferences.length) {
+                <SelectionScopeChip
+                  scope={selectionScope}
+                  action={regenerationReferences.length ? 'regenerate' : 'edit'}
+                  onLocate={() => setSelectedElements(getSelectionScopeElementIds(selectionScope))}
+                  onLocateTarget={(elementId) => selectElement(elementId)}
+                  onRemoveTarget={(elementId) => {
+                    const remaining = regenerationReferences.filter(
+                      (reference) => reference.elementId !== elementId,
+                    )
                     updateActiveThread((thread) => ({
                       ...thread,
                       textReferences: thread.textReferences.filter(
-                        (reference) => !isComponentSlotRegenerationReference(reference),
+                        (reference) =>
+                          !isComponentSlotRegenerationReference(reference) ||
+                          reference.elementId !== elementId,
                       ),
                     }))
-                  }
-                }}
-              />
+                    const remainingIds = remaining.flatMap((reference) =>
+                      reference.elementId ? [reference.elementId] : [],
+                    )
+                    if (remainingIds.length) setSelectedElements(remainingIds)
+                    else clearSelection()
+                  }}
+                  onClear={() => {
+                    clearSelection()
+                    if (regenerationReferences.length) {
+                      updateActiveThread((thread) => ({
+                        ...thread,
+                        textReferences: thread.textReferences.filter(
+                          (reference) => !isComponentSlotRegenerationReference(reference),
+                        ),
+                      }))
+                    }
+                  }}
+                />
               ) : selectionScopeArmed && selectedElementIds.length ? (
                 <InvalidSelectionScopeChip onClear={clearSelection} />
               ) : null}

@@ -79,6 +79,16 @@ try {
   assert.equal(singleScope.type, 'generic-node')
   assert.deepEqual(singleScope.targetElementIds, ['container', 'title'])
   assert.equal(typeof singleScope.targetHash, 'string')
+  const designBlockScope = actions.createSelectionScope(document, ['hero-background'])
+  assert.equal(designBlockScope.type, 'design-block')
+  assert.equal(designBlockScope.elementId, 'hero-block')
+  assert.equal(designBlockScope.blockId, 'hero')
+  assert.deepEqual(designBlockScope.imageElementIds, [])
+  assert.deepEqual(designBlockScope.targetElementIds, [
+    'hero-background',
+    'hero-block',
+    'hero-title',
+  ])
   const multiScope = actions.createSelectionScope(document, ['title', 'badge'])
   assert.equal(multiScope.type, 'multi-node')
   assert.deepEqual(multiScope.elementIds, ['title', 'badge'])
@@ -174,6 +184,7 @@ try {
         shellExcluded: true,
         ordinaryImageExcluded: true,
         genericSelectionScope: true,
+        designBlockSelectionScope: true,
         multiNodeSelectionScope: true,
         crossArtboardSelectionRejected: true,
         textRangeSelectionScope: true,
@@ -287,6 +298,50 @@ function createDocument() {
         height: 30,
         zIndex: 1,
         fill: '#000',
+      },
+      {
+        id: 'hero-block',
+        artboardId: 'board',
+        type: 'section',
+        name: '首屏 Hero',
+        label: 'hero / 首屏 Hero',
+        x: 0,
+        y: 400,
+        width: 375,
+        height: 300,
+        zIndex: 3,
+        designRole: 'design-block',
+        designBlockId: 'hero',
+      },
+      {
+        id: 'hero-background',
+        artboardId: 'board',
+        parentId: 'hero-block',
+        type: 'shape',
+        name: '首屏 Hero',
+        shape: 'rect',
+        fill: '#111',
+        x: 0,
+        y: 400,
+        width: 375,
+        height: 300,
+        zIndex: 4,
+        designBlockId: 'hero',
+      },
+      {
+        id: 'hero-title',
+        artboardId: 'board',
+        parentId: 'hero-block',
+        type: 'text',
+        name: 'Hero 标题',
+        content: '道友，别来无恙',
+        x: 24,
+        y: 432,
+        width: 320,
+        height: 48,
+        zIndex: 5,
+        style: { fontSize: 28, color: '#fff' },
+        designBlockId: 'hero',
       },
     ],
     assets: [],

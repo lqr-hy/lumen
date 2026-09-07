@@ -31,6 +31,161 @@ export function analyzeRaster(buffer, mime, target = {}) {
   }
 }
 
+/*
+ * Raster analysis is intentionally kept generic. Component-specific image
+ * button pairing rules do not belong in the AI design editor runtime.
+ */
+export function reviewImageButtonPair(buttons, options = {}) {
+  const targets = (Array.isArray(buttons) ? buttons : []).slice(0, 2).map((button) => {
+    const analysis = analyzeRaster(button.buffer, button.mime || 'image/png', button.container)
+    const bounds = analysis.contentBounds || {
+      x: 0,
+      y: 0,
+      width: analysis.width || 0,
+      height: analysis.height || 0,
+    }
+    return {
+      id: button.id,
+      container: button.container,
+      analysis,
+      visibleWidth: bounds.width,
+      visibleHeight: bounds.height,
+      visibleArea: bounds.width * bounds.height,
+      visibleRatio: positiveRatio(bounds.width, bounds.height),
+    }
+  })
+  const issues = []
+  if (targets.length !== 2) {
+    issues.push(
+      rasterGateIssue('IMAGE_BUTTON_PAIR_INCOMPLETE', 'error', '图片按钮门禁需要两个按钮素材。'),
+    )
+  }
+  for (const target of targets) {
+    if ((target.analysis.transparentCoverage ?? 0) > (options.maxTransparentCoverage ?? 0.45)) {
+      issues.push(
+        rasterGateIssue(
+          'IMAGE_BUTTON_ALPHA_PADDING_EXCESSIVE',
+          'warning',
+          `${target.id} 的透明留白过大。`,
+          [target.id],
+        ),
+      )
+    }
+  }
+  if (targets.length === 2) {
+    const [left, right] = targets
+    const containerDifference = maxRelativeDifference(
+      [left.container?.width, left.container?.height],
+      [right.container?.width, right.container?.height],
+    )
+    const visibleDifference = maxRelativeDifference(
+      [left.visibleWidth, left.visibleHeight],
+      [right.visibleWidth, right.visibleHeight],
+    )
+    if (containerDifference > (options.maxContainerDifference ?? 0.1)) {
+      issues.push(
+        rasterGateIssue(
+          'IMAGE_BUTTON_CONTAINER_SIZE_MISMATCH',
+          'error',
+          '两个图片按钮的容器尺寸差异超过 10%。',
+          targets.map((target) => target.id),
+        ),
+      )
+    }
+    if (visibleDifference > (options.maxVisibleDifference ?? 0.1)) {
+      issues.push(
+        rasterGateIssue(
+          'IMAGE_BUTTON_VISIBLE_SIZE_MISMATCH',
+          'error',
+          '两个图片按钮的 Alpha 可见内容尺寸差异超过 10%。',
+          targets.map((target) => target.id),
+        ),
+      )
+    }
+    const gap =
+      Number(right.container?.x) - (Number(left.container?.x) + Number(left.container?.width))
+    const expectedGap = options.expectedGap
+    if (
+      Number.isFinite(expectedGap) &&
+      Math.abs(gap - expectedGap) > (options.maxGapDifference ?? 8)
+    ) {
+      issues.push(
+        rasterGateIssue(
+          'IMAGE_BUTTON_SPACING_MISMATCH',
+          'warning',
+          '图片按钮间距与设计值的差异超过 8px。',
+          targets.map((target) => target.id),
+        ),
+      )
+    }
+    if (
+      dominantColorDistance(left.analysis.dominantColors?.[0], right.analysis.dominantColors?.[0]) >
+      96
+    ) {
+      issues.push(
+        rasterGateIssue(
+          'IMAGE_BUTTON_STYLE_MISMATCH',
+          'warning',
+          '两个图片按钮的主色与视觉风格偏差较大。',
+          targets.map((target) => target.id),
+        ),
+      )
+    }
+  }
+  const errors = issues.filter((issue) => issue.severity === 'error').length
+  return {
+    version: 1,
+    scope: 'module',
+    passed: errors === 0,
+    score: Math.max(
+      0,
+      Math.round((1 - errors * 0.25 - (issues.length - errors) * 0.05) * 100) / 100,
+    ),
+    targetIds: targets.map((target) => target.id),
+    issues,
+    repairPlan: issues.map((issue) => ({
+      action: issue.code.includes('CONTAINER')
+        ? 'normalize-button-size'
+        : issue.code.includes('VISIBLE')
+          ? 'normalize-object-fit'
+          : issue.code.includes('ALPHA')
+            ? 'crop-alpha-bounds'
+            : 'manual-review',
+      targetIds: issue.targetIds,
+      // 重新生图只作为人工复核后的最后手段，不能由尺寸差异直接触发。
+      allowsAssetRegeneration: false,
+    })),
+    repairCount: options.repairCount ?? 0,
+    metrics: targets,
+  }
+}
+
+function rasterGateIssue(code, severity, message, targetIds = []) {
+  return { code, severity, message, targetIds }
+}
+
+function maxRelativeDifference(left, right) {
+  return Math.max(
+    ...left.map((value, index) => {
+      const a = Number(value) || 0
+      const b = Number(right[index]) || 0
+      return Math.abs(a - b) / Math.max(1, a, b)
+    }),
+  )
+}
+
+function dominantColorDistance(left, right) {
+  const parse = (value) => {
+    const match = String(value || '').match(/^#([0-9a-f]{6})$/i)
+    return match
+      ? [0, 2, 4].map((index) => Number.parseInt(match[1].slice(index, index + 2), 16))
+      : undefined
+  }
+  const a = parse(left)
+  const b = parse(right)
+  return a && b ? Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) : 0
+}
+
 function decodeRaster(buffer, mime) {
   if (mime === 'image/png') return PNG.sync.read(buffer)
   if (mime === 'image/jpeg')

@@ -30,6 +30,14 @@ export function isComponentSlotRegenerationReference(reference: {
   )
 }
 
+export function isAssetRegenerationPrompt(prompt: string) {
+  const value = prompt.trim()
+  if (!value) return false
+  if (/(?:样式|颜色|背景色|尺寸|大小|宽度|高度|圆角|字号|字体|间距|文案|统一.*按钮)/i.test(value))
+    return false
+  return /(?:重新生成|重生成|换图|替换(?:图片|素材)|生成(?:图片|素材|按钮图)|重做素材)/i.test(value)
+}
+
 export function createComponentRegionBatchScope(
   document: DesignDocument,
   elementIds: string[],
@@ -132,6 +140,27 @@ export function createSelectionScope(
     }
   }
 
+  const designBlockRoot = resolveDesignBlockRoot(document.elements, element)
+  if (designBlockRoot) {
+    const targetElements = collectEditableRegion(document.elements, designBlockRoot)
+    return {
+      ...createScopeBase(document, artboardId, [designBlockRoot], targetElements),
+      type: 'design-block',
+      elementId: designBlockRoot.id,
+      blockId: designBlockRoot.designBlockId || designBlockRoot.id,
+      name: designBlockRoot.name,
+      bounds: {
+        x: designBlockRoot.x,
+        y: designBlockRoot.y,
+        width: designBlockRoot.width,
+        height: designBlockRoot.height,
+      },
+      imageElementIds: targetElements
+        .filter((target) => target.type === 'image')
+        .map((target) => target.id),
+    }
+  }
+
   const binding = element.componentBinding
   if (!binding) {
     return {
@@ -210,9 +239,33 @@ export function getSelectionScopeLabel(scope: SelectionScope) {
   if (scope.type === 'component-region') return `${scope.componentName} / ${scope.regionId}`
   if (scope.type === 'component-instance') return scope.componentName
   if (scope.type === 'page-shell') return '页面视觉外壳'
+  if (scope.type === 'design-block') return scope.name
   if (scope.type === 'text-range') return `“${scope.selectedText}”`
   if (scope.type === 'image-region') return `${scope.name} / 局部区域`
   return scope.name
+}
+
+function resolveDesignBlockRoot(allElements: DesignElement[], element: DesignElement) {
+  if (element.designRole === 'design-block') return element
+  if (element.type !== 'shape' || !element.designBlockId) return undefined
+  const root = allElements.find(
+    (candidate) =>
+      candidate.artboardId === element.artboardId &&
+      candidate.designRole === 'design-block' &&
+      candidate.designBlockId === element.designBlockId,
+  )
+  if (!root || element.parentId !== root.id || !hasSameBounds(root, element)) return undefined
+  return root
+}
+
+function hasSameBounds(left: DesignElement, right: DesignElement) {
+  const epsilon = 0.5
+  return (
+    Math.abs(left.x - right.x) <= epsilon &&
+    Math.abs(left.y - right.y) <= epsilon &&
+    Math.abs(left.width - right.width) <= epsilon &&
+    Math.abs(left.height - right.height) <= epsilon
+  )
 }
 
 function isValidImageRegion(element: DesignElement, selection: EditorImageRegionSelection) {

@@ -16,8 +16,9 @@ try {
     reduceChatRunEvent,
   } = await vite.ssrLoadModule('/src/features/ai/agent-run.ts')
   const { buildAgentUploads } = await vite.ssrLoadModule('/src/features/ai/api.ts')
-  const { DEFAULT_VISUAL_REDESIGN_BRIEF, summarizeVisualRedesignBrief } =
-    await vite.ssrLoadModule('/src/features/editor/utils/visual-brief.ts')
+  const { DEFAULT_VISUAL_REDESIGN_BRIEF, summarizeVisualRedesignBrief } = await vite.ssrLoadModule(
+    '/src/features/editor/utils/visual-brief.ts',
+  )
   const { compareArtboardVersions } = await vite.ssrLoadModule(
     '/src/features/editor/utils/variant-comparison.ts',
   )
@@ -54,9 +55,35 @@ try {
     ['图1.png'],
   )
   assert.equal(uploads[0].role, 'prototype')
+  const automaticKvUploads = buildAgentUploads({
+    prompt: '参考这张图的配色和氛围生成活动 H5',
+    document: {},
+    referenceImages: [currentImage.src],
+    referenceImageNames: ['活动参考.png'],
+    referenceImageRoles: ['auto'],
+  })
+  assert.equal(automaticKvUploads[0].role, 'kv')
+  assert.equal(automaticKvUploads[0].requestedRole, 'auto')
+  const automaticContentUploads = buildAgentUploads({
+    prompt: '生成活动 H5',
+    document: {},
+    referenceImages: [currentImage.src],
+    referenceImageNames: ['商品图.png'],
+    referenceImageRoles: ['auto'],
+  })
+  assert.equal(automaticContentUploads[0].role, 'content')
+  const explicitContentUploads = buildAgentUploads({
+    prompt: '把这张图放进 Hero',
+    document: {},
+    referenceImages: [currentImage.src],
+    referenceImageNames: [currentImage.name],
+    referenceImageRoles: ['content'],
+  })
+  assert.equal(explicitContentUploads[0].role, 'content')
+  assert.equal(explicitContentUploads[0].roleConfidence, 1)
   const visualSummary = summarizeVisualRedesignBrief(DEFAULT_VISUAL_REDESIGN_BRIEF)
   assert(visualSummary.preserve.includes('主 CTA 与转化路径'))
-  assert(visualSummary.change.includes('颜色角色与对比'))
+  assert(visualSummary.change.some((item) => item.includes('颜色角色')))
   const sourceArtboard = {
     id: 'source-board',
     width: 375,

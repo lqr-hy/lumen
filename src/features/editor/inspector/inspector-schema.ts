@@ -21,6 +21,13 @@ export interface InspectorOption {
   disabled?: boolean
 }
 
+export interface InspectorImageUpload {
+  name: string
+  src: string
+  mimeType: string
+  bytes: number
+}
+
 export interface InspectorField {
   id: string
   label: string
@@ -51,6 +58,7 @@ export interface InspectorField {
   defaultValue?: InspectorFieldValue
   transactional?: boolean
   onChange?: (value: InspectorFieldValue) => void
+  onImageUpload?: (image: InspectorImageUpload) => void
 }
 
 export interface InspectorSectionSchema {
@@ -64,6 +72,7 @@ export interface InspectorSectionSchema {
 interface ElementResolverContext {
   update: (patch: Partial<DesignElement>) => void
   setAutoLayout: (autoLayout: SectionElement['autoLayout']) => void
+  replaceImage?: (image: InspectorImageUpload) => void
   parent?: DesignElement
   responsive?: boolean
 }
@@ -582,7 +591,14 @@ function resolveTypeSection(
       id: 'image',
       title: '图片',
       fields: [
-        { id: 'preview', label: '图像', type: 'image', value: element.src },
+        {
+          id: 'preview',
+          label: '图像',
+          type: 'image',
+          value: element.src,
+          onChange: (src) => update({ src: String(src) } as Partial<DesignElement>),
+          onImageUpload: context.replaceImage,
+        },
         {
           id: 'src',
           label: '图片地址',

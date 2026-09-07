@@ -26,6 +26,20 @@ const DESIGN_SPEC_STRUCTURE_PATTERN =
   /(?:新增|添加|插入|删除|移除|移动|上移|下移|调整顺序|放到|移到|更新|修改).{0,24}(?:区块|模块|block|侧边栏|导航|页头|筛选|指标|表格|表单|卡片|分页|页脚)|(?:区块|模块|block|侧边栏|导航|页头|筛选|指标|表格|表单|卡片|分页|页脚).{0,24}(?:新增|添加|插入|删除|移除|移动|上移|下移|调整顺序|放到|移到|更新|修改)/i
 const FULL_UI_REDESIGN_PATTERN =
   /(?:重新设计|重新实现|重新生成|整体重做|整体重构|整页改版|换一版).{0,32}(?:页面|界面|ui|设计稿|工作台|后台|管理系统|编辑器)|(?:页面|界面|ui|设计稿|工作台|后台|管理系统|编辑器).{0,32}(?:重新设计|重新实现|重新生成|整体重做|整体重构|整页改版|换一版)/i
+const ASSET_EDIT_PATTERN =
+  /(?:重新生成|重生成|换图|替换(?:图片|素材)|生成(?:图片|素材|按钮图)|重做素材)/i
+const STYLE_EDIT_PATTERN =
+  /(?:样式|颜色|背景色|尺寸|大小|宽度|高度|圆角|字号|字体|间距|文案|统一.*按钮)/i
+const BUTTON_EDIT_PATTERN = /按钮|button|cta/i
+
+export const SELECTION_SCOPE_ERROR_CODES = Object.freeze({
+  STALE: 'SELECTION_SCOPE_STALE',
+  TYPE_MISMATCH: 'SELECTION_SCOPE_TYPE_MISMATCH',
+  COMPONENT_STYLE_UNSUPPORTED: 'COMPONENT_STYLE_UNSUPPORTED',
+  ASSET_SLOT_NOT_STYLE_EDITABLE: 'ASSET_SLOT_NOT_STYLE_EDITABLE',
+  MIXED_COMPONENT_SELECTION: 'MIXED_COMPONENT_SELECTION',
+  NO_EDITABLE_BUTTON_TARGET: 'NO_EDITABLE_BUTTON_TARGET',
+})
 
 export function routeAgentIntent(input) {
   const prompt = String(input?.prompt || '').trim()
@@ -43,9 +57,6 @@ export function routeAgentIntent(input) {
 
   if (!prompt)
     return { ...base, action: 'chat', taskKind: 'chat', confidence: 1, reason: 'empty-prompt' }
-  if (ADVICE_PATTERN.test(prompt)) {
-    return { ...base, action: 'chat', taskKind: 'chat', confidence: 0.92, reason: 'advice-request' }
-  }
   if (CONTINUE_PATTERN.test(prompt)) {
     return {
       ...base,
@@ -89,6 +100,21 @@ export function routeAgentIntent(input) {
       reason: 'explicit-artboard-creation',
     }
   }
+  if (
+    editScope &&
+    (REVISION_PATTERN.test(prompt) ||
+      GENERATION_PATTERN.test(prompt) ||
+      STYLE_EDIT_PATTERN.test(prompt) ||
+      ASSET_EDIT_PATTERN.test(prompt))
+  ) {
+    return routeSelectionRevision(base, editScope, prompt)
+  }
+  // 在编辑器里，用户已经选中对象并发送“是否设计/能否添加……”时，
+  // 是在授权 Agent 对该选区作出设计判断并落地，而不是要求二次确认。
+  // 只有不包含可执行设计动作的“怎么/为什么/方案”等消息才按普通问答处理。
+  if (ADVICE_PATTERN.test(prompt)) {
+    return { ...base, action: 'chat', taskKind: 'chat', confidence: 0.92, reason: 'advice-request' }
+  }
   if (isFullUiRedesignRequest(prompt)) {
     return {
       ...base,
@@ -106,9 +132,6 @@ export function routeAgentIntent(input) {
       confidence: 0.99,
       reason: 'existing-design-spec-structure-revision',
     }
-  }
-  if (editScope && (REVISION_PATTERN.test(prompt) || GENERATION_PATTERN.test(prompt))) {
-    return routeSelectionRevision(base, editScope)
   }
   const componentSelectors = collectComponentSelectors(prompt)
   if (
@@ -316,8 +339,18 @@ function collectTargetIds(editScope) {
   ].filter((value) => typeof value === 'string' && value.trim())
 }
 
-function routeSelectionRevision(base, editScope) {
+function routeSelectionRevision(base, editScope, prompt = '') {
   if (editScope.type === 'component-region') {
+    if (STYLE_EDIT_PATTERN.test(prompt) && !ASSET_EDIT_PATTERN.test(prompt)) {
+      return {
+        ...base,
+        action: 'chat',
+        taskKind: 'chat',
+        confidence: 1,
+        reason: 'asset-slot-not-style-editable',
+        errorCode: SELECTION_SCOPE_ERROR_CODES.ASSET_SLOT_NOT_STYLE_EDITABLE,
+      }
+    }
     return {
       ...base,
       action: 'regenerate-slot',
@@ -344,7 +377,11 @@ function routeSelectionRevision(base, editScope) {
       reason: 'selection-component-instance',
     }
   }
-  if (['generic-node', 'multi-node', 'text-range', 'image-region'].includes(editScope.type)) {
+  if (
+    ['design-block', 'generic-node', 'multi-node', 'text-range', 'image-region'].includes(
+      editScope.type,
+    )
+  ) {
     return {
       ...base,
       action: 'revise-design',
@@ -360,4 +397,98 @@ function routeSelectionRevision(base, editScope) {
     confidence: 1,
     reason: 'unsupported-selection-scope',
   }
+}
+
+export function validateSelectionScopeForIntent({ prompt, editScope, canvasSnapshot }) {
+  if (!editScope) return undefined
+  if (
+    canvasSnapshot &&
+    (editScope.artboardId !== canvasSnapshot.artboardId ||
+      editScope.documentRevision !== canvasSnapshot.documentRevision)
+  ) {
+    return scopeError(
+      SELECTION_SCOPE_ERROR_CODES.STALE,
+      '当前选区来自旧画板或旧文档版本，请重新选择后执行。',
+    )
+  }
+  const elements = new Map((canvasSnapshot?.elements ?? []).map((element) => [element.id, element]))
+  const ids = collectTargetIds(editScope)
+  const resolved = ids.map((id) => elements.get(id)).filter(Boolean)
+  if (canvasSnapshot && ids.length && !resolved.length) {
+    return scopeError(SELECTION_SCOPE_ERROR_CODES.STALE, '当前选区节点已不存在，请重新选择。')
+  }
+  if (editScope.type === 'generic-node') {
+    const element = elements.get(editScope.elementId)
+    if (element && element.type !== editScope.elementType) {
+      return scopeError(
+        SELECTION_SCOPE_ERROR_CODES.TYPE_MISMATCH,
+        '选区声明的节点类型与画布实际节点不一致。',
+      )
+    }
+    if (element?.componentImageBinding || element?.instanceId) {
+      return scopeError(
+        SELECTION_SCOPE_ERROR_CODES.TYPE_MISMATCH,
+        '组件图片素材不能伪装成普通节点修改。',
+      )
+    }
+  }
+  if (editScope.type === 'design-block') {
+    const root = elements.get(editScope.elementId)
+    if (
+      !root ||
+      root.designRole !== 'design-block' ||
+      root.designBlockId !== editScope.blockId
+    ) {
+      return scopeError(
+        SELECTION_SCOPE_ERROR_CODES.TYPE_MISMATCH,
+        '设计模块选区与当前画布结构不一致，请重新选择模块。',
+      )
+    }
+  }
+  if (editScope.type === 'multi-node') {
+    const instanceIds = new Set(resolved.map((element) => element.instanceId).filter(Boolean))
+    if (instanceIds.size || resolved.some((element) => element.componentImageBinding)) {
+      return scopeError(
+        SELECTION_SCOPE_ERROR_CODES.MIXED_COMPONENT_SELECTION,
+        '普通节点与组件素材不能混合修改，请只选择同一类目标。',
+      )
+    }
+  }
+  if (editScope.type === 'component-region-batch') {
+    const instanceIds = new Set((editScope.targets ?? []).map((target) => target.instanceId))
+    if (instanceIds.size !== 1) {
+      return scopeError(
+        SELECTION_SCOPE_ERROR_CODES.MIXED_COMPONENT_SELECTION,
+        '所选素材跨越多个组件实例，请一次只修改同一组件。',
+      )
+    }
+  }
+  if (
+    ['component-region', 'component-region-batch'].includes(editScope.type) &&
+    STYLE_EDIT_PATTERN.test(String(prompt || '')) &&
+    !ASSET_EDIT_PATTERN.test(String(prompt || ''))
+  ) {
+    return scopeError(
+      SELECTION_SCOPE_ERROR_CODES.ASSET_SLOT_NOT_STYLE_EDITABLE,
+      '图片素材 Slot 不支持普通样式修改；请选择组件根节点，通过样式 Props 修改。',
+    )
+  }
+  if (
+    BUTTON_EDIT_PATTERN.test(String(prompt || '')) &&
+    STYLE_EDIT_PATTERN.test(String(prompt || '')) &&
+    !['component-instance', 'component-region', 'component-region-batch'].includes(
+      editScope.type,
+    ) &&
+    !resolved.some((element) => element.type === 'button' || BUTTON_EDIT_PATTERN.test(element.name))
+  ) {
+    return scopeError(
+      SELECTION_SCOPE_ERROR_CODES.NO_EDITABLE_BUTTON_TARGET,
+      '当前选区没有可编辑按钮，请选中普通 Button 或支持按钮样式 Props 的组件。',
+    )
+  }
+  return undefined
+}
+
+function scopeError(code, message) {
+  return { code, message }
 }

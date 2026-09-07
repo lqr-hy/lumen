@@ -11,7 +11,6 @@ import {
   Monitor,
   MousePointer2,
   PanelTop,
-  Redo2,
   RotateCcw,
   ScanLine,
   Square,
@@ -20,12 +19,12 @@ import {
   Tablet,
   Trash2,
   Type,
-  Undo2,
 } from 'lucide-react'
 import { useEditorStore } from '../store/editor-store'
 import { ARTBOARD_GAP, DEFAULT_ARTBOARD_HEIGHT, DEFAULT_ARTBOARD_WIDTH } from '../constants'
 import type { DesignElement, EditorTool } from '../types'
 import { cn } from '../../../lib/cn'
+import { readFileAsDataUrl, readImageSize } from '../utils/image-file'
 
 interface ToolbarProps {
   onExportPng: (scale: 1 | 2) => void
@@ -103,8 +102,6 @@ export function Toolbar({
   const setDesignBreakpoint = useEditorStore((state) => state.setDesignBreakpoint)
   const upsertDesignBreakpoint = useEditorStore((state) => state.upsertDesignBreakpoint)
   const removeDesignBreakpoint = useEditorStore((state) => state.removeDesignBreakpoint)
-  const undo = useEditorStore((state) => state.undo)
-  const redo = useEditorStore((state) => state.redo)
   const selectedElements =
     document?.elements.filter((element) => selectedElementIds.includes(element.id)) ?? []
   const activeArtboard = document?.artboards.find((item) => item.id === activeArtboardId)
@@ -647,14 +644,6 @@ export function Toolbar({
         </div>
       ) : null}
       <div className="tool-group">
-        <button className="icon-button" type="button" title="撤销" onClick={undo}>
-          <Undo2 size={18} />
-        </button>
-        <button className="icon-button" type="button" title="重做" onClick={redo}>
-          <Redo2 size={18} />
-        </button>
-      </div>
-      <div className="tool-group">
         <div className="toolbar-export-menu">
           <button
             className="icon-button export-trigger"
@@ -702,7 +691,14 @@ export function Toolbar({
                 <strong>HTML / CSS 开发包</strong>
                 <small>原生节点、组件引用与资源</small>
               </button>
-              <button type="button" role="menuitem" onClick={() => { setExportMenuOpen(false); onPreviewCode() }}>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setExportMenuOpen(false)
+                  onPreviewCode()
+                }}
+              >
                 <strong>HTML 结构预览</strong>
                 <small>预览选中模块或当前画板</small>
               </button>
@@ -806,27 +802,4 @@ function replacePrimaryColor(colors: string[], primaryColor: string) {
   while (next.length < 5) next.push('#d9dee8')
   next[3] = primaryColor
   return next
-}
-
-function readFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result))
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(file)
-  })
-}
-
-function readImageSize(src: string) {
-  return new Promise<{ width: number; height: number }>((resolve, reject) => {
-    const image = new globalThis.Image()
-    image.onload = () => {
-      resolve({
-        width: Math.max(1, image.naturalWidth || image.width),
-        height: Math.max(1, image.naturalHeight || image.height),
-      })
-    }
-    image.onerror = reject
-    image.src = src
-  })
 }

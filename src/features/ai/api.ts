@@ -8,6 +8,7 @@ import type {
   GenerateResult,
   RuntimeImageArtifact,
 } from './types'
+import { resolveReferenceImageRoles } from './reference-image-role'
 
 export async function generateDesign(request: GenerateRequest): Promise<GenerateResult> {
   const title = request.prompt.trim() ? request.prompt.trim().slice(0, 24) : 'AI 生成设计稿'
@@ -36,6 +37,7 @@ export async function applyChatEdit(
       message: result.text.trim() || '已生成可编辑通用 UI 设计稿。',
       source: 'runtime',
       genericUiSchema: result.genericUiSchema,
+      visualAssetReport: result.visualAssetReport,
     }
   }
   if (result.canvasDelivered) {
@@ -202,6 +204,8 @@ async function readRuntimeStream(request: ChatEditRequest, callbacks: ChatEditCa
       componentRegionAction: request.componentRegionAction,
       blueprintOverride: request.blueprintOverride,
       visualBrief: request.visualBrief,
+      visualAssetPlan: request.visualAssetPlan,
+      visualOptimizationContext: request.visualOptimizationContext,
       enableVisionReview: request.enableVisionReview ?? true,
     })
     if (result.error) throw new Error(result.error.message || 'Runtime 请求失败。')
@@ -220,6 +224,11 @@ async function readRuntimeStream(request: ChatEditRequest, callbacks: ChatEditCa
       awaitingConfirmation: result.awaitingConfirmation,
       editScope: result.editScope,
       genericUiSchema: result.genericUiSchema,
+      visualAssetReport: (
+        result as typeof result & {
+          visualAssetReport?: ChatEditResult['visualAssetReport']
+        }
+      ).visualAssetReport,
     }
   } finally {
     removeTokenListener()
@@ -347,6 +356,7 @@ function createCanvasSnapshot(request: ChatEditRequest) {
       designRole: element.designRole,
       designBlockId: element.designBlockId,
       parentId: element.parentId,
+      zIndex: element.zIndex,
       componentName: element.componentBinding?.componentName,
       instanceId: element.componentBinding?.instanceId,
       pageSectionId: element.componentBinding?.pageSectionId,
@@ -528,6 +538,15 @@ type RawIncrementalDeliverable = {
       sceneGraph: import('../editor/scene/scene-graph').SceneGraph
       runtimeDraft?: { version: 1; title: string; viewport: { width: number; height: number } }
       expectedNodeCount: number
+      visualAssetReport?: {
+        version: 1
+        imagery: string
+        plannedCount: number
+        generatedCount: number
+        boundCount: number
+        targetViewport: { width: number; height: number }
+        assets: Array<{ id: string; nodeId: string; targetSize: { width: number; height: number } }>
+      }
     }
   | {
       kind: 'design-patch'
@@ -587,15 +606,23 @@ type RawIncrementalDeliverable = {
 
 export function buildAgentUploads(request: ChatEditRequest) {
   const uploads = new Map<string, ReturnType<typeof createUpload>>()
+  const roleResolutions = resolveReferenceImageRoles(
+    (request.referenceImages ?? []).map((_, index) => ({
+      name: request.referenceImageNames?.[index] || `参考图 ${index + 1}`,
+      role: request.referenceImageRoles?.[index],
+    })),
+    {
+      prompt: request.prompt,
+      hasVisualBrief: Boolean(request.visualBrief),
+      editScopeType: request.editScope?.type,
+    },
+  )
   // 历史消息中的图片只用于聊天记录展示。本轮 Agent 只能收到用户当前明确激活的附件。
   for (let index = 0; index < (request.referenceImages?.length ?? 0); index += 1) {
     const src = request.referenceImages?.[index]
     if (!src) continue
     const name = request.referenceImageNames?.[index] || `参考图 ${index + 1}`
-    uploads.set(
-      src,
-      createUpload(src, name, request.prompt, request.referenceImageRoles?.[index]),
-    )
+    uploads.set(src, createUpload(src, name, request.prompt, roleResolutions[index]))
   }
   return Array.from(uploads.values())
 }
@@ -604,7 +631,7 @@ function createUpload(
   data: string,
   name: string,
   context = '',
-  role?: import('./types').ReferenceImageRole,
+  resolution?: import('./reference-image-role').ReferenceImageRoleResolution,
 ) {
   return {
     data,
@@ -612,7 +639,14 @@ function createUpload(
     name: normalizeFileName(name, getImageExtension(data)),
     mime: getImageMime(data),
     context,
-    ...(role ? { role } : {}),
+    ...(resolution
+      ? {
+          role: resolution.resolvedRole,
+          requestedRole: resolution.requestedRole,
+          roleConfidence: resolution.confidence,
+          roleReason: resolution.reason,
+        }
+      : {}),
   }
 }
 

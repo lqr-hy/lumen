@@ -38,6 +38,15 @@ import { compileDesignSpecToSceneCommit } from '../scene/design-spec-adapter'
 import { compileDesignSpecSceneTransaction } from '../scene/design-spec-transaction'
 import { compileComponentDesignToSceneCommit } from '../scene/component-design-adapter'
 import { compileSceneCommit } from '../scene/scene-commit'
+import {
+  changeLayerOrder as changeLayerOrderInTree,
+  collectLayerSubtreeElements,
+  groupLayerElements,
+  moveLayerElement,
+  ungroupLayerElement,
+  type LayerDropPosition,
+  type LayerOrderAction,
+} from '../utils/layer-tree'
 
 export interface QueuedReferenceImage {
   id: string
@@ -112,6 +121,7 @@ export interface EditorChatThread {
   placementMode?: PlacementMode
   lastPlacementMode?: Exclude<PlacementMode, 'auto'>
   visualOptimizationDraft?: {
+    mode?: 'new-design' | 'variant'
     sourceArtboardId: string
     sourceArtboardName: string
     brief: import('../utils/visual-brief').VisualRedesignBrief
@@ -291,6 +301,10 @@ interface EditorState {
   clearArtboardSelection: () => void
   consumeSelectionScope: () => void
   updateElement: (id: string, patch: Partial<DesignElement>) => void
+  replaceElementImage: (
+    id: string,
+    image: { name: string; src: string; mimeType: string; bytes: number },
+  ) => void
   updateElements: (patches: Array<{ id: string; patch: Partial<DesignElement> }>) => void
   beginPropertyTransaction: () => void
   previewElementProperties: (patches: Array<{ id: string; patch: Partial<DesignElement> }>) => void
@@ -316,6 +330,10 @@ interface EditorState {
     patch: import('../types').ResponsiveTokenBatchPatch,
   ) => void
   addElement: (element: DesignElement) => void
+  groupElements: (ids: string[]) => string | undefined
+  ungroupElement: (id: string) => boolean
+  moveLayer: (draggedId: string, targetId: string, position: LayerDropPosition) => boolean
+  changeLayerOrder: (ids: string[], action: LayerOrderAction) => boolean
   removeElements: (ids: string[]) => void
   removeArtboard: (id: string) => void
   undo: () => void
@@ -717,6 +735,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const artboard = state.document.artboards.find((item) => item.id === target.artboardId)
       if (!artboard) return state
       const { commit } = compileDesignSpecToSceneCommit(schema, artboard)
+      // 以实际编译出的节点边界为准，避免 viewport 初始高度截断长页面内容。
+      const contentHeight = Math.max(
+        commit.contentHeight,
+        ...commit.elements.map((element) => element.y + element.height - artboard.y),
+      )
       const targetWidth =
         target.mode === 'duplicate-variant' ? artboard.width : schema.viewport.width
       rootId = commit.rootNodeId
@@ -732,7 +755,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
               ? {
                   ...item,
                   width: targetWidth,
-                  height: commit.contentHeight,
+                  height: contentHeight,
                   autoHeight: target.mode === 'duplicate-variant' ? true : false,
                   background: schema.theme.colors[1] || '#f5f7fa',
                   designSpec: schema,
@@ -768,6 +791,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const artboard = state.document.artboards.find((item) => item.id === target.artboardId)
       if (!artboard) return state
       const commit = compileSceneCommit(sceneGraph, { artboardId: artboard.id })
+      const contentHeight = Math.max(
+        sceneGraph.surface.height,
+        ...commit.elements.map((element) => element.y + element.height - artboard.y),
+      )
       const targetWidth =
         target.mode === 'duplicate-variant' ? artboard.width : sceneGraph.surface.width
       const root = sceneGraph.nodes.find((node) => node.id === sceneGraph.rootNodeId)
@@ -796,7 +823,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
               ? {
                   ...item,
                   width: targetWidth,
-                  height: Math.max(1, sceneGraph.surface.height),
+                  height: Math.max(1, contentHeight),
                   autoHeight: target.mode === 'duplicate-variant' ? true : false,
                   background,
                   designSpec: undefined,
@@ -1209,7 +1236,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const nextArtboard: Artboard = {
         ...artboard,
         width: artboard.width,
-        height: Math.max(artboard.height, originY - artboard.y + rootHeight),
+        height: Math.max(
+          artboard.height,
+          originY - artboard.y + rootHeight,
+          ...componentSceneCommit.elements.map(
+            (element) => element.y + element.height - artboard.y,
+          ),
+        ),
         autoHeight: true,
       }
       const retainedInstances = Object.fromEntries(
@@ -1852,6 +1885,63 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }
     }),
 
+  replaceElementImage: (id, image) =>
+    set((state) => {
+      if (!state.document) return state
+      const element = state.document.elements.find((item) => item.id === id)
+      if (!element || element.type !== 'image' || element.src === image.src) return state
+
+      const nextElements = applyElementPatches(state.document.elements, [
+        { id, patch: { src: image.src } },
+      ])
+      const changedIds = new Set(
+        nextElements
+          .filter((item) => item.id === id || item.parentId === id)
+          .map((item) => item.id),
+      )
+      const existingAsset = state.document.assets.find((asset) => asset.src === image.src)
+      const previousUpload = state.document.assets.find(
+        (asset) => asset.src === element.src && asset.id.startsWith('asset-upload-'),
+      )
+      const previousSourceIsShared = nextElements.some(
+        (item) => item.type === 'image' && item.id !== id && item.src === element.src,
+      )
+      const assets = existingAsset
+        ? state.document.assets
+        : previousUpload && !previousSourceIsShared
+          ? state.document.assets.map((asset) =>
+              asset.id === previousUpload.id
+                ? { ...asset, name: image.name || asset.name, src: image.src }
+                : asset,
+            )
+          : [
+              ...state.document.assets,
+              {
+                id: createStoreId('asset-upload'),
+                type: 'image' as const,
+                name: image.name || element.name,
+                src: image.src,
+              },
+            ]
+
+      return {
+        document: {
+          ...state.document,
+          version: state.document.version + 1,
+          componentInstances: syncComponentInstancesFromElements(
+            state.document.componentInstances ?? {},
+            nextElements,
+            changedIds,
+          ),
+          elements: nextElements,
+          assets,
+          updatedAt: new Date().toISOString(),
+        },
+        history: pushHistory(state),
+        future: [],
+      }
+    }),
+
   updateElements: (patches) =>
     set((state) => {
       if (!state.document) return state
@@ -2313,6 +2403,109 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }
     }),
 
+  groupElements: (ids) => {
+    let createdGroupId: string | undefined
+    set((state) => {
+      if (!state.document) return state
+      const groupId = createStoreId('group')
+      const result = groupLayerElements(state.document.elements, ids, groupId)
+      if (!result.changed) return state
+      const group = result.elements.find((element) => element.id === groupId)
+      const elements = relayoutLayerParents(result.elements, [group?.parentId])
+      createdGroupId = groupId
+      return {
+        document: {
+          ...state.document,
+          version: state.document.version + 1,
+          elements,
+          updatedAt: new Date().toISOString(),
+        },
+        selectedElementIds: result.selectedElementIds,
+        selectionScopeArmed: false,
+        history: pushHistory(state),
+        future: [],
+      }
+    })
+    return createdGroupId
+  },
+
+  ungroupElement: (id) => {
+    let changed = false
+    set((state) => {
+      if (!state.document) return state
+      const group = state.document.elements.find((element) => element.id === id)
+      const result = ungroupLayerElement(state.document.elements, id)
+      if (!result.changed) return state
+      changed = true
+      return {
+        document: {
+          ...state.document,
+          version: state.document.version + 1,
+          elements: relayoutLayerParents(result.elements, [group?.parentId]),
+          updatedAt: new Date().toISOString(),
+        },
+        selectedElementIds: result.selectedElementIds,
+        selectionScopeArmed: false,
+        history: pushHistory(state),
+        future: [],
+      }
+    })
+    return changed
+  },
+
+  moveLayer: (draggedId, targetId, position) => {
+    let changed = false
+    set((state) => {
+      if (!state.document) return state
+      const dragged = state.document.elements.find((element) => element.id === draggedId)
+      const target = state.document.elements.find((element) => element.id === targetId)
+      const result = moveLayerElement(state.document.elements, draggedId, targetId, position)
+      if (!result.changed) return state
+      changed = true
+      const nextDragged = result.elements.find((element) => element.id === draggedId)
+      return {
+        document: {
+          ...state.document,
+          version: state.document.version + 1,
+          elements: relayoutLayerParents(result.elements, [
+            dragged?.parentId,
+            target?.parentId,
+            nextDragged?.parentId,
+          ]),
+          updatedAt: new Date().toISOString(),
+        },
+        selectedElementIds: result.selectedElementIds,
+        selectionScopeArmed: false,
+        history: pushHistory(state),
+        future: [],
+      }
+    })
+    return changed
+  },
+
+  changeLayerOrder: (ids, action) => {
+    let changed = false
+    set((state) => {
+      if (!state.document) return state
+      const first = state.document.elements.find((element) => ids.includes(element.id))
+      const result = changeLayerOrderInTree(state.document.elements, ids, action)
+      if (!result.changed) return state
+      changed = true
+      return {
+        document: {
+          ...state.document,
+          version: state.document.version + 1,
+          elements: relayoutLayerParents(result.elements, [first?.parentId]),
+          updatedAt: new Date().toISOString(),
+        },
+        selectedElementIds: result.selectedElementIds,
+        history: pushHistory(state),
+        future: [],
+      }
+    })
+    return changed
+  },
+
   removeElements: (ids) =>
     set((state) => {
       if (!state.document) return state
@@ -2561,7 +2754,9 @@ function applyElementPatches(
       : root.height
     const scaleX = nextWidth / Math.max(1, root.width)
     const scaleY = nextHeight / Math.max(1, root.height)
-    for (const child of elements.filter((element) => element.parentId === root.id)) {
+    for (const child of collectLayerSubtreeElements(elements, [root.id]).filter(
+      (element) => element.id !== root.id,
+    )) {
       if (patchMap.has(child.id)) continue
       patchMap.set(child.id, {
         x: nextX + (child.x - root.x) * scaleX,
@@ -2597,6 +2792,18 @@ function applyElementPatches(
       if (laidOut) nextElements = laidOut
       affected.add(section.id)
     }
+  }
+  return nextElements
+}
+
+/** 图层重排进入或离开 Auto Layout 后，立即把新的子节点顺序写回绝对坐标。 */
+function relayoutLayerParents(elements: DesignElement[], parentIds: Array<string | undefined>) {
+  let nextElements = elements
+  for (const parentId of [...new Set(parentIds.filter((id): id is string => Boolean(id)))]) {
+    const parent = nextElements.find((element) => element.id === parentId)
+    if (parent?.type !== 'section' || !parent.autoLayout) continue
+    const laidOut = applySectionAutoLayoutToElements(nextElements, parent.id, parent.autoLayout)
+    if (laidOut) nextElements = laidOut
   }
   return nextElements
 }

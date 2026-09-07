@@ -35,6 +35,7 @@ import {
   createSelectionScope,
   getSelectionScopeElementIds,
   isComponentSlotRegenerationReference,
+  isAssetRegenerationPrompt,
 } from '../utils/selection-scope'
 import { upsertQueuedComposerReference } from '../utils/composer-target'
 import { AgentRunTimeline } from './AgentRunTimeline'
@@ -43,7 +44,9 @@ import { getComponentReferences } from '../../ai/composer-draft'
 import type { BlueprintConfirmation, SelectionScope } from '../../ai/types'
 import { useComponentMentions } from '../hooks/use-component-mentions'
 import { InvalidSelectionScopeChip, SelectionScopeChip } from './SelectionScopeChip'
-import { summarizeVisualRedesignBrief } from '../utils/visual-brief'
+import { buildVisualAssetPlan, summarizeVisualRedesignBrief } from '../utils/visual-brief'
+import { DEFAULT_ARTBOARD_HEIGHT, DEFAULT_ARTBOARD_WIDTH } from '../constants'
+import { resolveReferenceImageRoles } from '../../ai/reference-image-role'
 
 interface ChatPanelProps {
   onClose: () => void
@@ -123,6 +126,7 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
         ),
       )
     : undefined
+  // 历史素材引用只用于继续/重试，不强行占据当前输入框的编辑范围。
   const selectionScope = regenerationScope ?? directSelectionScope
   const visibleTextReferences =
     activeThread?.textReferences.filter(
@@ -267,7 +271,7 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
                 id: `panel-upload-${Date.now()}-${index}`,
                 name: referenceImageNames[index] || `参考图 ${index + 1}`,
                 src,
-                role: 'visual',
+                role: 'auto',
               },
         ),
       }
@@ -280,7 +284,7 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
       referenceImages: thread.referenceImages.map((image, imageIndex) =>
         imageIndex === index
           ? { ...image, role }
-          : (role === 'kv' || role === 'prototype') && image.role === role
+          : (role === 'kv' || role === 'prototype' || role === 'edit-base') && image.role === role
             ? { ...image, role: 'visual' }
             : image,
       ),
@@ -460,6 +464,9 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
       ? ''
       : visibleTextReferences.map((reference) => reference.text).join(' ')
     const runControlText = resumeRunId && overrideText ? overrideText : undefined
+    const userPrompt = overrideText ?? activeThread.prompt.trim()
+    const useHistoricalAssetScope = Boolean(resumeRunId) || isAssetRegenerationPrompt(userPrompt)
+    const turnRegenerationReferences = useHistoricalAssetScope ? regenerationReferences : []
     const text =
       (runControlText ??
         (resumeRunId
@@ -467,7 +474,7 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
           : [referencedText, overrideText ?? activeThread.prompt.trim()]
               .filter(Boolean)
               .join(' '))) ||
-      (regenerationReferences.length ? '重新生成选中的组件素材' : '结合当前画布继续创作')
+      (turnRegenerationReferences.length ? '重新生成选中的组件素材' : '结合当前画布继续创作')
     const requestImages = runControlText
       ? []
       : resumeRunId
@@ -495,7 +502,7 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
       ? refreshRetrySelectionScope(requestDocument, resumedSelectionScope)
       : (createComponentRegionBatchScope(
           requestDocument,
-          regenerationReferences.flatMap((reference) =>
+          turnRegenerationReferences.flatMap((reference) =>
             reference.elementId ? [reference.elementId] : [],
           ),
         ) ??
@@ -507,7 +514,7 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
         ))
     if (
       ((!resumeRunId && selectionScopeArmed && selectedElementIds.length > 0) ||
-        regenerationReferences.length) &&
+        turnRegenerationReferences.length) &&
       !frozenSelectionScope
     )
       return
@@ -533,9 +540,7 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
     // 失败任务点击“重试”时，UI 传入的是控制词；视觉优化必须恢复原始
     // Brief Prompt，否则 Runtime 只会收到“重试”而丢失全部设计约束。
     const requestPrompt =
-      overrideText === '重试' && draftSnapshot.visualOptimizationDraft
-        ? draftSnapshot.prompt
-        : text
+      overrideText === '重试' && draftSnapshot.visualOptimizationDraft ? draftSnapshot.prompt : text
     updateActiveThread((thread) => ({
       ...thread,
       title: threadTitle,
@@ -617,7 +622,7 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
           componentReferences,
           referenceImages: requestImages.map((image) => image.src),
           referenceImageNames: requestImages.map((image) => image.name),
-          referenceImageRoles: requestImages.map((image) => image.role ?? 'visual'),
+          referenceImageRoles: requestImages.map((image) => image.role ?? 'auto'),
           textReferences: runControlText ? [] : activeThread.textReferences,
           selectedElementIds: frozenSelectionScope
             ? getSelectionScopeElementIds(frozenSelectionScope)
@@ -631,6 +636,29 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
               : undefined,
           blueprintOverride,
           visualBrief: draftSnapshot.visualOptimizationDraft?.brief,
+          visualAssetPlan: (() => {
+            const draft = draftSnapshot.visualOptimizationDraft
+            const target = latestDocument.artboards.find(
+              (item) => item.id === draft?.sourceArtboardId,
+            )
+            return draft
+              ? buildVisualAssetPlan(
+                  draft.brief,
+                  target ?? { width: DEFAULT_ARTBOARD_WIDTH, height: DEFAULT_ARTBOARD_HEIGHT },
+                )
+              : undefined
+          })(),
+          visualOptimizationContext: draftSnapshot.visualOptimizationDraft
+            ? {
+                mode:
+                  draftSnapshot.visualOptimizationDraft.mode ??
+                  (draftSnapshot.visualOptimizationDraft.sourceArtboardId
+                    ? 'variant'
+                    : 'new-design'),
+                sourceArtboardId:
+                  draftSnapshot.visualOptimizationDraft.sourceArtboardId || undefined,
+              }
+            : undefined,
         },
         { threadId, messageId: pendingMessageId, runId, updateThread: updateChatThread },
       )
@@ -844,7 +872,7 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
           value={activeThread?.prompt ?? ''}
           images={activeThread?.referenceImages.map((image) => image.src) ?? []}
           imageNames={activeThread?.referenceImages.map((image) => image.name) ?? []}
-          imageRoles={activeThread?.referenceImages.map((image) => image.role ?? 'visual') ?? []}
+          imageRoles={activeThread?.referenceImages.map((image) => image.role ?? 'auto') ?? []}
           mentionOptions={[
             ...componentMentionOptions,
             ...(activeThread?.referenceImages ?? []).map((image, index) => ({
@@ -869,6 +897,12 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
           mentions={activeThread?.mentions ?? []}
           textReferences={visibleTextReferences}
           loading={loading || activeThreadPending}
+          editBaseRoleEnabled={
+            directSelectionScope?.type === 'image-region' ||
+            /(?:编辑|修改|修图|替换|擦除|扩图|局部重绘).{0,16}(?:图片|这张图)/iu.test(
+              activeThread?.prompt ?? '',
+            )
+          }
           placeholder="输入需求，或 @ 组件、图片与画布内容"
           contextSlot={
             <>
@@ -892,41 +926,41 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
                 />
               ) : null}
               {selectionScope ? (
-              <SelectionScopeChip
-                scope={selectionScope}
-                action={regenerationReferences.length ? 'regenerate' : 'edit'}
-                onLocate={() => setSelectedElements(getSelectionScopeElementIds(selectionScope))}
-                onLocateTarget={(elementId) => selectElement(elementId)}
-                onRemoveTarget={(elementId) => {
-                  const remaining = regenerationReferences.filter(
-                    (reference) => reference.elementId !== elementId,
-                  )
-                  updateActiveThread((thread) => ({
-                    ...thread,
-                    textReferences: thread.textReferences.filter(
-                      (reference) =>
-                        !isComponentSlotRegenerationReference(reference) ||
-                        reference.elementId !== elementId,
-                    ),
-                  }))
-                  const remainingIds = remaining.flatMap((reference) =>
-                    reference.elementId ? [reference.elementId] : [],
-                  )
-                  if (remainingIds.length) setSelectedElements(remainingIds)
-                  else clearSelection()
-                }}
-                onClear={() => {
-                  clearSelection()
-                  if (regenerationReferences.length) {
+                <SelectionScopeChip
+                  scope={selectionScope}
+                  action={regenerationReferences.length ? 'regenerate' : 'edit'}
+                  onLocate={() => setSelectedElements(getSelectionScopeElementIds(selectionScope))}
+                  onLocateTarget={(elementId) => selectElement(elementId)}
+                  onRemoveTarget={(elementId) => {
+                    const remaining = regenerationReferences.filter(
+                      (reference) => reference.elementId !== elementId,
+                    )
                     updateActiveThread((thread) => ({
                       ...thread,
                       textReferences: thread.textReferences.filter(
-                        (reference) => !isComponentSlotRegenerationReference(reference),
+                        (reference) =>
+                          !isComponentSlotRegenerationReference(reference) ||
+                          reference.elementId !== elementId,
                       ),
                     }))
-                  }
-                }}
-              />
+                    const remainingIds = remaining.flatMap((reference) =>
+                      reference.elementId ? [reference.elementId] : [],
+                    )
+                    if (remainingIds.length) setSelectedElements(remainingIds)
+                    else clearSelection()
+                  }}
+                  onClear={() => {
+                    clearSelection()
+                    if (regenerationReferences.length) {
+                      updateActiveThread((thread) => ({
+                        ...thread,
+                        textReferences: thread.textReferences.filter(
+                          (reference) => !isComponentSlotRegenerationReference(reference),
+                        ),
+                      }))
+                    }
+                  }}
+                />
               ) : selectionScopeArmed && selectedElementIds.length ? (
                 <InvalidSelectionScopeChip onClear={clearSelection} />
               ) : null}
@@ -989,10 +1023,23 @@ export function VisualGenerationSummary({
 }) {
   const summary = summarizeVisualRedesignBrief(draft.brief)
   const roleDescriptions: Record<NonNullable<EditorChatImage['role']>, string> = {
+    auto: 'Auto · 提交时根据任务与图片语义自动判断',
+    content: '原图素材 · 保留像素并直接用于页面',
     kv: 'KV · 控制颜色、材质与视觉语言',
     prototype: 'Prototype · 控制结构、模块顺序与原文案',
     visual: 'Visual · 只影响指定的局部风格',
     'edit-base': 'Edit Base · 保持主体与未修改区域',
+  }
+  const roleResolutions = resolveReferenceImageRoles(references, {
+    prompt: JSON.stringify(draft.brief),
+    hasVisualBrief: true,
+  })
+  const resolvedRoleLabels = {
+    content: '原图素材',
+    kv: 'KV',
+    prototype: 'Prototype',
+    visual: 'Visual',
+    'edit-base': 'Edit Base',
   }
 
   return (
@@ -1048,14 +1095,19 @@ export function VisualGenerationSummary({
           <strong>本次实际发送的参考图</strong>
           {references.length ? (
             <div>
-              {references.map((reference) => {
-                const role = reference.role ?? 'visual'
+              {references.map((reference, index) => {
+                const role = reference.role ?? 'auto'
+                const resolution = roleResolutions[index]
                 return (
-                  <span key={reference.id} data-role={role}>
+                  <span key={reference.id} data-role={resolution.resolvedRole}>
                     <img src={reference.src} alt="" />
                     <span>
                       <b>{reference.name}</b>
-                      <small>{roleDescriptions[role]}</small>
+                      <small>
+                        {role === 'auto'
+                          ? `Auto → ${resolvedRoleLabels[resolution.resolvedRole]} · ${resolution.reason}`
+                          : roleDescriptions[role]}
+                      </small>
                     </span>
                   </span>
                 )
@@ -1316,6 +1368,9 @@ function refreshRetrySelectionScope(
 ): SelectionScope | undefined {
   if (!scope) return undefined
   if (scope.type === 'generic-node') {
+    return createSelectionScope(document, [scope.elementId])
+  }
+  if (scope.type === 'design-block') {
     return createSelectionScope(document, [scope.elementId])
   }
   if (scope.type === 'multi-node') {

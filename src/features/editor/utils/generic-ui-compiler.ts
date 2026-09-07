@@ -13,6 +13,8 @@ interface CompileOptions {
   /** @deprecated DesignSpec 节点现在始终使用稳定 ID。 */
   createId?: (prefix: string) => string
 }
+const TRANSPARENT_IMAGE_PLACEHOLDER =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL9WQAAAABJRU5ErkJggg=='
 type IdFactory = (token: string) => string
 interface Bounds {
   x: number
@@ -728,6 +730,26 @@ function compileHero(
     schema.theme.radius,
     palette.border,
   )
+  // Hero 始终保留一个真实可编辑 Image Slot。即使当前尚未生成 KV，后续
+  // “给这个模块添加图片”也可以直接替换图片，而不必把背景 Shape 当图片处理。
+  elements.push({
+    id: createId(`image:${block.id}`),
+    artboardId,
+    parentId,
+    type: 'image',
+    name: `${block.label} 主视觉`,
+    src: block.media?.src || TRANSPARENT_IMAGE_PLACEHOLDER,
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    zIndex: 4.5,
+    objectFit: 'cover',
+    objectPosition: 'center',
+    borderRadius: schema.theme.radius,
+    designRole: 'component-decoration',
+    layoutConstraints: { horizontal: 'stretch', vertical: 'stretch' },
+  })
   addText(
     elements,
     createId,

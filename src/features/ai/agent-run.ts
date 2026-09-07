@@ -66,6 +66,7 @@ export interface ChatRunDeliverable {
   }>
   affectedElementIds?: string[]
   documentRevision?: number
+  qualityReport?: import('../editor/utils/visual-quality-gate').DesignGateReport
   createdAt: string
 }
 
@@ -258,6 +259,7 @@ export function appendRunDeliverable(
         : undefined,
     affectedElementIds: observation.data?.affectedElementIds,
     documentRevision: observation.data?.documentRevision,
+    qualityReport: observation.data?.qualityReport,
     createdAt: new Date().toISOString(),
   }
   return {
@@ -331,6 +333,8 @@ function summarizePatchOperation(operation: DesignPatch['operations'][number]) {
     return { id: operation.id, kind: operation.kind, elementId, summary: '删除节点' }
   if (operation.kind === 'replace-image')
     return { id: operation.id, kind: operation.kind, elementId, summary: '替换整张图片' }
+  if (operation.kind === 'add-image')
+    return { id: operation.id, kind: operation.kind, elementId, summary: '新增并生成图片节点' }
   return {
     id: operation.id,
     kind: operation.kind,

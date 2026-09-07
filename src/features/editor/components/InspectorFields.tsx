@@ -1,4 +1,15 @@
-import { ChevronDown, Link, Minus, Pipette, Plus, RotateCcw, Unlink, X } from 'lucide-react'
+import {
+  ChevronDown,
+  Link,
+  Minus,
+  Pipette,
+  Plus,
+  RotateCcw,
+  Trash2,
+  Unlink,
+  Upload,
+  X,
+} from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { RgbaColorPicker, type RgbaColor } from 'react-colorful'
 import type {
@@ -7,6 +18,12 @@ import type {
   InspectorSectionSchema,
 } from '../inspector/inspector-schema'
 import type { CornerValues, EdgeValues, ElementLayoutSizing } from '../types'
+import {
+  LOCAL_IMAGE_ACCEPT,
+  MAX_LOCAL_IMAGE_BYTES,
+  readFileAsDataUrl,
+  validateLocalImageFile,
+} from '../utils/image-file'
 
 export interface InspectorTransactionHandlers {
   onBegin?: () => void
@@ -57,7 +74,7 @@ export function InspectorFieldRenderer({
   if (field.type === 'segmented')
     return <SegmentedField field={field} transactions={transactions} />
   if (field.type === 'color') return <ColorField field={field} transactions={transactions} />
-  if (field.type === 'image') return <ImageField field={field} />
+  if (field.type === 'image') return <ImageField field={field} transactions={transactions} />
   if (field.type === 'edges')
     return <BoxValuesField field={field} kind="edges" transactions={transactions} />
   if (field.type === 'corners')
@@ -657,14 +674,93 @@ function createInteraction(field: InspectorField, transactions?: InspectorTransa
   }
 }
 
-function ImageField({ field }: { field: InspectorField }) {
+function ImageField({
+  field,
+  transactions,
+}: {
+  field: InspectorField
+  transactions?: InspectorTransactionHandlers
+}) {
   const src = String(field.value ?? '')
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string>()
+  const interaction = createInteraction(field, transactions)
+
+  useEffect(() => setError(undefined), [src])
+
+  async function selectFile(file?: File) {
+    if (!file || !field.onImageUpload) return
+    const validationError = validateLocalImageFile(file)
+    if (validationError) {
+      setError(validationError)
+      return
+    }
+
+    setLoading(true)
+    setError(undefined)
+    try {
+      const nextSrc = await readFileAsDataUrl(file)
+      field.onImageUpload({
+        name: file.name || '上传图片',
+        src: nextSrc,
+        mimeType: file.type,
+        bytes: file.size,
+      })
+    } catch {
+      setError('图片读取失败，请重新选择')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div className="inspector-field inspector-image-field">
       <span className="inspector-field-label">{field.label}</span>
       <div className="inspector-image-preview">
         {src ? <img src={src} alt="" /> : <span>无图片</span>}
       </div>
+      {field.onImageUpload ? (
+        <>
+          <input
+            ref={inputRef}
+            className="inspector-image-file-input"
+            type="file"
+            accept={LOCAL_IMAGE_ACCEPT}
+            aria-label="选择本地图片"
+            onChange={(event) => {
+              void selectFile(event.target.files?.[0])
+              event.target.value = ''
+            }}
+          />
+          <div className="inspector-image-actions">
+            <button type="button" disabled={loading} onClick={() => inputRef.current?.click()}>
+              <Upload size={13} />
+              {loading ? '读取中…' : src ? '替换图片' : '上传图片'}
+            </button>
+            {src ? (
+              <button
+                className="danger"
+                type="button"
+                title="清除图片"
+                aria-label="清除图片"
+                disabled={loading}
+                onClick={() => interaction.discrete('')}
+              >
+                <Trash2 size={13} />
+              </button>
+            ) : null}
+          </div>
+          <span className="inspector-image-hint">
+            PNG、JPG、WebP 或 GIF，最大 {MAX_LOCAL_IMAGE_BYTES / 1024 / 1024}MB
+          </span>
+          {error ? (
+            <span className="inspector-image-error" role="alert">
+              {error}
+            </span>
+          ) : null}
+        </>
+      ) : null}
     </div>
   )
 }

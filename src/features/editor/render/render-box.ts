@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react'
 import type { Artboard, ComponentBinding, DesignElement } from '../types'
 import { resolveCornerRadii } from '../utils/design-properties'
+import { flattenElementsForPainting } from '../utils/layer-tree'
 
 /**
  * Render IR：`DesignElement` 到视觉的唯一解释结果。
@@ -418,7 +419,7 @@ interface SceneDocument {
 /**
  * 构建整块画板的 IR。
  *
- * `structure: 'flat'` 对应画布与静态快照：元素按 zIndex 平铺，坐标相对画板。
+ * `structure: 'flat'` 对应画布与静态快照：元素按层级树展平，坐标相对画板。
  * `structure: 'nested'` 对应代码导出：按 parentId 嵌套，子节点坐标相对父节点，
  * 使 autoLayout 的 flex 语义和 section 裁剪成立。
  */
@@ -433,8 +434,10 @@ export function buildArtboardRenderTree(
   },
 ): ArtboardRenderTree {
   const diagnostics: RenderDiagnostic[] = []
-  const visible = document.elements.filter(
-    (element) => (element.artboardId ?? artboard.id) === artboard.id && element.visible !== false,
+  const hierarchy = flattenElementsForPainting(
+    document.elements.filter(
+      (element) => (element.artboardId ?? artboard.id) === artboard.id,
+    ),
   )
 
   const instances = Object.values(document.componentInstances ?? {}).filter(
@@ -443,12 +446,22 @@ export function buildArtboardRenderTree(
   const instanceByRoot = new Map(instances.map((item) => [item.rootElementId, item]))
   const instanceIds = new Set(instances.map((item) => item.id))
   // 组件内部节点由 Runtime Component 自行渲染，只保留实例根节点。
-  const scoped = visible.filter(
+  const scopedElements = hierarchy.filter(
     (element) =>
-      !element.componentBinding ||
-      !instanceIds.has(element.componentBinding.instanceId) ||
-      instanceByRoot.get(element.id)?.id === element.componentBinding.instanceId,
+      element.visible !== false &&
+      (!element.componentBinding ||
+        !instanceIds.has(element.componentBinding.instanceId) ||
+        instanceByRoot.get(element.id)?.id === element.componentBinding.instanceId),
   )
+  // 平铺出口需要全局且连续的绘制序号，不能直接复用只在同级内有意义的 zIndex。
+  const scoped =
+    options.structure === 'flat'
+      ? scopedElements.map((element, zIndex) =>
+          element.zIndex === zIndex
+            ? element
+            : ({ ...element, zIndex } as DesignElement),
+        )
+      : scopedElements
 
   const selection = new Set(options.selectionIds ?? [])
   const byId = new Map(scoped.map((element) => [element.id, element]))

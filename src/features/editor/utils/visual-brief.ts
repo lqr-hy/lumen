@@ -233,6 +233,63 @@ export interface VisualRedesignBrief {
   antiPatterns: string[]
 }
 
+/**
+ * 视觉优化阶段的可执行资产契约。该契约与 Prompt 解耦，供 Runtime/Renderer
+ * 共同校验图片数量、角色和目标尺寸，避免把整张长画板误当成 Hero 图片。
+ */
+export interface VisualAssetPlanItem {
+  id: string
+  role: 'page-shell' | 'hero' | 'content-image'
+  targetSize: { width: number; height: number }
+  placement: 'background' | 'inline'
+  slotRequired: boolean
+  allowText: boolean
+  allowButtons: boolean
+}
+
+export interface VisualAssetPlan {
+  version: 1
+  imagery: VisualRedesignBrief['imagery']
+  items: VisualAssetPlanItem[]
+}
+
+/** 根据视觉 Brief 生成稳定、可验证的素材计划。 */
+export function buildVisualAssetPlan(
+  brief: VisualRedesignBrief,
+  artboard: Pick<Artboard, 'width' | 'height'>,
+): VisualAssetPlan {
+  const imagery = brief.imagery ?? 'auto'
+  if (imagery === 'none') return { version: 1, imagery, items: [] }
+  const width = Math.max(1, Math.round(artboard.width))
+  // Hero 只占首屏视觉区域，不能默认使用整张长画板高度。
+  const heroHeight = Math.min(Math.max(480, Math.round(width * 1.6)), Math.round(artboard.height * 0.32))
+  const items: VisualAssetPlanItem[] = [
+    {
+      id: 'hero',
+      role: 'hero',
+      targetSize: { width, height: Math.max(320, heroHeight) },
+      placement: 'background',
+      slotRequired: true,
+      allowText: false,
+      allowButtons: false,
+    },
+  ]
+  if (imagery === 'hero-and-content') {
+    for (let index = 1; index <= 2; index += 1) {
+      items.push({
+        id: `content-image-${index}`,
+        role: 'content-image',
+        targetSize: { width: Math.min(320, width - 32), height: 180 },
+        placement: 'inline',
+        slotRequired: true,
+        allowText: false,
+        allowButtons: false,
+      })
+    }
+  }
+  return { version: 1, imagery, items }
+}
+
 /** 默认轴取值：全部适度改动，方向交给模型按页面语义选择。 */
 export const DEFAULT_VISUAL_AXES: Record<VisualAxisKey, VisualAxis> = {
   heroComposition: { direction: 'auto', range: 'moderate' },
@@ -611,7 +668,7 @@ export function compileVisualDirectionPrompt(brief: VisualRedesignBrief) {
     .filter(([, value]) => value.trim())
     .map(([role, value]) => `${role}=${value.trim()}`)
   return [
-    `从零生成一套可编辑设计稿。视觉概念：${brief.concept.trim() || DEFAULT_VISUAL_REDESIGN_BRIEF.concept}。`,
+    `从零生成一套页面设计。视觉概念：${brief.concept.trim() || DEFAULT_VISUAL_REDESIGN_BRIEF.concept}。`,
     brief.targetAudience.trim() ? `目标受众：${brief.targetAudience.trim()}。` : '',
     brief.primaryGoal.trim() ? `页面核心目标：${brief.primaryGoal.trim()}。` : '',
     `页面类型：${pageType}。信息密度：${density}。`,

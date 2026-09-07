@@ -20,7 +20,9 @@ export interface RuntimeModelSelection {
   model: string
 }
 
-export type ReferenceImageRole = 'kv' | 'prototype' | 'visual' | 'edit-base'
+export type ResolvedReferenceImageRole = 'content' | 'kv' | 'prototype' | 'visual' | 'edit-base'
+
+export type ReferenceImageRole = 'auto' | ResolvedReferenceImageRole
 
 export interface GenerateRequest {
   prompt: string
@@ -83,6 +85,13 @@ export interface ChatEditRequest {
   blueprintOverride?: import('../editor/types').PageCompositionBlueprint
   /** 视觉优化 Brief 的结构化快照，供 Runtime 在生成 Variant 时读取。 */
   visualBrief?: import('../editor/utils/visual-brief').VisualRedesignBrief
+  /** 视觉优化的结构化资产计划；由入口生成，Runtime 不再仅依赖自然语言推断。 */
+  visualAssetPlan?: import('../editor/utils/visual-brief').VisualAssetPlan
+  /** 区分空白创建与基于原画板生成 Variant，避免仅凭当前选中画板猜测放置方式。 */
+  visualOptimizationContext?: {
+    mode: 'new-design' | 'variant'
+    sourceArtboardId?: string
+  }
   enableVisionReview?: boolean
 }
 
@@ -193,6 +202,7 @@ export interface CanvasWriteObservation {
     artboardHeight?: number
     blockRootElementId?: string
     affectedElementIds?: string[]
+    qualityReport?: import('../editor/utils/visual-quality-gate').DesignGateReport
     affectedBlockIds?: string[]
     removedBlockIds?: string[]
     designSpec?: import('../editor/types').DesignSpec
@@ -339,6 +349,15 @@ export interface GenericUiRuntimeCanvasDeliverable {
   sceneGraph: import('../editor/scene/scene-graph').SceneGraph
   runtimeDraft?: { version: 1; title: string; viewport: { width: number; height: number } }
   expectedNodeCount: number
+  visualAssetReport?: {
+    version: 1
+    imagery: string
+    plannedCount: number
+    generatedCount: number
+    boundCount: number
+    targetViewport: { width: number; height: number }
+    assets: Array<{ id: string; nodeId: string; targetSize: { width: number; height: number } }>
+  }
 }
 
 export interface DesignPatchCanvasDeliverable {
@@ -535,6 +554,7 @@ export interface ChatEditResult {
   pageShell?: GeneratedCanvasImage
   confirmation?: BlueprintConfirmation
   genericUiSchema?: import('../editor/types').GenericUiSchema
+  visualAssetReport?: GenericUiRuntimeCanvasDeliverable['visualAssetReport']
 }
 
 export interface BlueprintConfirmation {
@@ -564,6 +584,7 @@ export type SelectionScope =
   | ComponentRegionBatchEditScope
   | ComponentInstanceEditScope
   | PageShellEditScope
+  | DesignBlockEditScope
   | GenericNodeEditScope
   | MultiNodeEditScope
   | TextRangeEditScope
@@ -575,6 +596,15 @@ export interface GenericNodeEditScope extends SelectionScopeBase {
   elementType: string
   name: string
   bounds: { x: number; y: number; width: number; height: number }
+}
+
+export interface DesignBlockEditScope extends SelectionScopeBase {
+  type: 'design-block'
+  elementId: string
+  blockId: string
+  name: string
+  bounds: { x: number; y: number; width: number; height: number }
+  imageElementIds: string[]
 }
 
 export interface MultiNodeEditScope extends SelectionScopeBase {
@@ -659,6 +689,16 @@ export interface DesignPatch {
         id: string
         kind: 'add'
         element: Partial<import('../editor/types').DesignElement> & { id: string; type: string }
+      }
+    | {
+        id: string
+        kind: 'add-image'
+        prompt: string
+        element: Partial<import('../editor/types').ImageElement> & {
+          id: string
+          type: 'image'
+          parentId: string
+        }
       }
     | { id: string; kind: 'replace-image'; elementId: string; prompt: string }
     | {

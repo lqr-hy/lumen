@@ -265,7 +265,7 @@ function cssOf(tree, id, role) {
       parentId: 'card',
       type: 'text',
       name: '行一',
-      content: 'bilibili热门',
+      content: '本周热门',
       x: 1240,
       y: 1200,
       width: 400,
@@ -502,6 +502,73 @@ function cssOf(tree, id, role) {
   // flat 结构下子节点提到根层，坐标相对画板：1070-1000=70。
   assert.equal(flat.root.children.length, 2)
   assert.equal(cssOf(flat, 'c', 'box').left, '70px')
+}
+
+// 9b. 平铺出口遵守树的绘制边界；隐藏容器不会把后代提升为根节点。
+{
+  const elements = [
+    element({
+      id: 'group',
+      type: 'section',
+      containerKind: 'group',
+      name: '编组',
+      label: '编组',
+      x: 1000,
+      y: 500,
+      width: 200,
+      height: 100,
+      zIndex: 0,
+    }),
+    element({
+      id: 'group-child',
+      parentId: 'group',
+      type: 'shape',
+      shape: 'rect',
+      name: '组内图层',
+      fill: '#fff',
+      x: 1000,
+      y: 500,
+      width: 80,
+      height: 20,
+      zIndex: 9,
+    }),
+    element({
+      id: 'front-root',
+      type: 'shape',
+      shape: 'rect',
+      name: '前景根图层',
+      fill: '#000',
+      x: 1000,
+      y: 500,
+      width: 80,
+      height: 20,
+      zIndex: 1,
+    }),
+  ]
+  const flat = buildArtboardRenderTree({ elements }, artboard, {
+    mode: 'static',
+    structure: 'flat',
+  })
+  assert.deepEqual(
+    flat.root.children.map((box) => box.meta.elementId),
+    ['group', 'group-child', 'front-root'],
+  )
+  assert.deepEqual(
+    flat.root.children.map((box) => box.css['z-index']),
+    ['0', '1', '2'],
+  )
+
+  const hiddenElements = elements.map((item) =>
+    item.id === 'group' ? { ...item, visible: false } : item,
+  )
+  for (const structure of ['flat', 'nested']) {
+    const hidden = buildArtboardRenderTree({ elements: hiddenElements }, artboard, {
+      mode: structure === 'flat' ? 'static' : 'export',
+      structure,
+    })
+    assert.equal(findByElementId(hidden.root, 'group-child').length, 0)
+    assert.ok(findByElementId(hidden.root, 'front-root').length > 0)
+  }
 }
 
 // 10. page-shell 只在拿到 surface 时铺满画板。

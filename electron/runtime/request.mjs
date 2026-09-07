@@ -14,6 +14,10 @@ import { compositeRasterWithMask, readRasterDimensions } from './raster-analysis
 import { normalizeRasterForTargetAsync } from './raster-worker-client.mjs'
 import { consumeTurnBudget, ensureTurnBudget } from './pi/turn-budget.mjs'
 
+/**
+ * Runtime 的统一请求入口。
+ * Agent 请求进入 Pi Agent Loop；其余结构化文本和生图任务直接进入 Provider 路由。
+ */
 export async function startRuntimeStream(payload, callbacks = {}) {
   if (payload?.type === 'agent_run') {
     const { runPiStudioAgent } = await import('./pi/agent-runtime.mjs')
@@ -33,6 +37,10 @@ export async function startRuntimeStream(payload, callbacks = {}) {
   return requestProvider(payload, callbacks)
 }
 
+/**
+ * 校验请求与预算，并根据任务能力选择文本或图片 Provider。
+ * 领域 Tool 也通过这里调用模型，因此上层无需感知 Pi 的具体协议。
+ */
 export async function requestProvider(payload, callbacks = {}) {
   validateRuntimePayload(payload)
   ensureTurnBudget(payload)
@@ -86,6 +94,7 @@ export async function requestProvider(payload, callbacks = {}) {
   )
 }
 
+/** 调用生图 Skill，将用户目标、参考图角色和单个图片任务编译为稳定的生成契约。 */
 export async function prepareImageGenerationTask(payload, task, uploads) {
   const compiled = await executeSkillTool('design-image-generation.compile-brief', {
     question: payload.question,
@@ -104,6 +113,7 @@ export async function prepareImageGenerationTask(payload, task, uploads) {
   }
 }
 
+/** 将 Pi 结构化任务的通用返回值转换为各领域工作流使用的稳定结果字段。 */
 function normalizePiTaskResult(payload, result) {
   const type = payload.type
   if (type === 'chat') return result
@@ -174,6 +184,7 @@ function normalizePiTaskResult(payload, result) {
   throw createRuntimeError('INVALID_REQUEST', `Pi 文本任务不支持：${type}`)
 }
 
+/** 串行执行图片任务并汇总 Raster Artifact，避免并发大图占用过多内存和上游配额。 */
 async function requestOpenAiImagesApi({ provider, runtime, model, payload }) {
   const tasks = normalizeImageTasks(payload)
   const artifacts = await mapWithConcurrency(tasks, 1, (task) =>
@@ -191,6 +202,7 @@ async function requestOpenAiImagesApi({ provider, runtime, model, payload }) {
     : { text: `已生成 ${artifacts.length} 个独立素材并放入画布。`, artifacts }
 }
 
+/** 执行单个图片任务，包括参考图筛选、Mask 校验、请求发送和输出归一化。 */
 async function requestOpenAiImageTask({ provider, runtime, model, payload, task }) {
   const selectedUploads = selectTaskUploads(payload.uploads ?? [], task).filter(
     (upload) => typeof upload?.data === 'string' && upload.data.startsWith('data:image/'),
@@ -438,7 +450,7 @@ function selectTaskUploads(uploads, task) {
   if (!policy) return uploads
   const allowedRoles = new Set(policy.roles ?? [])
   const allowedNames = new Set(policy.names ?? [])
-  const priority = { mask: 5, 'edit-base': 4, kv: 3, visual: 2, prototype: 1 }
+  const priority = { mask: 6, 'edit-base': 5, content: 4, kv: 3, visual: 2, prototype: 1 }
   const selected = uploads
     .map((upload, index) => ({ upload, index }))
     .filter(
@@ -459,6 +471,7 @@ function describeSelectedReferences(uploads) {
   const labels = {
     mask: '局部编辑 Mask',
     'edit-base': '当前编辑底图',
+    content: '原图素材（直接使用，禁止重绘）',
     kv: 'KV 视觉来源',
     visual: '视觉参考',
     prototype: '结构原型',
@@ -478,7 +491,7 @@ function normalizeReferencePolicy(value) {
   return {
     roles: Array.isArray(value.roles)
       ? value.roles.filter((role) =>
-          ['kv', 'visual', 'prototype', 'edit-base', 'mask'].includes(role),
+          ['kv', 'visual', 'prototype', 'edit-base', 'content', 'mask'].includes(role),
         )
       : [],
     names: Array.isArray(value.names) ? value.names.filter((name) => typeof name === 'string') : [],
@@ -560,6 +573,7 @@ function normalizeRasterArtifactName(name, mime) {
   return `${base}.${extension}`
 }
 
+/** 以受控并发执行任务，并保持结果顺序与输入任务一致。 */
 async function mapWithConcurrency(items, concurrency, worker) {
   const results = new Array(items.length)
   let cursor = 0
@@ -574,6 +588,7 @@ async function mapWithConcurrency(items, concurrency, worker) {
   return results
 }
 
+/** 在访问凭证或 Provider 前验证外部请求的类型与最小必需字段。 */
 function validateRuntimePayload(payload) {
   const allowed = new Set([
     'chat',
@@ -601,6 +616,7 @@ function appendApiPath(baseUrl, endpoint) {
   return `${String(baseUrl).replace(/\/+$/, '')}/${endpoint}`
 }
 
+/** 包装 Runtime 网络请求，将底层连接异常转换为经过脱敏的领域错误。 */
 async function fetchRuntime(provider, url, options) {
   try {
     return await fetch(url, options)

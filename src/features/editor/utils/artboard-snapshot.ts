@@ -4,6 +4,7 @@ import { flushSync } from 'react-dom'
 import type { DesignDocument } from '../types'
 import { StaticArtboardRenderer } from '../components/StaticArtboardRenderer'
 import { rasterizeNode } from './rasterize-node'
+import { reviewVisualVariant } from './visual-quality-gate'
 
 export async function renderArtboardSnapshot(
   document: DesignDocument,
@@ -12,6 +13,18 @@ export async function renderArtboardSnapshot(
 ) {
   const artboard = document.artboards.find((item) => item.id === artboardId)
   if (!artboard) throw new Error('目标画板不存在，无法生成视觉快照。')
+  const qualityReport = reviewVisualVariant(document, artboard)
+  if (!qualityReport.passed) {
+    const error = new Error(
+      `PNG 导出前设计门禁未通过：${qualityReport.issues
+        .filter((issue) => issue.severity === 'error')
+        .map((issue) => issue.message)
+        .join('；')}`,
+    ) as Error & { code: string; qualityReport: typeof qualityReport }
+    error.code = 'ARTBOARD_DESIGN_GATE_FAILED'
+    error.qualityReport = qualityReport
+    throw error
+  }
   const exportNode = globalThis.document.createElement('div')
   exportNode.style.position = 'fixed'
   exportNode.style.left = '-10000px'
@@ -38,6 +51,7 @@ export async function renderArtboardSnapshot(
       mime: 'image/png' as const,
       width: canvas.width,
       height: canvas.height,
+      qualityReport,
     }
   } finally {
     root.unmount()

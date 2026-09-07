@@ -562,7 +562,7 @@ function createDomTreeExtractionScript(componentName, width, fallbackHeight) {
       return {
         id: ids.get(element) || 'runtime-node-' + (index + 1),
         type,
-        role: element.getAttribute('aria-label') || element.dataset.role || type,
+        role: element.dataset.assetSlot || element.getAttribute('aria-label') || element.dataset.role || type,
         parentId: parent ? ids.get(parent) : undefined,
         bounds: { x: Math.max(0, rect.x - rootRect.x), y: Math.max(0, rect.y - rootRect.y), width: rect.width, height: rect.height },
         content: content || undefined,

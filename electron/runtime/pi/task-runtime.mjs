@@ -87,11 +87,12 @@ function buildTaskSystemPrompt(type) {
       'html 只能包含 body 内的静态语义 HTML，不得包含 script、style、iframe、object、embed、link、meta、事件属性或 javascript: URL。',
       'css 必须完成最终视觉设计，允许 Grid、Flex、绝对定位、伪元素、渐变和阴影；禁止 @import、expression 和脚本。',
       '使用 data-region-id 和 data-role 标记重要区域；所有用户可见文案必须直接存在于 HTML 中，不得使用伪文字或截图替代 UI。',
+      '当用户提供 visualAssetPlan 时，必须为每个资产输出独立的 img 元素，并使用 data-asset-slot="资产 id" 标记；不要把图片烘焙进整页背景。',
       'html 必须只有一个覆盖完整 viewport 的根元素；不要返回 body、html 或 head 标签，不要把 Header、Sidebar、Main 作为互相独立的顶层兄弟节点。',
-      '页面必须铺满 viewport，专业工具界面应使用明确的工具栏、面板、工作区和检查器布局，不得退化为普通 Dashboard 卡片模板。',
+      '页面必须铺满 viewport，并呈现最终用户界面；不要把生成工具自身的编辑器界面作为页面内容。',
     ].join('\n'),
     generate_design_patch:
-      '输出 DesignPatch JSON：version=1、baseRevision、artboardId、summary、operations。优先使用 semantic-update 修改布局与外观语义；semantic-update 包含 elementId、semantic.layout 或 semantic.appearance。其他 operation 为 update、move、delete、add、replace-image、replace-text-range、replace-image-region，具体允许类型必须服从当前 SelectionScope。',
+      '输出 DesignPatch JSON：version=1、baseRevision、artboardId、summary、operations。优先使用 semantic-update 修改布局与外观语义；semantic-update 包含 elementId、semantic.layout 或 semantic.appearance。其他 operation 为 update、move、delete、add、add-image、replace-image、replace-text-range、replace-image-region，具体允许类型必须服从当前 SelectionScope。add-image 只能用于 design-block，包含 prompt 和 type=image 的 element。',
     generate_design_action:
       '输出 DesignAction JSON。action 只能是 replace-text、set-style、set-layout、move、set-visibility、replace-image；target.nodeId 必须来自 writableNodeIds。replace-text 使用 value；set-style 使用 property 和 value；set-layout 使用 layout；move 使用 x/y；set-visibility 使用 visible；replace-image 使用 prompt。只输出一个动作，不要输出 DesignPatch。',
     generate_design_spec_patch:

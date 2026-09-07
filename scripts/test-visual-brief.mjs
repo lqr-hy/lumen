@@ -23,6 +23,7 @@ const {
   DESIGN_LANGUAGES,
   VISUAL_AXIS_DEFINITIONS,
   buildVisualNormalizationPatches,
+  buildVisualAssetPlan,
   compileVisualDirectionPrompt,
   compileVisualRedesignPrompt,
   findDesignLanguage,
@@ -33,6 +34,18 @@ const {
 const artboard = { id: 'board', name: '活动页', x: 0, y: 0, width: 375, height: 812 }
 function brief(overrides = {}) {
   return { ...structuredClone(DEFAULT_VISUAL_REDESIGN_BRIEF), ...overrides }
+}
+
+// 9. 图片策略必须编译为可执行资产计划，Hero 不得占满长画板。
+{
+  const none = buildVisualAssetPlan(brief({ imagery: 'none' }), artboard)
+  assert.equal(none.items.length, 0)
+  const hero = buildVisualAssetPlan(brief({ imagery: 'hero' }), artboard)
+  assert.equal(hero.items.length, 1)
+  assert.equal(hero.items[0].role, 'hero')
+  assert.ok(hero.items[0].targetSize.height < artboard.height * 0.8)
+  const content = buildVisualAssetPlan(brief({ imagery: 'hero-and-content' }), artboard)
+  assert.deepEqual(content.items.map((item) => item.id), ['hero', 'content-image-1', 'content-image-2'])
 }
 
 // 1. 设计语言必须真正互不相同。只换配色不算不同语言。

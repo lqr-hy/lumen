@@ -51,6 +51,27 @@ const piDomainDecision = resolveWorkflowDecision({
 assert.equal(piDomainDecision.action, 'create-image')
 assert.equal(piDomainDecision.taskKind, 'design-image')
 assert.equal(piDomainDecision.placement.reason, 'pi-selected-image-workflow')
+const unboundH5Decision = resolveWorkflowDecision({
+  question: '生成沉浸式新粗野活动 H5 页面',
+  componentReferences: [],
+  workflowDecision: {
+    version: 2,
+    action: 'create-page',
+    taskKind: 'page-design',
+    confidence: 1,
+    reason: 'pi-misclassified-h5',
+    source: 'pi-agent-core',
+    placement: {
+      operation: 'create',
+      scope: 'document',
+      reason: 'new-h5',
+      confidence: 1,
+    },
+  },
+})
+assert.equal(unboundH5Decision.action, 'create-ui')
+assert.equal(unboundH5Decision.taskKind, 'generic-ui')
+assert.equal(unboundH5Decision.surfaceKind, 'mobile')
 const fullRedesignDecision = resolveWorkflowDecision({
   question: '参考这张图重新设计整个低代码页面',
   canvasSnapshot: { artboardId: 'existing-design-board', designSpec: { version: 1 } },
@@ -76,6 +97,70 @@ assert.equal(fullRedesignDecision.action, 'create-ui')
 assert.equal(fullRedesignDecision.taskKind, 'generic-ui')
 assert.equal(fullRedesignDecision.placement.operation, 'variant')
 assert.equal(fullRedesignDecision.placement.targetArtboardId, 'existing-design-board')
+const visualOptimizationDecision = resolveWorkflowDecision({
+  question: '重新设计当前页面视觉风格并生成配图',
+  canvasTarget: { artboardId: 'variant-board', width: 375, height: 812 },
+  visualBrief: { imagery: 'hero-and-content', concept: '沉浸式活动页' },
+  visualAssetPlan: {
+    version: 1,
+    imagery: 'hero-and-content',
+    items: [
+      {
+        id: 'hero',
+        role: 'hero',
+        targetSize: { width: 375, height: 320 },
+        placement: 'background',
+        slotRequired: true,
+        allowText: false,
+        allowButtons: false,
+      },
+      {
+        id: 'content-image-1',
+        role: 'content-image',
+        targetSize: { width: 320, height: 180 },
+        placement: 'inline',
+        slotRequired: true,
+        allowText: false,
+        allowButtons: false,
+      },
+      {
+        id: 'content-image-2',
+        role: 'content-image',
+        targetSize: { width: 320, height: 180 },
+        placement: 'inline',
+        slotRequired: true,
+        allowText: false,
+        allowButtons: false,
+      },
+    ],
+  },
+})
+assert.equal(visualOptimizationDecision.taskKind, 'generic-ui')
+assert.equal(visualOptimizationDecision.placement.operation, 'variant')
+assert.equal(visualOptimizationDecision.placement.targetArtboardId, 'variant-board')
+const newVisualDesignDecision = resolveWorkflowDecision({
+  question: '从零生成带 Hero 的活动页',
+  activeArtboardId: 'blank-project-board',
+  visualBrief: { imagery: 'hero', concept: '沉浸式活动页' },
+  visualAssetPlan: {
+    version: 1,
+    imagery: 'hero',
+    items: [
+      {
+        id: 'hero',
+        role: 'hero',
+        targetSize: { width: 375, height: 320 },
+        placement: 'background',
+        slotRequired: true,
+        allowText: false,
+        allowButtons: false,
+      },
+    ],
+  },
+  visualOptimizationContext: { mode: 'new-design' },
+})
+assert.equal(newVisualDesignDecision.placement.operation, 'create')
+assert.equal(newVisualDesignDecision.placement.targetArtboardId, undefined)
 const scopedStructureDecision = resolveWorkflowDecision({
   question: '修改侧边栏，新增物料入口',
   workflowDecision: {
@@ -315,6 +400,9 @@ const prototypeOnlyTheme = await prototypeOnlyRegistry.execute('source.inspect',
 assert.match(prototypeOnlyTheme.summary, /1 张原型图仍会用于页面结构和 Runtime 设计/)
 const runtimeRegistry = createAgentToolRegistry({
   invokeProvider: async (payload) => {
+    if (payload.type === 'generate_image') {
+      return { artifact: { kind: 'raster', mime: 'image/png', content: 'AA==' } }
+    }
     assert.equal(payload.type, 'generate_ui_runtime')
     return {
       data: {
@@ -385,6 +473,77 @@ assert.equal(transformedRuntime.data.deliveryMode, 'runtime-dom-scene')
 assert.equal(validatedRuntime.nextSteps, undefined)
 assert.equal(presentedRuntime.data.expectedNodeCount, 8)
 assert.ok(presentedRuntime.data.sceneGraph.nodes.some((node) => node.type === 'input'))
+const heroRuntimeContext = {
+  session: {
+    goal: '生成带 Hero 的活动页',
+    taskKind: 'generic-ui',
+    designSpec: schema,
+    visualBrief: { imagery: 'hero', concept: '沉浸式活动页' },
+    visualAssetPlan: {
+      version: 1,
+      imagery: 'hero',
+      items: [
+        {
+          id: 'hero',
+          role: 'hero',
+          targetSize: { width: 375, height: 320 },
+          placement: 'background',
+          slotRequired: true,
+          allowText: false,
+          allowButtons: false,
+        },
+      ],
+    },
+  },
+  payload: {},
+  providerCallbacks: {},
+  memory: new Map([['ui.plan', { data: { designSpec: schema, uiSchema: schema } }]]),
+}
+const transformedHeroRuntime = await runtimeRegistry.execute('design.transform', heroRuntimeContext)
+assert.equal(transformedHeroRuntime.data.visualAssetReport.plannedCount, 1)
+assert.equal(transformedHeroRuntime.data.visualAssetReport.boundCount, 1)
+assert.ok(
+  transformedHeroRuntime.data.sceneGraph.nodes.some(
+    (node) =>
+      node.bindings?.['visual.assetId'] === 'hero' &&
+      String(node.asset?.source || '').startsWith('data:image/png;base64,'),
+  ),
+)
+const originalHeroSource = 'data:image/png;base64,dXNlci1vcmlnaW5hbA=='
+const directContentHeroContext = {
+  ...heroRuntimeContext,
+  session: structuredClone(heroRuntimeContext.session),
+  memory: new Map([
+    ['ui.plan', { data: { designSpec: schema, uiSchema: schema } }],
+    [
+      'reference.prepare',
+      {
+        data: {
+          uploads: [
+            {
+              name: '用户-Hero.png',
+              role: 'content',
+              mime: 'image/png',
+              data: originalHeroSource,
+            },
+          ],
+        },
+      },
+    ],
+  ]),
+}
+const transformedDirectContentHero = await runtimeRegistry.execute(
+  'design.transform',
+  directContentHeroContext,
+)
+assert.equal(transformedDirectContentHero.data.visualAssetReport.generatedCount, 0)
+assert.equal(transformedDirectContentHero.data.visualAssetReport.reusedContentCount, 1)
+assert.ok(
+  transformedDirectContentHero.data.sceneGraph.nodes.some(
+    (node) =>
+      node.bindings?.['visual.assetId'] === 'hero' && node.asset?.source === originalHeroSource,
+  ),
+)
 const shallowRuntimeRegistry = createAgentToolRegistry({
   invokeProvider: runtimeRegistryInvoke,
   inspectStaticRuntime: async () => ({

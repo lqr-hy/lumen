@@ -1,16 +1,48 @@
-import { routeAgentIntent, validateAgentIntent } from './intent-router.mjs'
+import {
+  routeAgentIntent,
+  validateAgentIntent,
+  validateSelectionScopeForIntent,
+} from './intent-router.mjs'
 import { createRuntimePluginRegistry, requirePluginPlan } from './plugins/plugin-registry.mjs'
 import { createDefaultRuntimePlugins } from './plugins/campaign-component-plugin.mjs'
+import { createRuntimeError } from './providers.mjs'
 
+/**
+ * 把当前轮 WorkflowDecision 投影为领域 Session 和确定性执行计划。
+ * 此处只负责状态迁移与选 Plan，不执行模型调用或画布写入。
+ */
 export function planAgentTurn(session, payload, providedIntent, options = {}) {
   const pluginRegistry = createRuntimePluginRegistry(
     options.plugins === undefined ? createDefaultRuntimePlugins() : options.plugins,
   )
   const prompt = String(payload.question || '').trim()
+  if (payload.visualBrief && typeof payload.visualBrief === 'object') {
+    session.visualBrief = structuredClone(payload.visualBrief)
+    if (payload.visualAssetPlan && typeof payload.visualAssetPlan === 'object') {
+      session.visualAssetPlan = structuredClone(payload.visualAssetPlan)
+    } else {
+      delete session.visualAssetPlan
+    }
+  }
+  const scopeError = validateSelectionScopeForIntent({
+    prompt,
+    editScope: payload.editScope,
+    canvasSnapshot: payload.canvasSnapshot,
+  })
+  if (scopeError) {
+    throw createRuntimeError(scopeError.code, scopeError.message, { retryable: false })
+  }
   rememberStructuredComponentReferences(session, payload.componentReferences, prompt)
   const intent =
     providedIntent ?? routeAgentIntent({ prompt, session, editScope: payload.editScope })
   if (!validateAgentIntent(intent)) throw new TypeError('Agent Intent 不符合版本 1 协议。')
+  if (intent.errorCode) {
+    throw createRuntimeError(
+      intent.errorCode,
+      '图片素材 Slot 不支持普通样式修改；请选择组件根节点，通过样式 Props 修改。',
+      { retryable: false },
+    )
+  }
   const referenceUpdate = mergeReferences(session, payload.uploads ?? [], prompt, {
     // Any explicit image in the current turn is a new reference set. Do not
     // merge it with a previous turn's KV/prototype/visual references.
@@ -77,7 +109,7 @@ export function planAgentTurn(session, payload, providedIntent, options = {}) {
   }
   if (intent.action === 'revise-design') {
     if (
-      !['generic-node', 'multi-node', 'text-range', 'image-region'].includes(
+      !['design-block', 'generic-node', 'multi-node', 'text-range', 'image-region'].includes(
         payload.editScope?.type,
       )
     ) {
@@ -87,6 +119,7 @@ export function planAgentTurn(session, payload, providedIntent, options = {}) {
     session.taskKind = 'design-patch'
     session.editScope = { ...payload.editScope }
     session.status = 'ready'
+    delete session.designPatch
     beginRun(session, createDesignPatchPlan())
     clearFailure(session)
     touch(session)
@@ -115,6 +148,10 @@ export function planAgentTurn(session, payload, providedIntent, options = {}) {
 
   if (explicitGeneration) {
     session.goal = prompt
+    if (!payload.visualBrief) {
+      delete session.visualBrief
+      delete session.visualAssetPlan
+    }
     if (
       !['create-page', 'create-component', 'revise-page', 'revise-component'].includes(
         intent.action,
@@ -225,6 +262,7 @@ function clearComponentTaskContext(session) {
   delete session.confirmedPageRunId
 }
 
+/** 保存经过校验的 @组件引用，并建立可在“继续”时恢复的 Pending Task。 */
 function rememberStructuredComponentReferences(session, references, prompt) {
   if (!Array.isArray(references) || !references.length) return
   const normalized = references
@@ -258,6 +296,10 @@ function createPendingTask(session, kind, goal, status) {
   }
 }
 
+/**
+ * 用户确认页面 Blueprint 后，移除旧的动态组件步骤，
+ * 并从确认节点开始重新执行受 Override 影响的下游流程。
+ */
 function resetPageConfirmationSteps(session) {
   const withoutGeneratedComponents = session.plan.filter(
     (step) => !['page.generate-component'].includes(step.tool),
@@ -279,6 +321,7 @@ function resetPageConfirmationSteps(session) {
   )
 }
 
+/** 创建 KV、海报等单张 Raster 设计的标准生成与质量闭环。 */
 export function createImagePlan() {
   return [
     createStep('prepare-references', '准备参考图', 'reference.prepare'),
@@ -291,6 +334,7 @@ export function createImagePlan() {
   ]
 }
 
+/** 创建多个独立素材的生成、逐项校验和画布交付计划。 */
 export function createAssetSetPlan() {
   return [
     createStep('prepare-references', '准备参考图', 'reference.prepare'),
@@ -300,6 +344,7 @@ export function createAssetSetPlan() {
   ]
 }
 
+/** 根据 taskKind 优先选择 Runtime Plugin Plan，再回退到内置图片类计划。 */
 function createTaskPlan(taskKind, pluginRegistry) {
   if (taskKind === 'design-spec-patch') return createDesignSpecPatchPlan()
   if (taskKind === 'design-patch') return createDesignPatchPlan()
@@ -319,6 +364,7 @@ function createTaskPlan(taskKind, pluginRegistry) {
   return taskKind === 'asset-set' ? createAssetSetPlan() : createImagePlan()
 }
 
+/** 创建 DesignSpec Block 插入、更新、删除和移动的三阶段事务计划。 */
 export function createDesignSpecPatchPlan() {
   return [
     createStep('plan-design-spec-patch', '规划页面结构修改', 'design.spec-patch.plan'),
@@ -327,8 +373,10 @@ export function createDesignSpecPatchPlan() {
   ]
 }
 
+/** 创建普通节点局部修改的规划、校验与原子提交计划。 */
 export function createDesignPatchPlan() {
   return [
+    createStep('prepare-design-patch-references', '准备局部修改参考图', 'reference.prepare'),
     createStep('plan-design-patch', '规划局部修改', 'design.patch.plan'),
     createStep('validate-design-patch', '校验局部修改', 'design.patch.validate'),
     createStep('present-design-patch', '应用局部修改', 'canvas.present-patch'),
@@ -339,11 +387,16 @@ function createStep(id, title, tool) {
   return { id, title, tool, status: 'pending' }
 }
 
+/** 开始全新 Run，并为它生成独立 runId。 */
 function beginRun(session, plan) {
   session.runId = `run-${Date.now()}-${Math.random().toString(16).slice(2)}`
   session.plan = plan
 }
 
+/**
+ * 恢复已有 Run：计划结构一致时只重置失败、取消或部分失败步骤，
+ * 结构变化时开启全新 Run，避免错误复用旧 Checkpoint。
+ */
 function resumeRun(session, expectedPlan) {
   const currentTools = session.plan
     ?.filter((step) => step.tool !== 'page.generate-component' && step.transient !== true)
@@ -371,6 +424,7 @@ function resumeRun(session, expectedPlan) {
   if (session.taskKind === 'page-design') session.confirmedPageRunId = session.runId
 }
 
+/** 合并当前轮参考图并维护角色、内容哈希和旧引用失效规则。 */
 function mergeReferences(session, uploads, prompt, options = {}) {
   let changed = false
   const updatedRoles = []
@@ -385,7 +439,7 @@ function mergeReferences(session, uploads, prompt, options = {}) {
     // UI 已明确选择的图片角色随 upload 一起传入；优先级高于根据文件名/提示词推断，
     // 否则用户选了 KV/原型后，进入会话合并时会被丢失。
     const explicitRole = structuredRole || upload.role
-    const role = ['kv', 'prototype', 'visual', 'edit-base'].includes(explicitRole)
+    const role = ['kv', 'prototype', 'visual', 'edit-base', 'content'].includes(explicitRole)
       ? explicitRole
       : inferUploadRole(name, String(upload.context || ''), prompt)
     const candidate = {
@@ -395,6 +449,9 @@ function mergeReferences(session, uploads, prompt, options = {}) {
       data: upload.data,
       mime: upload.mime || getImageMime(upload.data),
       updatedAt: new Date().toISOString(),
+      requestedRole: upload.requestedRole,
+      roleConfidence: upload.roleConfidence,
+      roleReason: upload.roleReason,
     }
     if (role === 'kv' || role === 'prototype') {
       const previousIndex = candidates.findIndex((item) => item.role === role)
@@ -442,6 +499,8 @@ function mergeReferences(session, uploads, prompt, options = {}) {
 }
 
 function inferReferenceRole(value) {
+  if (/直接使用|使用原图|保留原图|不要重绘|原图素材|商品图|产品图|logo/i.test(value))
+    return 'content'
   if (/原型图|原型|线框|wireframe|prototype|结构图|灰模/i.test(value)) return 'prototype'
   if (/\bkv\b|主视觉|视觉主图|banner|海报|头图/i.test(value)) return 'kv'
   if (/视觉|风格|素材|参考图/i.test(value)) return 'visual'
@@ -467,6 +526,7 @@ function inferUploadRole(name, context, prompt) {
 }
 
 function referenceRoleLabel(role) {
+  if (role === 'content') return '原图素材'
   if (role === 'prototype') return '原型图'
   if (role === 'kv') return 'KV'
   return '参考图'

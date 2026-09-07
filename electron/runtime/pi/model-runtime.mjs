@@ -18,6 +18,7 @@ const EMPTY_USAGE = Object.freeze({
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 })
 
+/** 根据项目 Provider 配置创建 Pi 文本模型注册表和当前模型定义。 */
 export function createStudioPiModels({ provider, runtime, model }) {
   const models = createModels()
   const modelDefinition = createReasoningModel(provider, runtime, model)
@@ -35,6 +36,9 @@ export function createStudioPiModels({ provider, runtime, model }) {
   return { models, model: modelDefinition }
 }
 
+/**
+ * 通过 Pi ImagesModels 执行图片任务；具体 HTTP 传输仍由项目 Provider 适配层控制。
+ */
 export async function requestPiImages({ provider, runtime, model, payload, transport }) {
   const imageModels = createImagesModels()
   const modelDefinition = createImageModel(provider, model)
@@ -111,6 +115,7 @@ export async function requestPiImages({ provider, runtime, model, payload, trans
   return transportResult
 }
 
+/** 将项目 Provider 能力转换为 Pi 可识别的推理模型定义。 */
 function createReasoningModel(provider, runtime, model) {
   return {
     id: model,
@@ -148,6 +153,7 @@ function createImageModel(provider, model) {
   }
 }
 
+/** 选择标准 Responses、Anthropic Messages 或项目自定义的推理协议适配器。 */
 function resolveReasoningApi(provider, runtime) {
   if (provider.wireApi === 'openai-responses') {
     const api = openAIResponsesApi()
@@ -158,6 +164,9 @@ function resolveReasoningApi(provider, runtime) {
   throw new Error(`Pi 不支持推理协议：${provider.wireApi}`)
 }
 
+/**
+ * 为内部 Codex 网关补齐请求头和 Payload 契约，同时保留 Pi 的事件流解析能力。
+ */
 function withBiliCodexProtocol(api) {
   const normalizeOptions = (options = {}) => {
     const sessionId = options.sessionId
@@ -223,6 +232,10 @@ function toBiliCodexPayload(payload) {
   }
 }
 
+/**
+ * 包装 fetch，在 HTTP 200 但响应体为空时使用新的请求 ID 有限重试，
+ * 最终仍为空则返回明确的上游协议错误。
+ */
 function createNonEmptyResponseFetch(customFetch) {
   const request = customFetch ?? globalThis.fetch.bind(globalThis)
   return async (...args) => {

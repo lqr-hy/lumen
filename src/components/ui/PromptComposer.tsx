@@ -38,6 +38,7 @@ import type {
 import { ArrowUp, AtSign, Blocks, FileUp, ImagePlus, Layers3, Plus, Square, X } from 'lucide-react'
 import type { ComposerMention, ComposerReferenceType } from '../../features/ai/composer-draft'
 import type { ReferenceImageRole } from '../../features/ai/types'
+import { resolveReferenceImageRoles } from '../../features/ai/reference-image-role'
 import { cn } from '../../lib/cn'
 
 export interface PromptMentionOption {
@@ -76,6 +77,7 @@ interface PromptComposerProps {
   showActions?: boolean
   iconOnlyActions?: boolean
   maxImages?: number
+  editBaseRoleEnabled?: boolean
   mentionOptions?: PromptMentionOption[]
   contextSlot?: ReactNode
   actionSlot?: ReactNode
@@ -199,6 +201,7 @@ export function PromptComposer({
   showActions = true,
   iconOnlyActions,
   maxImages = 8,
+  editBaseRoleEnabled = true,
   mentionOptions = [],
   contextSlot,
   actionSlot,
@@ -249,6 +252,13 @@ export function PromptComposer({
   }, [mentionOpen])
   const getImageName = (index: number) =>
     normalizeImageName(imageNames[index] || `参考图 ${index + 1}`)
+  const roleResolutions = resolveReferenceImageRoles(
+    images.map((_, index) => ({
+      name: getImageName(index),
+      role: imageRoles[index] ?? 'auto',
+    })),
+    { prompt: value },
+  )
   const options: PromptMentionOption[] = mentionOptions.length
     ? mentionOptions
     : images.map((image, index) => ({
@@ -426,9 +436,17 @@ export function PromptComposer({
                     <select
                       className="prompt-reference-role"
                       aria-label={`${getImageName(index)}的职责`}
-                      title="设置参考图职责"
-                      value={imageRoles[index] ?? 'visual'}
-                      data-role={imageRoles[index] ?? 'visual'}
+                      title={
+                        (imageRoles[index] ?? 'auto') === 'auto'
+                          ? roleResolutions[index]?.reason || '自动判断参考图职责'
+                          : '设置参考图职责'
+                      }
+                      value={imageRoles[index] ?? 'auto'}
+                      data-role={
+                        (imageRoles[index] ?? 'auto') === 'auto'
+                          ? roleResolutions[index]?.resolvedRole || 'auto'
+                          : imageRoles[index]
+                      }
                       draggable={false}
                       onPointerDown={(event) => event.stopPropagation()}
                       onClick={(event) => event.stopPropagation()}
@@ -437,10 +455,18 @@ export function PromptComposer({
                         onImageRoleChange(index, event.target.value as ReferenceImageRole)
                       }}
                     >
-                      <option value="kv">KV · 视觉主题</option>
+                      <option value="auto">
+                        {(imageRoles[index] ?? 'auto') === 'auto'
+                          ? `自动 → ${referenceRoleLabel(roleResolutions[index]?.resolvedRole)}`
+                          : '自动判断 · 推荐'}
+                      </option>
+                      <option value="content">原图素材 · 直接使用</option>
+                      <option value="kv">KV · 整体视觉</option>
                       <option value="prototype">原型 · 页面结构</option>
                       <option value="visual">Visual · 局部风格</option>
-                      <option value="edit-base">Edit Base · 编辑底图</option>
+                      <option value="edit-base" disabled={!editBaseRoleEnabled}>
+                        Edit Base · 编辑底图
+                      </option>
                     </select>
                   ) : null}
                   <button
@@ -863,6 +889,15 @@ function readFileAsDataUrl(file: File) {
 
 function normalizeImageName(value: string) {
   return value.replace(/^@/, '').trim() || '未命名引用'
+}
+
+function referenceRoleLabel(role?: import('../../features/ai/types').ResolvedReferenceImageRole) {
+  if (role === 'content') return '原图素材'
+  if (role === 'kv') return 'KV'
+  if (role === 'prototype') return '原型'
+  if (role === 'visual') return 'Visual'
+  if (role === 'edit-base') return 'Edit Base'
+  return '原图素材'
 }
 
 function mentionGroup(option: PromptMentionOption): 'component' | 'image' | 'canvas' {

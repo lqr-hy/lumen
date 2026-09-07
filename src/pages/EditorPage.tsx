@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from 'react'
 import { useParams } from 'react-router-dom'
 import { ChatPanel } from '../features/editor/components/ChatPanel'
 import { EditorTopBar } from '../features/editor/components/EditorTopBar'
@@ -34,24 +34,41 @@ import {
   type VisualRedesignBrief,
 } from '../features/editor/utils/visual-brief'
 
+const PANEL_WIDTH_STORAGE_KEY = 'ai-campaign-page-studio:panel-widths:v1'
+const PANEL_WIDTHS = {
+  left: { default: 246, min: 200, max: 420 },
+  right: { default: 316, min: 280, max: 520 },
+} as const
+const MIN_CANVAS_WIDTH = 360
+
+type PanelSide = keyof typeof PANEL_WIDTHS
+type PanelWidths = Record<PanelSide, number>
+
 export function EditorPage() {
   const { projectId } = useParams()
   const document = useEditorStore((state) => state.document)
   const activeArtboardId = useEditorStore((state) => state.activeArtboardId)
   const selectedArtboardId = useEditorStore((state) => state.selectedArtboardId)
   const selectedElementIds = useEditorStore((state) => state.selectedElementIds)
-  const chatThreads = useEditorStore((state) => state.chatThreads)
-  const activeChatThreadId = useEditorStore((state) => state.activeChatThreadId)
-  const mutationLedger = useEditorStore((state) => state.mutationLedger)
-  const viewport = useEditorStore((state) => state.viewport)
   const hydrateWorkspace = useEditorStore((state) => state.hydrateWorkspace)
   const [workspaceReady, setWorkspaceReady] = useState(false)
   const [leftPanelVisible, setLeftPanelVisible] = useState(true)
   const [leftPanelMode, setLeftPanelMode] = useState<'layers' | 'json'>('layers')
   const [rightPanelVisible, setRightPanelVisible] = useState(true)
+  const [panelWidths, setPanelWidths] = useState<PanelWidths>(readPanelWidths)
   const [chatPanelOpen, setChatPanelOpen] = useState(false)
   const [responsivePreviewOpen, setResponsivePreviewOpen] = useState(false)
   const [codePreview, setCodePreview] = useState<CodeDocument | null>(null)
+  const persistenceDocumentId = document?.id
+  const workbenchRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, JSON.stringify(panelWidths))
+    } catch {
+      // 隐私模式或禁用存储时仍保留当前会话内的面板宽度。
+    }
+  }, [panelWidths])
 
   // A compiled preview is an immutable snapshot. Never keep it across a
   // project or artboard switch, otherwise the modal can show another page's
@@ -99,21 +116,34 @@ export function EditorPage() {
   }, [hydrateWorkspace, projectId])
 
   useEffect(() => {
-    if (!workspaceReady || !document || !window.aiCampaignProjects) return undefined
-    const timer = window.setTimeout(() => {
-      void window.aiCampaignProjects?.save({
-        schemaVersion: 1,
-        projectId: document.id,
-        document: { ...document, viewport },
-        chatThreads,
-        activeChatThreadId,
-        mutationLedger,
-        createdAt: document.createdAt,
-        updatedAt: document.updatedAt,
-      })
-    }, 800)
-    return () => window.clearTimeout(timer)
-  }, [activeChatThreadId, chatThreads, document, mutationLedger, viewport, workspaceReady])
+    if (!workspaceReady || !persistenceDocumentId || !window.aiCampaignProjects) return undefined
+    const persistedDocumentId = persistenceDocumentId
+    let timer: number | undefined
+    const scheduleSave = () => {
+      if (timer !== undefined) window.clearTimeout(timer)
+      timer = window.setTimeout(() => {
+        const state = useEditorStore.getState()
+        const currentDocument = state.document
+        if (!currentDocument || currentDocument.id !== persistedDocumentId) return
+        void window.aiCampaignProjects?.save({
+          schemaVersion: 1,
+          projectId: currentDocument.id,
+          document: { ...currentDocument, viewport: state.viewport },
+          chatThreads: state.chatThreads,
+          activeChatThreadId: state.activeChatThreadId,
+          mutationLedger: state.mutationLedger,
+          createdAt: currentDocument.createdAt,
+          updatedAt: currentDocument.updatedAt,
+        })
+      }, 800)
+    }
+    scheduleSave()
+    const unsubscribe = useEditorStore.subscribe(scheduleSave)
+    return () => {
+      unsubscribe()
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [persistenceDocumentId, workspaceReady])
 
   async function exportPng(scale: 1 | 2) {
     if (!document) return
@@ -282,15 +312,16 @@ export function EditorPage() {
       setLeftPanelMode('layers')
       return
     }
-    setLeftPanelVisible(true)
+    setLeftPanelVisibilityPreservingCanvas(true)
     setLeftPanelMode('json')
   }
 
   const hasCanvasContent = Boolean(
     document && (document.artboards.length || document.elements.length),
   )
+  const hasInspectorSelection = Boolean(selectedArtboardId || selectedElementIds.length)
   const shouldShowLeftPanel = hasCanvasContent && leftPanelVisible
-  const shouldShowRightPanel = hasCanvasContent && rightPanelVisible
+  const shouldShowRightPanel = hasCanvasContent && hasInspectorSelection && rightPanelVisible
   const workbenchClassName = useMemo(() => {
     if (!hasCanvasContent && !chatPanelOpen) return 'editor-workbench panels-none blank-workbench'
     if (chatPanelOpen && shouldShowLeftPanel) return 'editor-workbench panels-chat-left'
@@ -308,9 +339,23 @@ export function EditorPage() {
     return classNames.join(' ')
   }, [document?.settings?.canvasMode, hasCanvasContent, leftPanelVisible])
 
+  function offsetCanvasForLeftPanel(delta: number) {
+    if (!delta) return
+    const state = useEditorStore.getState()
+    state.setViewport({ ...state.viewport, x: state.viewport.x - delta })
+  }
+
+  function setLeftPanelVisibilityPreservingCanvas(visible: boolean) {
+    const nextVisible = hasCanvasContent && visible
+    if (nextVisible !== shouldShowLeftPanel) {
+      offsetCanvasForLeftPanel(nextVisible ? panelWidths.left : -panelWidths.left)
+    }
+    setLeftPanelVisible(visible)
+  }
+
   function toggleAllPanels() {
-    const shouldShowAll = !leftPanelVisible && !rightPanelVisible
-    setLeftPanelVisible(shouldShowAll)
+    const shouldShowAll = !shouldShowLeftPanel && !shouldShowRightPanel
+    setLeftPanelVisibilityPreservingCanvas(shouldShowAll)
     setRightPanelVisible(shouldShowAll)
   }
 
@@ -347,6 +392,7 @@ export function EditorPage() {
       placementMode: 'duplicate-variant',
       lastPlacementMode: 'duplicate-variant',
       visualOptimizationDraft: {
+        mode: 'variant',
         sourceArtboardId: artboard.id,
         sourceArtboardName: artboard.name,
         brief: structuredClone(brief),
@@ -364,19 +410,33 @@ export function EditorPage() {
       activeTargetArtboardId: undefined,
       placementMode: 'new-artboard',
       lastPlacementMode: 'new-artboard',
-      visualOptimizationDraft: undefined,
+      visualOptimizationDraft: {
+        mode: 'new-design',
+        sourceArtboardId: '',
+        sourceArtboardName: '新页面设计',
+        brief: structuredClone(brief),
+      },
       prompt: compileVisualDirectionPrompt(brief),
     }))
     setChatPanelOpen(true)
   }
 
   return (
-    <div className={editorPageClassName}>
+    <div
+      className={editorPageClassName}
+      style={
+        {
+          '--left-panel-width': `${panelWidths.left}px`,
+          '--right-panel-width': `${panelWidths.right}px`,
+        } as CSSProperties
+      }
+    >
       <EditorTopBar
         chatPanelOpen={chatPanelOpen}
         leftPanelVisible={leftPanelVisible}
-        rightPanelVisible={rightPanelVisible}
-        onToggleLeftPanel={() => setLeftPanelVisible((visible) => !visible)}
+        rightPanelVisible={shouldShowRightPanel}
+        rightPanelAvailable={hasInspectorSelection}
+        onToggleLeftPanel={() => setLeftPanelVisibilityPreservingCanvas(!leftPanelVisible)}
         onToggleRightPanel={() => setRightPanelVisible((visible) => !visible)}
         onToggleAllPanels={toggleAllPanels}
         onOpenChatPanel={() => setChatPanelOpen(true)}
@@ -408,13 +468,22 @@ export function EditorPage() {
       {codePreview && document ? (
         <CodePreviewDialog code={codePreview} onClose={() => setCodePreview(null)} />
       ) : null}
-      <div className={workbenchClassName}>
+      <div ref={workbenchRef} className={workbenchClassName}>
         {shouldShowLeftPanel ? (
           leftPanelMode === 'json' ? (
             <JsonInspectorPanel onBack={() => setLeftPanelMode('layers')} />
           ) : (
             <LayerPanel />
           )
+        ) : null}
+        {shouldShowLeftPanel ? (
+          <PanelResizeHandle
+            side="left"
+            workbenchRef={workbenchRef}
+            width={panelWidths.left}
+            onWidthDelta={offsetCanvasForLeftPanel}
+            onCommit={(width) => setPanelWidths((current) => ({ ...current, left: width }))}
+          />
         ) : null}
         <InfiniteCanvas
           chatPanelOpen={chatPanelOpen}
@@ -431,9 +500,200 @@ export function EditorPage() {
             chatPanelOpen={chatPanelOpen}
           />
         ) : null}
+        {!chatPanelOpen && shouldShowRightPanel ? (
+          <PanelResizeHandle
+            side="right"
+            workbenchRef={workbenchRef}
+            width={panelWidths.right}
+            onCommit={(width) => setPanelWidths((current) => ({ ...current, right: width }))}
+          />
+        ) : null}
       </div>
     </div>
   )
+}
+
+function PanelResizeHandle({
+  side,
+  workbenchRef,
+  width,
+  onWidthDelta,
+  onCommit,
+}: {
+  side: PanelSide
+  workbenchRef: React.RefObject<HTMLDivElement | null>
+  width: number
+  onWidthDelta?: (delta: number) => void
+  onCommit: (width: number) => void
+}) {
+  const handleRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<
+    | {
+        pointerId: number
+        startX: number
+        startWidth: number
+        latestX: number
+      }
+    | undefined
+  >(undefined)
+  const frameRef = useRef<number | undefined>(undefined)
+  const currentWidthRef = useRef(width)
+  const definition = PANEL_WIDTHS[side]
+  const propertyName = side === 'left' ? '--left-panel-width' : '--right-panel-width'
+  const label = side === 'left' ? '调整左侧图层面板宽度' : '调整右侧属性面板宽度'
+
+  useEffect(() => {
+    currentWidthRef.current = width
+  }, [width])
+
+  useEffect(
+    () => () => {
+      if (frameRef.current !== undefined) window.cancelAnimationFrame(frameRef.current)
+      globalThis.document.body.classList.remove('panel-width-resizing')
+    },
+    [],
+  )
+
+  function resolveWidth(requestedWidth: number) {
+    const workbench = workbenchRef.current
+    if (!workbench) return clamp(requestedWidth, definition.min, definition.max)
+    const oppositeSelector =
+      side === 'left' ? '.property-panel, .chat-panel' : '.layer-panel, .json-inspector-panel'
+    const oppositePanel = workbench.querySelector<HTMLElement>(oppositeSelector)
+    const oppositeWidth = oppositePanel?.getBoundingClientRect().width ?? 0
+    const availableMax = workbench.getBoundingClientRect().width - oppositeWidth - MIN_CANVAS_WIDTH
+    const responsiveMax = Math.max(definition.min, Math.min(definition.max, availableMax))
+    return Math.round(clamp(requestedWidth, definition.min, responsiveMax))
+  }
+
+  function applyWidth(nextWidth: number) {
+    const resolved = resolveWidth(nextWidth)
+    const delta = resolved - currentWidthRef.current
+    currentWidthRef.current = resolved
+    const styleTarget = workbenchRef.current?.closest<HTMLElement>('.editor-page')
+    styleTarget?.style.setProperty(propertyName, `${resolved}px`)
+    handleRef.current?.setAttribute('aria-valuenow', String(resolved))
+    if (delta) onWidthDelta?.(delta)
+  }
+
+  function flushDragFrame() {
+    if (frameRef.current !== undefined) {
+      window.cancelAnimationFrame(frameRef.current)
+      frameRef.current = undefined
+    }
+    const drag = dragRef.current
+    if (!drag) return
+    const delta = drag.latestX - drag.startX
+    applyWidth(drag.startWidth + (side === 'left' ? delta : -delta))
+  }
+
+  function finishDrag(commit: boolean) {
+    const drag = dragRef.current
+    if (!drag) return
+    flushDragFrame()
+    dragRef.current = undefined
+    globalThis.document.body.classList.remove('panel-width-resizing')
+    if (commit) onCommit(currentWidthRef.current)
+    else applyWidth(drag.startWidth)
+  }
+
+  function onPointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: currentWidthRef.current,
+      latestX: event.clientX,
+    }
+    globalThis.document.body.classList.add('panel-width-resizing')
+  }
+
+  function onPointerMove(event: PointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    drag.latestX = event.clientX
+    if (frameRef.current !== undefined) return
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = undefined
+      const current = dragRef.current
+      if (!current) return
+      const delta = current.latestX - current.startX
+      applyWidth(current.startWidth + (side === 'left' ? delta : -delta))
+    })
+  }
+
+  return (
+    <div
+      ref={handleRef}
+      className={`panel-resize-handle ${side}`}
+      role="separator"
+      tabIndex={0}
+      aria-label={label}
+      aria-orientation="vertical"
+      aria-valuemin={definition.min}
+      aria-valuemax={definition.max}
+      aria-valuenow={width}
+      title={`${label}，双击恢复默认宽度`}
+      onDoubleClick={() => {
+        applyWidth(definition.default)
+        onCommit(currentWidthRef.current)
+      }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={(event) => {
+        if (dragRef.current?.pointerId !== event.pointerId) return
+        event.currentTarget.releasePointerCapture(event.pointerId)
+        finishDrag(true)
+      }}
+      onPointerCancel={() => finishDrag(false)}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape' && dragRef.current) {
+          event.preventDefault()
+          finishDrag(false)
+          return
+        }
+        if (!['ArrowLeft', 'ArrowRight', 'ArrowDown', 'ArrowUp'].includes(event.key)) return
+        event.preventDefault()
+        const increase = event.key === 'ArrowRight' || event.key === 'ArrowUp'
+        applyWidth(currentWidthRef.current + (increase ? 1 : -1) * (event.shiftKey ? 32 : 8))
+        onCommit(currentWidthRef.current)
+      }}
+    />
+  )
+}
+
+function readPanelWidths(): PanelWidths {
+  const defaults = {
+    left: PANEL_WIDTHS.left.default,
+    right: PANEL_WIDTHS.right.default,
+  }
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(PANEL_WIDTH_STORAGE_KEY) ?? 'null',
+    ) as Partial<PanelWidths> | null
+    if (!stored) return defaults
+    return {
+      left: normalizeStoredWidth(stored.left, PANEL_WIDTHS.left),
+      right: normalizeStoredWidth(stored.right, PANEL_WIDTHS.right),
+    }
+  } catch {
+    return defaults
+  }
+}
+
+function normalizeStoredWidth(
+  value: number | undefined,
+  definition: { min: number; max: number; default: number },
+) {
+  return Number.isFinite(value)
+    ? Math.round(clamp(Number(value), definition.min, definition.max))
+    : definition.default
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value))
 }
 
 /** 返回选中节点及其全部后代，供模块级 PNG 导出使用。 */

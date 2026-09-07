@@ -68,11 +68,46 @@ function normalizeRuntimeResult(result, adapterId, designSnapshot) {
   const consoleErrors = stringArray(result?.consoleErrors)
   const unknownProps = stringArray(result?.unknownProps)
   const missingAssets = stringArray(result?.missingAssets)
-  const failed = result?.status === 'failed' || consoleErrors.length || missingAssets.length
   const comparison =
     designSnapshot && result?.layout
       ? compareRuntimeLayout(designSnapshot, result.layout, result.appliedProps)
       : undefined
+  const failed =
+    result?.status === 'failed' ||
+    consoleErrors.length > 0 ||
+    missingAssets.length > 0 ||
+    comparison?.passed === false
+  const issues = [
+    ...consoleErrors.map((message) => ({
+      code: 'COMPONENT_RUNTIME_CONSOLE_ERROR',
+      severity: 'error',
+      message,
+    })),
+    ...missingAssets.map((message) => ({
+      code: 'COMPONENT_RUNTIME_ASSET_MISSING',
+      severity: 'error',
+      message,
+    })),
+    ...(comparison?.issues ?? []).map((message) => ({
+      code: 'COMPONENT_RUNTIME_LAYOUT_MISMATCH',
+      severity: 'error',
+      message,
+    })),
+  ]
+  const qualityReport = {
+    version: 1,
+    scope: 'module',
+    passed: !issues.length,
+    score: Math.max(0, Math.round((1 - issues.length * 0.2) * 100) / 100),
+    targetIds: (designSnapshot?.regions ?? []).map((region) => region.id),
+    issues,
+    repairPlan: issues.map((issue) => ({
+      action: issue.code.includes('ASSET') ? 'repair-asset' : 'repair-component-props',
+      issueCodes: [issue.code],
+      automatic: !issue.code.includes('CONSOLE'),
+    })),
+    repairCount: 0,
+  }
   return {
     status: failed ? 'failed' : 'passed',
     adapterId,
@@ -81,6 +116,7 @@ function normalizeRuntimeResult(result, adapterId, designSnapshot) {
     unknownProps,
     missingAssets,
     ...(comparison ? { comparison } : {}),
+    qualityReport,
     message:
       typeof result?.message === 'string' && result.message.trim()
         ? result.message

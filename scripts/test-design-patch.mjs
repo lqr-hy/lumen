@@ -53,6 +53,12 @@ try {
   const intent = routeAgentIntent({ prompt: '把标题改成订单中心并向下移动', editScope: scope })
   assert.equal(intent.action, 'revise-design')
   assert.equal(intent.taskKind, 'design-patch')
+  const autonomousDecisionIntent = routeAgentIntent({
+    prompt: '当前模块是否设计一个主题背景',
+    editScope: scope,
+  })
+  assert.equal(autonomousDecisionIntent.action, 'revise-design')
+  assert.equal(autonomousDecisionIntent.reason, 'selection-generic-node')
   const deterministicTextAction = compileDesignAction({
     goal: '改成订单中心',
     scope,
@@ -279,6 +285,183 @@ try {
     true,
   )
 
+  let fallbackPatchRequested = false
+  const noConfirmationResult = await runDesignWorkflow(
+    {
+      type: 'agent_run',
+      sessionId: `design-patch-no-confirmation-${Date.now()}`,
+      provider: 'codex',
+      model: 'test',
+      question: '当前模块是否设计一个主题背景',
+      uploads: [],
+      editScope: scope,
+      canvasSnapshot: snapshot,
+      canvasTarget: {
+        artboardId: 'board-patch',
+        createdForThread: false,
+        width: 1440,
+        height: 900,
+        placementMode: 'append-section',
+        placementSource: 'selection',
+      },
+    },
+    {
+      onDeliverable: async () => ({
+        status: 'success',
+        summary: '测试 Patch 已应用。',
+        data: {
+          artboardId: 'board-patch',
+          rootElementId: 'title',
+          elementCount: 2,
+          documentRevision: 8,
+        },
+      }),
+    },
+    {
+      invokeProvider: async (payload) => {
+        if (payload.type === 'generate_design_action') {
+          return {
+            data: {
+              action: {
+                action: 'set-style',
+                target: { nodeId: 'title' },
+                needsClarification: true,
+                question: '请确认是否应用主题背景。',
+              },
+            },
+          }
+        }
+        assert.equal(payload.type, 'generate_design_patch')
+        fallbackPatchRequested = true
+        return { data: providerPatch }
+      },
+    },
+  )
+  assert.equal(fallbackPatchRequested, true)
+  assert.equal(noConfirmationResult.agent.status, 'completed')
+  assert.equal(noConfirmationResult.agent.lastError, undefined)
+  assert.equal(noConfirmationResult.designPatch.operations.length, 3)
+
+  const blockSnapshot = {
+    artboardId: 'board-patch',
+    documentRevision: 7,
+    width: 390,
+    height: 844,
+    elementCount: 3,
+    selectedElementIds: ['hero-background'],
+    elements: [
+      {
+        id: 'hero-block',
+        type: 'section',
+        name: '全幅沉浸首屏',
+        designRole: 'design-block',
+        designBlockId: 'hero',
+        zIndex: 3,
+        bounds: { x: 16, y: 16, width: 358, height: 300 },
+      },
+      {
+        id: 'hero-background',
+        parentId: 'hero-block',
+        type: 'shape',
+        name: '全幅沉浸首屏',
+        designBlockId: 'hero',
+        zIndex: 4,
+        borderRadius: 8,
+        bounds: { x: 16, y: 16, width: 358, height: 300 },
+      },
+      {
+        id: 'hero-title',
+        parentId: 'hero-block',
+        type: 'text',
+        name: '道友，别来无恙',
+        designBlockId: 'hero',
+        zIndex: 5,
+        properties: { content: '道友，别来无恙' },
+        bounds: { x: 44, y: 52, width: 302, height: 56 },
+      },
+    ],
+  }
+  const blockScope = {
+    type: 'design-block',
+    scopeId: 'scope-hero-block',
+    artboardId: 'board-patch',
+    documentRevision: 7,
+    targetHash: 'hash-hero-block',
+    targetElementIds: ['hero-block', 'hero-background', 'hero-title'],
+    elementId: 'hero-block',
+    blockId: 'hero',
+    name: '全幅沉浸首屏',
+    bounds: { x: 16, y: 16, width: 358, height: 300 },
+    imageElementIds: [],
+  }
+  let imageGenerationPayload
+  let imageInsertDeliverable
+  const imageInsertResult = await runDesignWorkflow(
+    {
+      type: 'agent_run',
+      sessionId: `design-block-image-insert-${Date.now()}`,
+      provider: 'codex',
+      model: 'test',
+      question: '给当前模块添加一个图片资源，图片就是我发送的图片，图片需要优化一下',
+      uploads: [
+        {
+          name: 'hero-reference.png',
+          mime: 'image/png',
+          role: 'kv',
+          data: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mNk+M/wHwAF/gL+Xw7JAAAAAElFTkSuQmCC',
+        },
+      ],
+      editScope: blockScope,
+      canvasSnapshot: blockSnapshot,
+      canvasTarget: {
+        artboardId: 'board-patch',
+        createdForThread: false,
+        width: 390,
+        height: 844,
+        placementMode: 'append-section',
+        placementSource: 'selection',
+      },
+    },
+    {
+      onDeliverable: async (deliverable) => {
+        imageInsertDeliverable = deliverable
+        return {
+          status: 'success',
+          summary: '测试图片已添加。',
+          data: {
+            artboardId: 'board-patch',
+            rootElementId: 'hero-block-image',
+            elementCount: 4,
+            documentRevision: 8,
+          },
+        }
+      },
+    },
+    {
+      invokeProvider: async (payload) => {
+        assert.equal(payload.type, 'generate_image')
+        imageGenerationPayload = payload
+        return {
+          artifact: {
+            src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mNk+M/wHwAF/gL+Xw7JAAAAAElFTkSuQmCC',
+            width: 358,
+            height: 300,
+            mime: 'image/png',
+            name: 'optimized-hero.png',
+          },
+        }
+      },
+    },
+  )
+  assert.equal(imageInsertResult.agent.status, 'completed')
+  assert.equal(imageInsertResult.designPatch.operations[0].kind, 'add-image')
+  assert.equal(imageInsertResult.designPatch.operations[0].element.parentId, 'hero-block')
+  assert.equal(imageInsertResult.designPatch.operations[0].element.zIndex, 4.5)
+  assert.equal(imageGenerationPayload.uploads[0].role, 'edit-base')
+  assert.match(imageGenerationPayload.question, /禁止重复绘制这些 UI/)
+  assert.equal(imageInsertDeliverable.kind, 'design-patch')
+  assert.equal(Boolean(imageInsertDeliverable.imageArtifacts['add-design-block-image']), true)
+
   await build({
     stdin: {
       contents:
@@ -502,6 +685,60 @@ try {
   assert.equal(
     added.document.elements.some((element) => element.id === 'badge'),
     true,
+  )
+
+  const imageAddSnapshot = {
+    ...snapshot,
+    elements: snapshot.elements.map((element) =>
+      element.id === 'root' ? { ...element, designRole: 'design-block' } : element,
+    ),
+  }
+  const addedImagePatch = normalizeDesignPatch(
+    {
+      baseRevision: 7,
+      artboardId: 'board-patch',
+      operations: [
+        {
+          id: 'add-hero-image',
+          kind: 'add-image',
+          prompt: '生成 Hero 图片',
+          element: {
+            id: 'hero-image',
+            type: 'image',
+            name: 'Hero 主视觉',
+            parentId: 'root',
+            x: 24,
+            y: 100,
+            width: 320,
+            height: 180,
+            zIndex: 2,
+            objectFit: 'cover',
+          },
+        },
+      ],
+    },
+    {
+      ...imageAddSnapshot,
+      scopeId: 'scope-add-image',
+      targetElementIds: ['root'],
+    },
+  )
+  assert.deepEqual(validateDesignPatch(addedImagePatch, imageAddSnapshot), [])
+  const imageAddDocument = createDocument(7)
+  imageAddDocument.elements.find((element) => element.id === 'root').designRole = 'design-block'
+  const addedImage = applyDesignPatchToDocument(imageAddDocument, addedImagePatch, {
+    'add-hero-image': {
+      src: 'data:image/png;base64,new-hero',
+      width: 320,
+      height: 180,
+      mime: 'image/png',
+      name: 'hero.png',
+    },
+  })
+  assert.equal(addedImage.ok, true)
+  assert.equal(
+    addedImage.document.elements.find((element) => element.id === 'hero-image').src,
+    'data:image/png;base64,new-hero',
   )
 
   const deleted = applyDesignPatchToDocument(

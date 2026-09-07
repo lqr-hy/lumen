@@ -138,7 +138,9 @@ export function createAgentToolRegistry({
     const scope = context.session.editScope
     if (
       !snapshot ||
-      !['generic-node', 'multi-node', 'text-range', 'image-region'].includes(scope?.type)
+      !['design-block', 'generic-node', 'multi-node', 'text-range', 'image-region'].includes(
+        scope?.type,
+      )
     ) {
       throw createRuntimeError(
         'DESIGN_PATCH_SCOPE_MISSING',
@@ -153,6 +155,26 @@ export function createAgentToolRegistry({
     })
     const selectionContext = buildDesignSelectionContext(snapshot, scope)
     console.info('[design.patch.plan]', diagnostics)
+    const imageUpsert = compileDesignBlockImageUpsert({
+      goal: context.session.goal,
+      scope,
+      snapshot,
+      uploads: getPreparedUploads(context),
+    })
+    if (imageUpsert) {
+      assertDesignPatch(imageUpsert.patch, snapshot)
+      context.session.designPatch = imageUpsert.patch
+      return {
+        summary: imageUpsert.summary,
+        data: {
+          patch: imageUpsert.patch,
+          source: 'deterministic-design-block-image',
+          actionKind: imageUpsert.actionKind,
+          diagnostics: { ...diagnostics, compiled: true },
+        },
+        nextSteps: [createPatchImageGenerationStep(imageUpsert.actionKind)],
+      }
+    }
     // Ask the model for a semantic action first. The runtime remains responsible
     // for turning it into a scoped, revision-checked DesignPatch.
     let actionResult
@@ -165,7 +187,7 @@ export function createAgentToolRegistry({
             '根据用户要求规划一个通用 DesignAction，不要直接生成 Patch。',
             `用户要求：${context.session.goal}`,
             `当前选区上下文：${JSON.stringify(selectionContext)}`,
-            '如果指令存在歧义，返回 {"action":"set-style","target":{"nodeId":"..."},"needsClarification":true,"question":"..."}，不要猜测目标。',
+            '用户发送本次局部设计请求即表示授权执行。必须结合当前冻结选区和参考图作出最佳设计判断，不要要求用户二次确认；仅修改当前选区，不能猜测或扩大目标范围。',
           ].join('\n'),
           canvasSnapshot: snapshot,
           selectionContext,
@@ -180,10 +202,18 @@ export function createAgentToolRegistry({
       )
     }
     const action = extractDesignAction(actionResult)
-    if (action?.needsClarification && action.question) {
-      throw createRuntimeError('DESIGN_ACTION_AMBIGUOUS', action.question, { retryable: false })
+    // 旧模型或第三方 Provider 仍可能返回 needsClarification。局部设计请求已经
+    // 具备冻结 SelectionScope，因此不能把正常的设计判断显示成执行失败，也不应
+    // 要求用户重复确认。丢弃这次不可执行的语义动作，继续走受选区约束的 Patch 规划。
+    const executableAction = action?.needsClarification ? undefined : action
+    if (action?.needsClarification) {
+      console.info('[design.patch.plan] clarification suppressed; using scoped patch fallback', {
+        question: action.question,
+        scopeId: scope.scopeId,
+        targetElementIds: scope.targetElementIds,
+      })
     }
-    const compiledAction = compileDesignActionResult(action, {
+    const compiledAction = compileDesignActionResult(executableAction, {
       snapshot,
       scope,
       goal: context.session.goal,
@@ -199,6 +229,11 @@ export function createAgentToolRegistry({
           actionKind: compiledAction.actionKind,
           diagnostics: { ...diagnostics, compiled: true },
         },
+        nextSteps: compiledAction.patch.operations.some((operation) =>
+          isPatchImageOperation(operation),
+        )
+          ? [createPatchImageGenerationStep(compiledAction.actionKind)]
+          : [],
       }
     }
     const deterministicAction = compileDesignAction({ goal: context.session.goal, scope, snapshot })
@@ -224,6 +259,7 @@ export function createAgentToolRegistry({
         question: [
           '根据用户要求生成受限 DesignPatch，只修改普通可编辑节点。',
           `用户要求：${context.session.goal}`,
+          '用户已经通过发送本次请求授权执行。遇到“是否/要不要/能否”这类委托判断时，请自行选择最符合当前设计上下文的方案并返回有效修改；禁止返回确认问题或空操作。',
           `当前文档 Revision：${snapshot.documentRevision}`,
           `目标画板：${snapshot.artboardId}`,
           `当前选区：${JSON.stringify(scopeSummary)}`,
@@ -232,7 +268,7 @@ export function createAgentToolRegistry({
             ? `当前是冻结文本范围任务。只能返回一个 replace-text-range Operation；elementId/start/end/expectedText 必须分别为 ${scope.elementId}/${scope.start}/${scope.end}/${JSON.stringify(scope.selectedText)}，replacement 是按用户要求生成的新文本。禁止修改样式、布局、其他文本或其他节点。`
             : scope.type === 'image-region'
               ? `当前是冻结图片 Mask 任务。只能返回一个 replace-image-region Operation；elementId 必须为 ${scope.elementId}，normalizedRect 必须为 ${JSON.stringify(scope.normalizedRect)}，prompt 描述 Mask 内需要生成的内容。禁止整图替换、修改布局或其他节点。`
-              : '支持 semantic-update、update、move、delete、add、replace-image。布局模式、约束、间距、内边距、对齐、透明度和四角圆角优先使用 semantic-update。禁止修改组件绑定节点和 page-shell。',
+              : '支持 semantic-update、update、move、delete、add、add-image、replace-image。add-image 仅用于 design-block，并且 parentId 必须是当前模块根节点。布局模式、约束、间距、内边距、对齐、透明度和四角圆角优先使用 semantic-update。禁止修改组件绑定节点和 page-shell。',
           'update 必须提供 elementType，以便 Runtime 按节点类型过滤 changes。',
         ].join('\n'),
         uploads: getPreparedUploads(context),
@@ -278,19 +314,18 @@ export function createAgentToolRegistry({
     context.session.designPatch = patch
     removeImageStepForNonImagePatch(context.session, patch)
     const hasImageOperation = patch.operations.some(
-      (operation) =>
-        operation.kind === 'replace-image' || operation.kind === 'replace-image-region',
+      (operation) => isPatchImageOperation(operation),
     )
     return {
       summary: `已规划 ${patch.operations.length} 个局部修改操作。`,
       data: { patch, diagnostics: { ...diagnostics, compiled: false } },
       nextSteps: hasImageOperation
         ? [
-            {
-              id: 'generate-patch-images',
-              title: '生成替换图片',
-              tool: 'design.patch.generate-images',
-            },
+            createPatchImageGenerationStep(
+              patch.operations.some((operation) => operation.kind === 'add-image')
+                ? 'add-image'
+                : 'replace-image',
+            ),
           ]
         : [],
     }
@@ -300,8 +335,7 @@ export function createAgentToolRegistry({
     const patch =
       context.memory.get('design.patch.plan')?.data?.patch || context.session.designPatch
     const replacements = (patch?.operations ?? []).filter(
-      (operation) =>
-        operation.kind === 'replace-image' || operation.kind === 'replace-image-region',
+      (operation) => isPatchImageOperation(operation),
     )
     if (!replacements.length)
       return { summary: '本次局部修改不需要生成图片。', data: { patch, imageArtifacts: {} } }
@@ -310,7 +344,10 @@ export function createAgentToolRegistry({
     )
     const entries = []
     for (const operation of replacements) {
-      const target = snapshotElements.get(operation.elementId)
+      const target =
+        operation.kind === 'add-image'
+          ? operation.element
+          : snapshotElements.get(operation.elementId)
       const regionScope =
         operation.kind === 'replace-image-region' &&
         context.session.editScope?.type === 'image-region'
@@ -318,11 +355,17 @@ export function createAgentToolRegistry({
           : undefined
       const question = [
         operation.prompt,
-        regionScope
+        operation.kind === 'add-image'
+          ? `只生成用于模块“${context.session.editScope?.name || operation.element.parentId}”的单张图片资源，不生成完整页面。画布现有标题、正文、按钮和 Logo 均保持为独立可编辑节点，图片中禁止重复绘制这些 UI 内容或添加无关文字。`
+          : regionScope
           ? `只重绘节点 ${operation.elementId} 的 Mask 透明区域，Mask 外像素必须保持不变。`
           : `只替换节点 ${operation.elementId} 的图片内容，不生成完整页面。`,
-        `目标尺寸：${target?.bounds?.width || 512} x ${target?.bounds?.height || 512}px。`,
+        `目标尺寸：${target?.bounds?.width || target?.width || 512} x ${target?.bounds?.height || target?.height || 512}px。`,
       ].join('\n')
+      const preparedUploads = preparePatchImageUploads(
+        getPreparedUploads(context),
+        context.session.goal,
+      )
       const result = await invokeProvider(
         {
           ...context.payload,
@@ -343,20 +386,23 @@ export function createAgentToolRegistry({
                   data: regionScope.maskImage,
                 },
               ]
-            : getPreparedUploads(context),
+            : preparedUploads,
           imageTasks: [
             createImageTask({
               id: operation.id,
               name: `${operation.id}.png`,
               targetSize: {
-                width: target?.bounds?.width || 512,
-                height: target?.bounds?.height || 512,
+                width: target?.bounds?.width || target?.width || 512,
+                height: target?.bounds?.height || target?.height || 512,
               },
               transparent: false,
               maskedEdit: Boolean(regionScope),
               referencePolicy: regionScope
                 ? { roles: ['edit-base', 'mask'], maxImages: 2 }
-                : undefined,
+                : {
+                    roles: ['edit-base', 'kv', 'visual', 'content', 'prototype'],
+                    maxImages: 4,
+                  },
               prompt: question,
             }),
           ],
@@ -379,8 +425,7 @@ export function createAgentToolRegistry({
     assertDesignPatch(patch, context.session.canvasSnapshot)
     const missingImage = patch.operations.find(
       (operation) =>
-        (operation.kind === 'replace-image' || operation.kind === 'replace-image-region') &&
-        !generated?.imageArtifacts?.[operation.id],
+        isPatchImageOperation(operation) && !generated?.imageArtifacts?.[operation.id],
     )
     if (missingImage)
       throw createRuntimeError('DESIGN_PATCH_IMAGE_MISSING', `${missingImage.id} 缺少替换图片。`)
@@ -408,8 +453,14 @@ export function createAgentToolRegistry({
       context.session.genericUiVisualTheme ??
       createStylePackVisualTheme(context.session.activeStylePack)
     const planningQuestion = [
-      '规划一个可编辑的通用 UI 设计稿，只输出 DesignSpec，不生成图片。',
+      '规划一个通用 UI 页面结构，只输出 DesignSpec，不生成图片。',
       `用户目标：${context.session.goal}`,
+      context.session.visualBrief
+        ? `这是视觉优化 Variant，不是普通 UI 重建。必须保留原画板的信息架构，并为图片策略预留可绑定的 image 区域：${JSON.stringify(context.session.visualBrief)}`
+        : '',
+      context.session.visualAssetPlan
+        ? `结构化图片资产计划（必须执行并在 Scene 中保留对应 image 节点）：${JSON.stringify(context.session.visualAssetPlan)}`
+        : '',
       `目标端类型：${requestedSurface}`,
       `设计原型类型：${designArchetype}`,
       `可用 Block Registry：${describeDesignBlockRegistry()}`,
@@ -492,7 +543,7 @@ export function createAgentToolRegistry({
 
   registerTool(tools, 'ui.extract-theme', async (context) => {
     const visualUploads = getPreparedUploads(context).filter(
-      (upload) => upload.role !== 'prototype' && upload.role !== 'edit-base',
+      (upload) => !['prototype', 'edit-base', 'content'].includes(upload.role),
     )
     if (!visualUploads.length) {
       delete context.session.genericUiVisualTheme
@@ -560,6 +611,42 @@ export function createAgentToolRegistry({
           'Runtime Draft 没有生成足够的可编辑视觉节点。',
         )
       }
+      const assetPlan = context.session.visualAssetPlan
+      if (assetPlan?.items?.length) {
+        const imageNodes = transformed.sceneGraph.nodes.filter((node) => node.type === 'image')
+        if (imageNodes.length < assetPlan.items.length) {
+          throw createRuntimeError(
+            'VISUAL_ASSET_PLAN_UNSATISFIED',
+            `视觉优化要求 ${assetPlan.items.length} 个图片节点，Runtime 仅生成 ${imageNodes.length} 个。`,
+          )
+        }
+        const plannedIds = new Set(assetPlan.items.map((item) => item.id))
+        const missingSources = imageNodes.filter(
+          (node) =>
+            plannedIds.has(String(node.bindings?.['visual.assetId'] || '')) &&
+            !String(node.asset?.source || '').startsWith('data:image/'),
+        )
+        if (missingSources.length) {
+          throw createRuntimeError(
+            'VISUAL_ASSET_BINDING_MISSING',
+            `视觉优化有 ${missingSources.length} 个图片节点没有绑定已生成资产。`,
+          )
+        }
+        const heroItem = assetPlan.items.find((item) => item.role === 'hero')
+        const heroNode = transformed.sceneGraph.nodes.find(
+          (node) => node.bindings?.['visual.assetId'] === heroItem?.id,
+        )
+        if (
+          heroItem &&
+          heroNode &&
+          heroNode.bounds.height >= transformed.sceneGraph.surface.height * 0.8
+        ) {
+          throw createRuntimeError(
+            'VISUAL_HERO_OVERSIZED',
+            'Hero 图片高度接近整张画板，已阻止交付以避免生成整页长图。',
+          )
+        }
+      }
       context.session.genericUiFailedSectionIndexes = []
       return {
         summary: `Runtime UI 场景校验通过，共 ${transformed.sceneGraph.nodes.length} 个节点。`,
@@ -599,14 +686,20 @@ export function createAgentToolRegistry({
           question: [
             '生成一个可以直接在浏览器中渲染的最终静态 UI Runtime Draft。',
             `用户目标：${context.session.goal}`,
+            context.session.visualBrief
+              ? '当前是视觉优化 Variant：必须实际呈现计划中的 Hero/内容图片；文字和按钮保持可编辑原生节点，禁止把整页海报当作单张图片。'
+              : '',
+            context.session.visualAssetPlan
+              ? `必须遵守图片资产计划：${JSON.stringify(context.session.visualAssetPlan)}。每个计划项都必须在 HTML 中有一个独立的 <img data-asset-slot="资产 id"> 占位；不要用 CSS 背景或整页截图代替。`
+              : '',
+            describeDirectContentRequirements(getPreparedUploads(context)),
             `设计原型类型：${context.session.designArchetype || designSpec.designArchetype || '由目标推导'}`,
             `目标 viewport：${designSpec.viewport.width}x${designSpec.viewport.height}`,
             context.session.genericUiVisualTheme
               ? `视觉主题契约：${JSON.stringify(context.session.genericUiVisualTheme)}`
               : `DesignSpec 主题：${JSON.stringify(designSpec.theme)}`,
             `内容清单参考：${JSON.stringify(designSpec)}`,
-            'DesignSpec 只提供内容语义，不限制布局。请根据目标与参考图重新决定 Grid、Flex、面板宽度、工具栏、工作区、检查器、浮层和视觉层级。',
-            '专业编辑器、IDE、设计工具和低代码平台必须铺满视口并表现为真实工作区，禁止渲染成纵向 Dashboard 卡片列表。',
+            'DesignSpec 只提供内容语义，不限制布局。请根据目标与参考图重新决定 Grid、Flex、区块宽度、浮层和视觉层级；页面只呈现最终用户界面，不要把生成工具自身的编辑器界面作为页面内容。',
             '输出静态 HTML 与 CSS；重要区域添加稳定、唯一的 data-region-id，文本、按钮、输入框和图片必须使用对应语义标签。',
           ].join('\n\n'),
           uploads: getPreparedUploads(context),
@@ -639,23 +732,46 @@ export function createAgentToolRegistry({
         maxNodes: 600,
       })
       assertRuntimeSceneCoversDraft(sceneGraph, draft)
+      const plannedAssetReport = await materializeVisualAssetPlan(
+        context,
+        sceneGraph,
+        draft,
+        invokeProvider,
+      )
+      const directContentReport = bindDirectContentAssets(
+        sceneGraph,
+        getPreparedUploads(context),
+        new Set(plannedAssetReport?.contentUploadNames ?? []),
+      )
+      const visualAssetReport = mergeVisualAssetReports(
+        plannedAssetReport,
+        directContentReport,
+        draft,
+      )
       context.session.genericUiRuntimeDraft = draft
       context.session.genericUiSceneGraph = sceneGraph
+      context.session.visualAssetReport = visualAssetReport
       return {
-        summary: `Runtime Draft 已渲染并转换为 ${sceneGraph.nodes.length} 个可编辑 Scene 节点。`,
+        summary: visualAssetReport
+          ? `Runtime Draft 已渲染并绑定 ${visualAssetReport.boundCount} 个视觉资产，转换为 ${sceneGraph.nodes.length} 个可编辑 Scene 节点。`
+          : `Runtime Draft 已渲染并转换为 ${sceneGraph.nodes.length} 个可编辑 Scene 节点。`,
         data: {
           designSpec,
           uiSchema: designSpec,
           runtimeDraft: draft,
           runtimeSnapshot: inspection.runtimeSnapshot,
           sceneGraph,
+          visualAssetReport,
           deliveryMode: 'runtime-dom-scene',
         },
       }
     } catch (error) {
       if (context.payload.signal?.aborted || error?.code === 'AGENT_CANCELLED') throw error
+      // 视觉优化的图片契约是硬约束，不能降级成没有图片的“设计完成”。
+      if (String(error?.code || '').startsWith('VISUAL_')) throw error
       delete context.session.genericUiRuntimeDraft
       delete context.session.genericUiSceneGraph
+      delete context.session.visualAssetReport
       return {
         summary: `Runtime Draft 不可用，降级为 DesignSpec Renderer：${safeTraceError(error)}`,
         data: {
@@ -2493,9 +2609,7 @@ export function createAgentToolRegistry({
       )
     }
     const requiredCounts = new Map()
-    for (const section of blueprint.sections.filter(
-      (item) => item.kind === 'component-instance',
-    )) {
+    for (const section of blueprint.sections.filter((item) => item.kind === 'component-instance')) {
       const componentName = section.component?.componentName
       const requiredCount = (requiredCounts.get(componentName) ?? 0) + 1
       requiredCounts.set(componentName, requiredCount)
@@ -3740,8 +3854,7 @@ function resolvePageHeroHeight(uploads, surface) {
  * 量测失败时回退到 surface viewport 高度，不阻塞页面链路。
  */
 async function measurePageComponentHeight(inspect, component, sectionWidth) {
-  const fallback =
-    Number(component.surface?.viewport?.height) || PAGE_COMPONENT_FALLBACK_HEIGHT
+  const fallback = Number(component.surface?.viewport?.height) || PAGE_COMPONENT_FALLBACK_HEIGHT
   if (typeof inspect !== 'function' || !component?.loadedComponent) {
     return { height: fallback, measured: false }
   }
@@ -3826,6 +3939,294 @@ function normalizeStaticUiRuntimeDraft(value, designSpec) {
   }
 }
 
+/**
+ * 执行视觉优化的结构化图片计划，并把生成结果绑定回 Runtime Scene。
+ * 这里不依赖活动名称或中文关键词，任何入口只要提供 visualAssetPlan 即可复用。
+ */
+async function materializeVisualAssetPlan(context, sceneGraph, draft, invokeProvider) {
+  const plan = context.session.visualAssetPlan
+  if (!plan?.items?.length) return undefined
+  const imageNodes = ensureVisualAssetSlots(sceneGraph, plan)
+  const uploads = getPreparedUploads(context)
+  const contentUploads = uploads.filter((upload) => upload.role === 'content')
+  const referenceUploads = uploads.filter((upload) => upload.role !== 'content')
+  const generated = []
+  for (const item of plan.items) {
+    const node = pickVisualAssetNode(imageNodes, item.id, generated.length)
+    const contentUpload = contentUploads[generated.length]
+    if (contentUpload) {
+      node.asset = {
+        source: contentUpload.data,
+        fit: item.role === 'hero' ? 'cover' : 'contain',
+        position: 'center',
+      }
+      node.ownership = { ...node.ownership, role: 'raster', regionId: item.id }
+      node.bindings = {
+        ...(node.bindings ?? {}),
+        'visual.assetId': item.id,
+        'visual.assetRole': item.role,
+        'visual.slotRequired': item.slotRequired,
+        'content.uploadName': contentUpload.name,
+      }
+      node.metadata = {
+        ...(node.metadata ?? {}),
+        designRole: item.role === 'hero' ? 'page-shell' : 'component-decoration',
+        label: contentUpload.name,
+      }
+      generated.push({
+        id: item.id,
+        nodeId: node.id,
+        targetSize: item.targetSize,
+        source: 'content',
+        uploadName: contentUpload.name,
+      })
+      continue
+    }
+    const prompt = [
+      `生成视觉优化页面的 ${item.role} 独立位图资产（asset id: ${item.id}）。`,
+      `目标尺寸：${item.targetSize.width} x ${item.targetSize.height}px。`,
+      item.role === 'hero'
+        ? '这是首屏 Hero 氛围图，只负责视觉焦点；禁止整页长图、禁止页面截图。'
+        : '这是内容区配图，只生成单个主题对象或场景，不重复 Hero 的完整构图。',
+      '禁止生成任何文字、标题、按钮、Logo 或 UI 控件，文案和按钮由可编辑 Scene 节点承载。',
+      `页面目标：${context.session.goal}`,
+      context.session.visualBrief ? `视觉方向：${JSON.stringify(context.session.visualBrief)}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n')
+    const result = await invokeProvider(
+      {
+        ...context.payload,
+        type: 'generate_image',
+        question: prompt,
+        uploads: referenceUploads,
+        imageTasks: [
+          createImageTask({
+            id: item.id,
+            name: `${item.id}.png`,
+            role: item.role,
+            kind: item.role === 'hero' ? 'full-background' : 'visual',
+            targetSize: item.targetSize,
+            transparent: false,
+            prompt,
+            referencePolicy: {
+              roles: ['kv', 'visual', 'prototype', 'edit-base'],
+              maxImages: 4,
+            },
+          }),
+        ],
+      },
+      context.providerCallbacks,
+    )
+    if (!result?.artifact || result.artifact.kind !== 'raster' || !result.artifact.content) {
+      throw createRuntimeError('VISUAL_ASSET_GENERATION_FAILED', `${item.id} 未返回有效位图资产。`)
+    }
+    const src = `data:${result.artifact.mime};base64,${result.artifact.content}`
+    node.asset = {
+      source: src,
+      fit: item.role === 'hero' ? 'cover' : 'contain',
+      position: item.role === 'hero' ? 'center' : 'center',
+    }
+    node.ownership = { ...node.ownership, role: 'raster', regionId: item.id }
+    node.bindings = {
+      ...(node.bindings ?? {}),
+      'visual.assetId': item.id,
+      'visual.assetRole': item.role,
+      'visual.slotRequired': item.slotRequired,
+    }
+    node.metadata = {
+      ...(node.metadata ?? {}),
+      designRole: item.role === 'hero' ? 'page-shell' : 'component-decoration',
+      label: item.id,
+    }
+    generated.push({
+      id: item.id,
+      nodeId: node.id,
+      targetSize: item.targetSize,
+      source: 'generated',
+    })
+  }
+  const report = {
+    version: 1,
+    imagery: plan.imagery,
+    plannedCount: plan.items.length,
+    generatedCount: generated.filter((item) => item.source === 'generated').length,
+    reusedContentCount: generated.filter((item) => item.source === 'content').length,
+    boundCount: generated.filter((item) => item.nodeId).length,
+    targetViewport: { width: draft.viewport.width, height: draft.viewport.height },
+    assets: generated,
+    contentUploadNames: generated.flatMap((item) =>
+      item.source === 'content' && item.uploadName ? [item.uploadName] : [],
+    ),
+  }
+  console.info('[runtime] visual-assets:bound', {
+    taskKind: context.session.taskKind,
+    imagery: report.imagery,
+    plannedCount: report.plannedCount,
+    generatedCount: report.generatedCount,
+    boundCount: report.boundCount,
+    targetViewport: report.targetViewport,
+  })
+  return report
+}
+
+/** 把 content 图片直接绑定到 Runtime Scene，避免把用户原图交给模型重绘。 */
+function bindDirectContentAssets(sceneGraph, uploads, excludedNames = new Set()) {
+  const contentUploads = uploads.filter(
+    (upload) => upload.role === 'content' && !excludedNames.has(upload.name),
+  )
+  if (!contentUploads.length) return undefined
+  const candidates = sceneGraph.nodes.filter(
+    (node) => node.type === 'image' && !node.bindings?.['visual.assetId'],
+  )
+  ensureDirectContentSlots(sceneGraph, candidates, contentUploads.length)
+  const assets = contentUploads.map((upload, index) => {
+    const node =
+      candidates.find((candidate) =>
+        String(candidate.name || '')
+          .toLowerCase()
+          .includes(`content-${index + 1}`),
+      ) || candidates[index]
+    node.asset = { source: upload.data, fit: 'cover', position: 'center' }
+    node.ownership = { ...node.ownership, role: 'raster', regionId: `content-${index + 1}` }
+    node.bindings = {
+      ...(node.bindings ?? {}),
+      'content.assetId': `content-${index + 1}`,
+      'content.uploadName': upload.name,
+    }
+    node.metadata = {
+      ...(node.metadata ?? {}),
+      designRole: 'content-image',
+      label: upload.name,
+    }
+    return {
+      id: `content-${index + 1}`,
+      nodeId: node.id,
+      source: 'content',
+      uploadName: upload.name,
+      targetSize: { width: node.bounds.width, height: node.bounds.height },
+    }
+  })
+  return {
+    version: 1,
+    imagery: 'direct-content',
+    plannedCount: contentUploads.length,
+    generatedCount: 0,
+    reusedContentCount: contentUploads.length,
+    boundCount: assets.length,
+    assets,
+    contentUploadNames: contentUploads.map((upload) => upload.name),
+  }
+}
+
+function ensureDirectContentSlots(sceneGraph, imageNodes, requiredCount) {
+  const root = sceneGraph.nodes.find((node) => node.id === sceneGraph.rootNodeId)
+  const maxZ = sceneGraph.nodes.reduce((max, node) => Math.max(max, Number(node.zIndex) || 0), 0)
+  while (imageNodes.length < requiredCount) {
+    const index = imageNodes.length
+    const width = sceneGraph.surface.width
+    const height = Math.min(
+      Math.max(180, Math.round(width * 0.72)),
+      Math.max(180, Math.round(sceneGraph.surface.height * 0.35)),
+    )
+    const node = {
+      id: `direct-content-slot-${index + 1}`,
+      type: 'image',
+      parentId: root?.id,
+      name: `content-${index + 1}`,
+      bounds: {
+        x: 0,
+        y: Math.min(Math.max(0, sceneGraph.surface.height - height), index * (height + 24)),
+        width,
+        height,
+      },
+      zIndex: index === 0 ? 0 : maxZ + index,
+      asset: { source: '', fit: 'cover', position: 'center' },
+      source: { adapterId: 'direct-content', confidence: 1 },
+      ownership: { regionId: `content-${index + 1}`, role: 'raster' },
+      bindings: { 'content.assetId': `content-${index + 1}` },
+      metadata: { designRole: 'content-image', label: `content-${index + 1}` },
+    }
+    sceneGraph.nodes.push(node)
+    imageNodes.push(node)
+  }
+}
+
+function mergeVisualAssetReports(planned, direct, draft) {
+  if (!planned && !direct) return undefined
+  const reports = [planned, direct].filter(Boolean)
+  return {
+    version: 1,
+    imagery: planned?.imagery || direct?.imagery,
+    plannedCount: reports.reduce((total, report) => total + report.plannedCount, 0),
+    generatedCount: reports.reduce((total, report) => total + report.generatedCount, 0),
+    reusedContentCount: reports.reduce(
+      (total, report) => total + (report.reusedContentCount || 0),
+      0,
+    ),
+    boundCount: reports.reduce((total, report) => total + report.boundCount, 0),
+    targetViewport: { width: draft.viewport.width, height: draft.viewport.height },
+    assets: reports.flatMap((report) => report.assets || []),
+    contentUploadNames: reports.flatMap((report) => report.contentUploadNames || []),
+  }
+}
+
+function ensureVisualAssetSlots(sceneGraph, plan) {
+  const imageNodes = sceneGraph.nodes.filter((node) => node.type === 'image')
+  if (imageNodes.length >= plan.items.length) return imageNodes
+  const synthesizedCount = plan.items.length - imageNodes.length
+  const root = sceneGraph.nodes.find((node) => node.id === sceneGraph.rootNodeId)
+  const parentId = root?.id
+  const maxZ = sceneGraph.nodes.reduce((max, node) => Math.max(max, Number(node.zIndex) || 0), 0)
+  for (let index = imageNodes.length; index < plan.items.length; index += 1) {
+    const item = plan.items[index]
+    const isHero = item.role === 'hero'
+    const width = Math.min(item.targetSize.width, sceneGraph.surface.width)
+    const height = Math.min(item.targetSize.height, sceneGraph.surface.height)
+    const y = isHero
+      ? 0
+      : Math.min(
+          sceneGraph.surface.height - height,
+          Math.max(0, Math.round(sceneGraph.surface.height * 0.45 + (index - 1) * (height + 24))),
+        )
+    const node = {
+      id: `visual-asset-slot-${item.id}`,
+      type: 'image',
+      parentId,
+      name: item.id,
+      bounds: { x: Math.max(0, (sceneGraph.surface.width - width) / 2), y, width, height },
+      zIndex: isHero ? 0 : maxZ + index,
+      asset: { source: '', fit: isHero ? 'cover' : 'contain', position: 'center' },
+      source: { adapterId: 'visual-asset-plan', confidence: 1 },
+      ownership: { regionId: item.id, role: 'raster' },
+      bindings: { 'visual.assetId': item.id, 'visual.assetRole': item.role },
+      metadata: { designRole: isHero ? 'page-shell' : 'component-decoration', label: item.id },
+    }
+    sceneGraph.nodes.push(node)
+    imageNodes.push(node)
+  }
+  sceneGraph.diagnostics = [
+    ...(sceneGraph.diagnostics ?? []),
+    {
+      code: 'VISUAL_ASSET_SLOT_SYNTHESIZED',
+      severity: 'warning',
+      message: `Runtime 未提供完整图片 Slot，已根据 VisualAssetPlan 合成 ${synthesizedCount} 个可绑定 Slot。`,
+    },
+  ]
+  return imageNodes
+}
+
+function pickVisualAssetNode(nodes, assetId, index) {
+  const normalized = String(assetId || '').toLowerCase()
+  return (
+    nodes.find((node) =>
+      String(node.name || '')
+        .toLowerCase()
+        .includes(normalized),
+    ) || nodes[index]
+  )
+}
+
 function assertRuntimeSceneCoversDraft(sceneGraph, draft) {
   const widthRatio = sceneGraph.surface.width / draft.viewport.width
   const heightRatio = sceneGraph.surface.height / draft.viewport.height
@@ -3850,17 +4251,187 @@ function alignColorPropertiesToTheme(propertyValues, colors) {
   )
 }
 
+function compileDesignBlockImageUpsert({ goal, scope, snapshot, uploads }) {
+  if (scope?.type !== 'design-block' || !isDesignBlockImageRequest(goal)) return undefined
+  const writableIds = new Set(scope.targetElementIds ?? [])
+  const existingImage = (snapshot.elements ?? []).find(
+    (element) =>
+      element.type === 'image' &&
+      writableIds.has(element.id) &&
+      (scope.imageElementIds?.includes(element.id) || element.parentId === scope.elementId),
+  )
+  const prompt = buildDesignBlockImagePrompt({ goal, scope, uploads })
+  const rawPatch = existingImage
+    ? {
+        version: 1,
+        baseRevision: snapshot.documentRevision,
+        artboardId: snapshot.artboardId,
+        summary: `优化并替换${scope.name}中的图片`,
+        operations: [
+          {
+            id: 'replace-design-block-image',
+            kind: 'replace-image',
+            elementId: existingImage.id,
+            prompt,
+          },
+        ],
+      }
+    : {
+        version: 1,
+        baseRevision: snapshot.documentRevision,
+        artboardId: snapshot.artboardId,
+        summary: `为${scope.name}生成并添加图片`,
+        operations: [
+          {
+            id: 'add-design-block-image',
+            kind: 'add-image',
+            prompt,
+            element: createDesignBlockImageElement(scope, snapshot),
+          },
+        ],
+      }
+  const patch = normalizeDesignPatch(rawPatch, {
+    documentRevision: snapshot.documentRevision,
+    artboardId: snapshot.artboardId,
+    goal,
+    scopeId: scope.scopeId,
+    targetHash: scope.targetHash,
+    targetElementIds: scope.targetElementIds,
+  })
+  return {
+    patch,
+    actionKind: existingImage ? 'replace-image' : 'add-image',
+    summary: existingImage
+      ? `已锁定 ${scope.name} 中的现有图片，将优化后原位替换。`
+      : `已为 ${scope.name} 规划模块内图片节点，将优化图片后置于可编辑文字和按钮下方。`,
+  }
+}
+
+function isDesignBlockImageRequest(goal) {
+  const value = String(goal || '')
+  const image = /(?:图片|图像|配图|主图|主视觉|背景图|\bkv\b)/i.test(value)
+  const action =
+    /(?:添加|新增|插入|加入|放入|放进|放到|置入|使用|生成|优化|替换|换图|作为)/i.test(
+      value,
+    )
+  return image && action
+}
+
+function createDesignBlockImageElement(scope, snapshot) {
+  const elements = snapshot.elements ?? []
+  const foreground = elements.filter(
+    (element) =>
+      scope.targetElementIds?.includes(element.id) &&
+      ['text', 'button', 'input'].includes(element.type),
+  )
+  const background = elements.find(
+    (element) =>
+      scope.targetElementIds?.includes(element.id) &&
+      element.parentId === scope.elementId &&
+      element.type === 'shape',
+  )
+  const foregroundZ = foreground
+    .map((element) => Number(element.zIndex))
+    .filter(Number.isFinite)
+  const zIndex = foregroundZ.length
+    ? Math.min(...foregroundZ) - 0.5
+    : (Number(background?.zIndex) || 0) + 0.5
+  const baseId = `${scope.elementId}-image`
+  const occupied = new Set(elements.map((element) => element.id))
+  let elementId = baseId
+  let suffix = 2
+  while (occupied.has(elementId)) {
+    elementId = `${baseId}-${suffix}`
+    suffix += 1
+  }
+  return {
+    id: elementId,
+    type: 'image',
+    name: `${scope.name} 主视觉`,
+    parentId: scope.elementId,
+    x: scope.bounds.x,
+    y: scope.bounds.y,
+    width: scope.bounds.width,
+    height: scope.bounds.height,
+    zIndex,
+    src: '',
+    objectFit: 'cover',
+    objectPosition: 'center',
+    borderRadius:
+      Number(background?.borderRadius ?? background?.properties?.borderRadius) || 0,
+    designBlockId: scope.blockId,
+    designRole: 'component-decoration',
+    layoutConstraints: { horizontal: 'stretch', vertical: 'stretch' },
+  }
+}
+
+function buildDesignBlockImagePrompt({ goal, scope, uploads }) {
+  const editBase = isImageEditGoal(goal) && uploads.length > 0
+  return [
+    `原始任务：${goal}`,
+    `输出模式：${editBase ? 'image-edit' : 'marketing-visual'}`,
+    `目标：为“${scope.name}”生成一张 ${Math.round(scope.bounds.width)} x ${Math.round(scope.bounds.height)}px 的模块图片。`,
+    editBase
+      ? '参考图职责：用户本轮图片是 Edit Base；保留主体身份、人物特征、核心构图与未要求改变的内容，只优化清晰度、光影、层次和对目标比例的适配。'
+      : uploads.length
+        ? '参考图职责：严格按附件声明的 KV、Visual、Prototype 或 Content 职责使用，不得混淆。'
+        : '参考图：无；根据用户目标与当前模块语义生成。',
+    '画布中的标题、正文、按钮和 Logo 将继续使用独立可编辑节点；图片不得重复生成这些 UI、解释文字、水印或无关文案。',
+    '禁止生成整页设计稿、设备框、素材拼图或带编辑器界面的截图。',
+  ].join('\n')
+}
+
+function isImageEditGoal(goal) {
+  const value = String(goal || '')
+  return /(?:这张|这个|发送|上传|原有|现有).{0,18}(?:图片|图).{0,18}(?:优化|调整|改进|编辑)|(?:优化|调整|改进|编辑).{0,18}(?:这张|这个|发送|上传|原有|现有).{0,18}(?:图片|图)/i.test(
+    value,
+  )
+}
+
+function preparePatchImageUploads(uploads, goal) {
+  if (!isImageEditGoal(goal) || !uploads.length) return uploads
+  let assigned = false
+  return uploads.map((upload) => {
+    if (assigned || !String(upload.data || '').startsWith('data:image/')) return upload
+    assigned = true
+    return { ...upload, role: 'edit-base' }
+  })
+}
+
+function isPatchImageOperation(operation) {
+  return ['add-image', 'replace-image', 'replace-image-region'].includes(operation?.kind)
+}
+
+function createPatchImageGenerationStep(actionKind) {
+  return {
+    id: 'generate-patch-images',
+    title: actionKind === 'add-image' ? '生成并添加模块图片' : '生成替换图片',
+    tool: 'design.patch.generate-images',
+  }
+}
+
 function referenceRoleLabel(role) {
+  if (role === 'content') return '原图素材'
   if (role === 'prototype') return '原型结构图'
   if (role === 'kv') return 'KV 视觉图'
   if (role === 'visual') return '视觉参考图'
   return '未指定参考图'
 }
 
+function describeDirectContentRequirements(uploads) {
+  const contentUploads = uploads.filter((upload) => upload.role === 'content')
+  if (!contentUploads.length) return ''
+  return [
+    '以下图片是必须原样使用的内容素材，禁止提取其风格、禁止重绘：',
+    ...contentUploads.map(
+      (upload, index) =>
+        `${index + 1}. ${upload.name}：在 HTML 中创建独立 <img data-asset-slot="content-${index + 1}">，Runtime 会绑定原图像素。`,
+    ),
+  ].join('\n')
+}
+
 function removeImageStepForNonImagePatch(session, patch) {
-  const hasImageOperation = patch.operations.some(
-    (operation) => operation.kind === 'replace-image' || operation.kind === 'replace-image-region',
-  )
+  const hasImageOperation = patch.operations.some((operation) => isPatchImageOperation(operation))
   if (hasImageOperation || !Array.isArray(session.plan)) return
   session.plan = session.plan.filter((step) => step.tool !== 'design.patch.generate-images')
 }
@@ -3895,7 +4466,9 @@ function describeComponentReferences(uploads) {
           ? 'KV（强制视觉来源）'
           : upload.role === 'visual'
             ? '视觉参考（强制视觉来源）'
-            : '未指定参考'
+            : upload.role === 'content'
+              ? '原图素材（直接绑定，禁止重绘）'
+              : '未指定参考'
     return `${upload.name}：${role}`
   })
   return [

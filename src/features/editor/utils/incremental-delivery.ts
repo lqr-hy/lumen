@@ -432,6 +432,7 @@ function applyDesignPatch(
       ).length,
       documentRevision: result.document.version,
       affectedElementIds: result.affectedElementIds,
+      qualityReport: result.qualityReport,
     },
   }
 }

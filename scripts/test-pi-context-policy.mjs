@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { estimateContextTokens } from '@earendil-works/pi-agent-core'
 import { createStudioContextTransformer } from '../electron/runtime/pi/context-policy.mjs'
+import { assembleRuntimeContext } from '../electron/runtime/pi/context-runtime.mjs'
 
 const model = { contextWindow: 1_200, maxTokens: 512 }
 const messages = Array.from({ length: 8 }, (_, index) => [
@@ -57,6 +58,37 @@ const fallback = await fallbackTransform(messages)
 assert(fallback.length > 0)
 assert.equal(fallback.at(-1).content[0].text, messages.at(-1).content[0].text)
 
+const runtimeContext = assembleRuntimeContext(
+  {
+    sessionId: 'context-session',
+    projectId: 'context-project',
+    question: '使用之前上传的图片',
+    uploads: [],
+  },
+  {
+    status: 'completed',
+    references: [
+      {
+        name: 'hero.png',
+        role: 'kv',
+        mime: 'image/png',
+        assetRef: 'sha256:test',
+      },
+    ],
+  },
+)
+assert.deepEqual(runtimeContext.references, [
+  {
+    name: 'hero.png',
+    role: 'kv',
+    requestedRole: 'kv',
+    roleConfidence: undefined,
+    roleReason: '',
+    mime: 'image/png',
+    source: 'session',
+  },
+])
+
 console.log(
   JSON.stringify(
     {
@@ -65,6 +97,7 @@ console.log(
       studioRecentTurnRetention: true,
       repeatedPrefixSummaryCache: true,
       studioSummaryFallback: true,
+      persistedReferenceContext: true,
     },
     null,
     2,

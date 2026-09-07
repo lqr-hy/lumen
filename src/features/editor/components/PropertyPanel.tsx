@@ -44,8 +44,9 @@ export function PropertyPanel({
 }: PropertyPanelProps) {
   const document = useEditorStore((state) => state.document)
   const selectedElementIds = useEditorStore((state) => state.selectedElementIds)
-  const activeArtboardId = useEditorStore((state) => state.activeArtboardId)
+  const selectedArtboardId = useEditorStore((state) => state.selectedArtboardId)
   const updateElement = useEditorStore((state) => state.updateElement)
+  const replaceElementImage = useEditorStore((state) => state.replaceElementImage)
   const updateArtboard = useEditorStore((state) => state.updateArtboard)
   const beginPropertyTransaction = useEditorStore((state) => state.beginPropertyTransaction)
   const previewElementProperties = useEditorStore((state) => state.previewElementProperties)
@@ -59,7 +60,7 @@ export function PropertyPanel({
   const selectedElements = document.elements.filter((item) => selectedElementIds.includes(item.id))
   const element = selectedElements[0]
   const artboard = document.artboards.find(
-    (item) => item.id === (element?.artboardId ?? activeArtboardId),
+    (item) => item.id === (element?.artboardId ?? selectedArtboardId),
   )
   const transactions: InspectorTransactionHandlers = {
     onBegin: beginPropertyTransaction,
@@ -157,6 +158,7 @@ export function PropertyPanel({
   const schema = resolveElementInspectorSchema(element, {
     update: previewElement,
     setAutoLayout: (autoLayout) => previewSectionAutoLayout(element.id, autoLayout),
+    replaceImage: (image) => replaceElementImage(element.id, image),
     parent,
     responsive: Boolean(artboard?.designSpec?.responsive),
   })

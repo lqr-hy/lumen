@@ -237,8 +237,9 @@ export interface GenerationBrief {
   references: Array<{
     id: string
     name: string
-    role: 'kv' | 'prototype' | 'visual' | 'edit-base' | 'unknown'
-    responsibility: 'visual-theme' | 'structure' | 'edit-base' | 'visual-reference'
+    role: 'content' | 'kv' | 'prototype' | 'visual' | 'edit-base' | 'unknown'
+    responsibility:
+      'direct-content' | 'visual-theme' | 'structure' | 'edit-base' | 'visual-reference'
   }>
   constraints: string[]
 }
@@ -672,6 +673,8 @@ export interface InputElement extends BaseElement {
 export interface SectionElement extends BaseElement {
   type: 'section'
   label: string
+  /** 区分手工编组与具有布局/生成语义的容器；旧项目缺省时仍按普通 Section 处理。 */
+  containerKind?: 'group' | 'frame' | 'auto-layout' | 'design-block' | 'component-root'
   autoLayout?: {
     direction: 'vertical' | 'horizontal'
     gap: number

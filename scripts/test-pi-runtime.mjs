@@ -348,6 +348,42 @@ try {
       }),
     (error) => error?.code === 'SELECTION_WORKFLOW_REQUIRED',
   )
+  const designBlockPayload = createPayload(
+    'pi-design-block-route-session',
+    '给当前模块添加并优化图片',
+  )
+  designBlockPayload.editScope = {
+    type: 'design-block',
+    scopeId: 'scope-hero-block',
+    artboardId: 'pi-board',
+    documentRevision: 2,
+    targetHash: 'hash-hero-block',
+    targetElementIds: ['hero-block', 'hero-background', 'hero-title'],
+    elementId: 'hero-block',
+    blockId: 'hero',
+    name: '首屏 Hero',
+    bounds: { x: 0, y: 0, width: 390, height: 300 },
+    imageElementIds: [],
+  }
+  const correctedDesignBlockParams = resolveWorkflowToolParams(designBlockPayload, {
+    action: 'regenerate-slot',
+    taskKind: 'component-slot-edit',
+    placement: {
+      operation: 'revise',
+      scope: 'selection',
+      targetArtboardId: 'pi-board',
+      targetElementIds: ['hero-block'],
+      reason: 'model-confused-design-block-with-component-slot',
+      confidence: 1,
+    },
+  })
+  assert.equal(correctedDesignBlockParams.action, 'revise-design')
+  assert.equal(correctedDesignBlockParams.taskKind, 'design-patch')
+  assert.deepEqual(correctedDesignBlockParams.placement.targetElementIds, [
+    'hero-block',
+    'hero-background',
+    'hero-title',
+  ])
 
   const explicitReferencePayload = createPayload(
     'pi-explicit-reference-session',
@@ -375,6 +411,43 @@ try {
     { uploadIndex: 0, role: 'prototype' },
     { uploadIndex: 1, role: 'kv' },
   ])
+
+  const unboundPageParams = resolveWorkflowToolParams(
+    createPayload('pi-unbound-page-session', '生成沉浸式新粗野活动 H5 页面'),
+    {
+      action: 'create-page',
+      taskKind: 'page-design',
+      placement: {
+        operation: 'create',
+        scope: 'document',
+        reason: 'pi-misclassified-h5-as-component-page',
+        confidence: 1,
+      },
+    },
+  )
+  assert.equal(unboundPageParams.action, 'create-ui')
+  assert.equal(unboundPageParams.taskKind, 'generic-ui')
+  assert.equal(unboundPageParams.surfaceKind, 'mobile')
+
+  const singleComponentPagePayload = createPayload(
+    'pi-single-component-page-session',
+    '生成 EraLottery 页面',
+  )
+  singleComponentPagePayload.componentReferences = [
+    { packId: 'campaign-components', componentName: 'EraLottery' },
+  ]
+  const singleComponentParams = resolveWorkflowToolParams(singleComponentPagePayload, {
+    action: 'create-page',
+    taskKind: 'page-design',
+    placement: {
+      operation: 'create',
+      scope: 'document',
+      reason: 'single-component-page',
+      confidence: 1,
+    },
+  })
+  assert.equal(singleComponentParams.action, 'create-component')
+  assert.equal(singleComponentParams.taskKind, 'component-design')
 
   const batchTargets = ['draw-one', 'draw-ten'].map((regionId, index) => ({
     type: 'component-region',

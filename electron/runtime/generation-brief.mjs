@@ -68,11 +68,12 @@ function normalizeReference(reference, index) {
 }
 
 function normalizeRole(value) {
-  return ['kv', 'prototype', 'visual', 'edit-base'].includes(value) ? value : 'unknown'
+  return ['content', 'kv', 'prototype', 'visual', 'edit-base'].includes(value) ? value : 'unknown'
 }
 
 function referenceResponsibility(role) {
   return {
+    content: 'direct-content',
     kv: 'visual-theme',
     prototype: 'structure',
     'edit-base': 'edit-base',
@@ -100,6 +101,9 @@ function createConstraints(outputKind, target, references) {
   }
   if (references.some((reference) => reference.role === 'kv')) {
     constraints.push('KV 决定配色、字体气质、材质、装饰和整体视觉语言，不替代 Prototype 结构。')
+  }
+  if (references.some((reference) => reference.role === 'content')) {
+    constraints.push('原图素材必须保留像素并直接绑定到图片节点，禁止作为风格参考重绘。')
   }
   return constraints
 }

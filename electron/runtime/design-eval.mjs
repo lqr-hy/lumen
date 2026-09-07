@@ -14,6 +14,8 @@ const WEIGHTS = Object.freeze({
   readability: 0.1,
 })
 
+export const MAX_GATE_REPAIR_ATTEMPTS = 2
+
 export function createDesignEvalReport({
   scope,
   scores,
@@ -21,6 +23,7 @@ export function createDesignEvalReport({
   repairCount = 0,
   deliveryStatus,
   editableCoverage,
+  targetIds = [],
   thresholds = DEFAULT_THRESHOLDS,
 }) {
   const dimensions = {
@@ -49,10 +52,15 @@ export function createDesignEvalReport({
   )
   const repairPlan = dedupeRepairPlan(evalIssues.map((issue) => classifyRepair(issue, scope)))
   return {
+    version: 1,
     evalVersion: 1,
+    scope: normalizeGateScope(scope),
+    legacyScope: scope,
     passed: !evalIssues.some((issue) => issue.severity === 'error'),
     deliveryStatus,
     overall,
+    score: overall,
+    targetIds: [...new Set(targetIds.filter((id) => typeof id === 'string' && id.trim()))],
     dimensions,
     thresholds: normalizedThresholds,
     scores: {
@@ -67,6 +75,14 @@ export function createDesignEvalReport({
     repairPlan,
     repairCount,
   }
+}
+
+function normalizeGateScope(scope) {
+  if (scope === 'component' || scope === 'runtime' || scope === 'asset' || scope === 'props')
+    return 'module'
+  if (scope === 'page') return 'artboard'
+  if (['operation', 'module', 'artboard', 'document'].includes(scope)) return scope
+  return 'document'
 }
 
 export function calculateComponentEditableCoverage(blueprint) {

@@ -1,16 +1,26 @@
 import type { DesignPatch, GeneratedCanvasImage } from '../../ai/types'
 import type { DesignDocument, DesignElement } from '../types'
 import { computeSelectionTargetHash } from './selection-scope'
+import { reviewScopedVisualQuality, type DesignGateReport } from './visual-quality-gate'
+
+export const MAX_GATE_REPAIR_ATTEMPTS = 2
 
 export type DesignPatchApplyResult =
-  | { ok: true; document: DesignDocument; affectedElementIds: string[] }
-  | { ok: false; errorCode: string; message: string }
+  | {
+      ok: true
+      document: DesignDocument
+      beforeSnapshot: DesignDocument
+      affectedElementIds: string[]
+      qualityReport: DesignGateReport
+    }
+  | { ok: false; errorCode: string; message: string; qualityReport?: DesignGateReport }
 
 export function applyDesignPatchToDocument(
   document: DesignDocument,
   patch: DesignPatch,
   images: Record<string, GeneratedCanvasImage>,
 ): DesignPatchApplyResult {
+  const beforeSnapshot = structuredClone(document)
   if (document.version !== patch.baseRevision) {
     return failed(
       'DOCUMENT_REVISION_CONFLICT',
@@ -33,6 +43,52 @@ export function applyDesignPatchToDocument(
   let elements = [...document.elements]
   const affected = new Set<string>()
   for (const operation of patch.operations) {
+    if (operation.kind === 'add-image') {
+      if (
+        allowedTargets &&
+        (!operation.element.parentId || !allowedTargets.has(operation.element.parentId))
+      ) {
+        return failed(
+          'DESIGN_PATCH_SCOPE_VIOLATION',
+          `新增图片超出当前选区：${operation.element.id}`,
+        )
+      }
+      if (!images[operation.id]) {
+        return failed('DESIGN_PATCH_IMAGE_INVALID', `新增图片结果无效：${operation.id}`)
+      }
+      if (elements.some((element) => element.id === operation.element.id)) {
+        return failed('DESIGN_PATCH_ID_CONFLICT', `新增节点 ID 已存在：${operation.element.id}`)
+      }
+      const parent = elements.find((element) => element.id === operation.element.parentId)
+      if (!parent) {
+        return failed(
+          'DESIGN_PATCH_PARENT_MISSING',
+          `新增图片父级不存在：${operation.element.parentId}`,
+        )
+      }
+      if (parent.designRole !== 'design-block') {
+        return failed(
+          'DESIGN_PATCH_TARGET_FORBIDDEN',
+          `只能向设计模块新增图片：${operation.element.parentId}`,
+        )
+      }
+      if (!containsBounds(parent, operation.element)) {
+        return failed(
+          'DESIGN_PATCH_SCOPE_VIOLATION',
+          `新增图片超出目标模块边界：${operation.element.id}`,
+        )
+      }
+      const added = {
+        ...operation.element,
+        artboardId: patch.artboardId,
+        src: images[operation.id].src,
+      } as DesignElement
+      if (!isValidElement(added))
+        return failed('DESIGN_PATCH_ELEMENT_INVALID', `新增图片节点无效：${operation.element.id}`)
+      elements.push(added)
+      affected.add(added.id)
+      continue
+    }
     if (operation.kind === 'add') {
       if (
         allowedTargets &&
@@ -135,15 +191,87 @@ export function applyDesignPatchToDocument(
     affected.add(target.id)
   }
 
+  let nextDocument: DesignDocument = {
+    ...document,
+    version: document.version + 1,
+    elements,
+    updatedAt: new Date().toISOString(),
+  }
+  const artboard = document.artboards.find((item) => item.id === patch.artboardId)!
+  const targetIds = [...affected]
+  const expectedDeletedIds = patch.operations
+    .filter((operation) => operation.kind === 'delete')
+    .map((operation) => operation.elementId)
+  let repairCount = 0
+  let qualityReport = reviewScopedVisualQuality(nextDocument, artboard, targetIds, 'operation', {
+    beforeDocument: beforeSnapshot,
+    expectedDeletedIds,
+    repairCount,
+  })
+  while (!qualityReport.passed && repairCount < MAX_GATE_REPAIR_ATTEMPTS) {
+    const repaired = applySafeGateRepairs(nextDocument, artboard, qualityReport, new Set(targetIds))
+    if (!repaired) break
+    repairCount += 1
+    nextDocument = repaired
+    qualityReport = reviewScopedVisualQuality(nextDocument, artboard, targetIds, 'operation', {
+      beforeDocument: beforeSnapshot,
+      expectedDeletedIds,
+      repairCount,
+    })
+  }
+  if (!qualityReport.passed) {
+    return {
+      ok: false,
+      errorCode: 'DESIGN_GATE_FAILED',
+      message: `设计门禁未通过：${qualityReport.issues
+        .filter((issue) => issue.severity === 'error')
+        .map((issue) => issue.message)
+        .join('；')}`,
+      qualityReport,
+    }
+  }
   return {
     ok: true,
+    beforeSnapshot,
     affectedElementIds: [...affected],
-    document: {
-      ...document,
-      version: document.version + 1,
-      elements,
-      updatedAt: new Date().toISOString(),
-    },
+    document: nextDocument,
+    qualityReport,
+  }
+}
+
+function applySafeGateRepairs(
+  document: DesignDocument,
+  artboard: DesignDocument['artboards'][number],
+  report: DesignGateReport,
+  allowedTargets: Set<string>,
+): DesignDocument | undefined {
+  const repairableIds = new Set(
+    report.issues
+      .filter((issue) => issue.code === 'overflow' || issue.code === 'invalid-size')
+      .flatMap((issue) => issue.elementIds ?? [])
+      .filter((id) => allowedTargets.has(id)),
+  )
+  if (!repairableIds.size) return undefined
+  return {
+    ...document,
+    elements: document.elements.map((element) => {
+      if (!repairableIds.has(element.id)) return element
+      const width = Math.min(
+        Math.max(1, Number.isFinite(element.width) ? element.width : 1),
+        artboard.width,
+      )
+      const height = Math.min(
+        Math.max(1, Number.isFinite(element.height) ? element.height : 1),
+        artboard.height,
+      )
+      return {
+        ...element,
+        width,
+        height,
+        x: Math.min(Math.max(artboard.x, element.x), artboard.x + artboard.width - width),
+        y: Math.min(Math.max(artboard.y, element.y), artboard.y + artboard.height - height),
+      } as DesignElement
+    }),
   }
 }
 
@@ -251,6 +379,23 @@ function isValidElement(element: DesignElement) {
     element.width > 0 &&
     Number.isFinite(element.height) &&
     element.height > 0,
+  )
+}
+
+function containsBounds(parent: DesignElement, child: { x?: number; y?: number; width?: number; height?: number }) {
+  if (
+    !Number.isFinite(child.x) ||
+    !Number.isFinite(child.y) ||
+    !Number.isFinite(child.width) ||
+    !Number.isFinite(child.height)
+  )
+    return false
+  const epsilon = 0.5
+  return (
+    child.x! >= parent.x - epsilon &&
+    child.y! >= parent.y - epsilon &&
+    child.x! + child.width! <= parent.x + parent.width + epsilon &&
+    child.y! + child.height! <= parent.y + parent.height + epsilon
   )
 }
 

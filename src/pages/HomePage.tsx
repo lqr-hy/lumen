@@ -74,7 +74,7 @@ export function HomePage() {
     try {
       const result = await generateDesign({
         ...form,
-        prompt: form.prompt.trim() || '根据参考图和当前趋势生成一套可编辑的活动页设计稿',
+        prompt: form.prompt.trim() || '根据参考图和当前趋势生成一套活动页设计',
         referenceImages,
       })
       setDocument(result.document)

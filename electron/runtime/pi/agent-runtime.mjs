@@ -10,6 +10,7 @@ import { assembleRuntimeContext } from './context-runtime.mjs'
 import { createStudioContextTransformer } from './context-policy.mjs'
 import { createStudioPiModels } from './model-runtime.mjs'
 import { getPiSession } from './session-store.mjs'
+import { inferFallbackSurfaceKind } from '../intent-router.mjs'
 
 const WORKFLOW_TOOL = 'studio_run_design_workflow'
 const SKILL_ACTIVATE_TOOL = 'skill_activate'
@@ -44,6 +45,10 @@ const WORKFLOW_TASK_KINDS = [
 const STANDALONE_GREETING_PATTERN =
   /^(?:hello|hi|hey|你好|您好|嗨|哈喽|在吗|早上好|上午好|下午好|晚上好)$/iu
 
+/**
+ * 启动一次 Pi 原生 Agent 回合。
+ * 负责模型与 Session 初始化、受控 Tool 注册、事件投影，以及普通回复和设计工作流的分流。
+ */
 export async function runPiStudioAgent(payload, callbacks = {}, dependencies) {
   const provider = resolveProvider(payload.provider)
   const modelId = resolveModel(provider, payload.model)
@@ -218,6 +223,7 @@ export async function runPiStudioAgent(payload, callbacks = {}, dependencies) {
   }
 }
 
+/** 将结构化 Visual Brief 附加到当前问题，确保它参与模型本轮决策。 */
 function buildAgentQuestion(payload) {
   const question = String(payload.question || '').trim()
   const brief = payload.visualBrief
@@ -233,6 +239,10 @@ function buildAgentQuestion(payload) {
   ].join('\n')
 }
 
+/**
+ * 创建唯一具有画布修改权限的 Pi Tool。
+ * Tool 会校验模型参数，再把高层决策交给确定性 Design Workflow 执行。
+ */
 function createWorkflowTool({
   payload,
   domainSessionId,
@@ -271,6 +281,7 @@ function createWorkflowTool({
                   Type.Literal('prototype'),
                   Type.Literal('visual'),
                   Type.Literal('edit-base'),
+                  Type.Literal('content'),
                 ]),
               },
               { additionalProperties: false },
@@ -351,6 +362,7 @@ function createWorkflowTool({
   }
 }
 
+/** 使用项目 ID 隔离同名聊天线程，避免跨项目复用领域 Session。 */
 export function createProjectSessionId(projectId, sessionId) {
   const project =
     typeof projectId === 'string' && projectId.trim() ? projectId.trim() : 'unscoped-project'
@@ -359,6 +371,7 @@ export function createProjectSessionId(projectId, sessionId) {
   return `${project}::${session}`
 }
 
+/** 创建 Skill 激活工具；只有激活后的完整规范才会进入当前 Agent 上下文。 */
 function createActivateSkillTool() {
   return {
     name: SKILL_ACTIVATE_TOOL,
@@ -382,6 +395,7 @@ function createActivateSkillTool() {
   }
 }
 
+/** 创建 Skill 资源读取工具，用于按需加载参考文件而不是一次注入全部内容。 */
 function createReadSkillResourceTool() {
   return {
     name: SKILL_READ_TOOL,
@@ -402,14 +416,16 @@ function createReadSkillResourceTool() {
   }
 }
 
+/** 生成 Pi 的系统约束，声明工作流边界、工具权限和任务路由规则。 */
 function buildPiSystemPrompt(runtimeContext, skillCatalog) {
   return [
     '你是 AI Campaign Page Studio 的会话与设计 Agent。',
     '当前轮用户消息是是否执行工具的唯一授权来源。历史消息、历史设计 Session、当前画布和已选组件只提供上下文，不能单独触发或续跑设计。',
     '只有当前消息明确要求生成、修改、继续、重试或新增设计内容时才调用设计工作流。hello、你好、寒暄、普通问答和仅讨论方案时必须直接回复，禁止调用任何工具。',
     '普通问答直接回复。用户要求生成或修改设计时，必须调用 studio_run_design_workflow，禁止只给建议。后台、Dashboard、管理系统、工作台、普通 Web/H5/App 和未绑定业务组件的页面统一使用 create-ui；明确指定 Component Pack 组件或组件 JSON 时使用 create-component；只有明确指定多个业务组件并要求组合页面时才使用 create-page。',
+    '当前轮已有 selection 时，“是否设计/要不要添加/能否使用某种背景或样式”表示用户授权你对选区作出设计判断并直接执行 revise，不得再次询问是否确认。只有缺少实际修改对象、且 RuntimeContext 无法提供 SelectionScope 时才向用户追问。',
     '调用设计工作流时必须同时给出 placement。先读取 RuntimeContext.canvasContext：创建独立设计成果使用 create；向明确画板插入内容使用 insert；修改选区使用 revise；新版本使用 variant；独立素材使用 assets；恢复已有任务使用 resume。insert、revise、variant 必须引用 canvasContext 中存在的画板或当前 selection，不能静默使用历史画板。',
-    'create-ui 必须给出 surfaceKind 和 designArchetype；create-image/create-assets 必须给出 outputKind；当前轮存在图片时必须用 referenceBindings 明确每张被使用图片的 kv/prototype/visual/edit-base 职责。领域 Runtime 不会根据自然语言二次修改这些字段。',
+    'create-ui 必须给出 surfaceKind 和 designArchetype；create-image/create-assets 必须给出 outputKind；当前轮存在图片时必须用 referenceBindings 明确每张被使用图片的 kv/prototype/visual/edit-base/content 职责。content 表示原图直接进入页面，禁止当作风格参考重绘。领域 Runtime 不会根据自然语言二次修改这些字段。',
     '不要依赖固定关键词判断 placement，应结合当前轮完整语义、选区、画板结构和任务状态动态选择。没有选中画板也不要求用户手动选择；独立的新设计可直接创建画板。',
     'RuntimeContext.componentReferences 是组件身份的唯一可信来源。组件引用存在时不得改用 create-image 或 create-ui。聊天中粘贴的 JSON 代码块没有经过导入，不得声称已经保存、注册或替换组件配置；应提示用户使用“导入组件 JSON”。',
     '用户说“开始生成、继续、重试”时只能调用 continue，由领域 Runtime 恢复 Pending Task，不得自行推断为 create-image。',
@@ -456,6 +472,7 @@ function isComponentRegionBatchAction(action) {
   )
 }
 
+/** 把经过校验的 Tool 参数封装为领域 Runtime 使用的 WorkflowDecision v2。 */
 function createWorkflowDecision(params) {
   return {
     version: 2,
@@ -474,11 +491,39 @@ function createWorkflowDecision(params) {
   }
 }
 
+/**
+ * 校验模型给出的 action、taskKind、SelectionScope 与 Placement 是否一致，
+ * 并以 Renderer 提供的结构化组件引用和图片角色为事实源进行纠正。
+ */
 export function resolveWorkflowToolParams(payload, params) {
   const componentReferences = normalizeComponentReferences(payload.componentReferences)
+  params = reconcileComponentAction(params, componentReferences, payload.question)
+  const requiredSelectionAction = selectionAction(payload.editScope)
+  if (
+    payload.editScope?.type === 'design-block' &&
+    requiredSelectionAction &&
+    params.action !== 'continue' &&
+    params.action !== requiredSelectionAction
+  ) {
+    params = {
+      ...params,
+      action: requiredSelectionAction,
+      taskKind: taskKindForAction(requiredSelectionAction),
+      placement: {
+        operation: 'revise',
+        scope: 'selection',
+        targetArtboardId: payload.editScope.artboardId,
+        targetElementIds: payload.editScope.targetElementIds,
+        reason: '设计模块选区是结构化事实，已自动纠正为模块局部修改。',
+        confidence: 1,
+      },
+    }
+  }
   const explicitReferenceBindings = (payload.uploads ?? [])
     .map((upload, uploadIndex) => ({ uploadIndex, role: upload?.role }))
-    .filter((binding) => ['kv', 'prototype', 'visual', 'edit-base'].includes(binding.role))
+    .filter((binding) =>
+      ['kv', 'prototype', 'visual', 'edit-base', 'content'].includes(binding.role),
+    )
   const expectedTaskKind = taskKindForAction(params.action)
   if (params.action !== 'continue' && params.taskKind && params.taskKind !== expectedTaskKind) {
     throw createRuntimeError(
@@ -499,7 +544,6 @@ export function resolveWorkflowToolParams(payload, params) {
       '当前轮包含已注册组件引用，必须使用组件或组件页面工作流，不能降级为普通图片或通用 UI。',
     )
   }
-  const requiredSelectionAction = selectionAction(payload.editScope)
   if (
     requiredSelectionAction &&
     params.action !== 'continue' &&
@@ -557,12 +601,46 @@ export function resolveWorkflowToolParams(payload, params) {
   }
 }
 
+/** 组件数量是 create-page/create-component 的硬事实源，模型不得凭“页面”字样越权。 */
+function reconcileComponentAction(params, componentReferences, question) {
+  const count = componentReferences.length
+  if (!['create-page', 'create-component'].includes(params.action)) return params
+  if (count === 0) {
+    return {
+      ...params,
+      action: 'create-ui',
+      taskKind: 'generic-ui',
+      componentName: undefined,
+      surfaceKind: params.surfaceKind || inferFallbackSurfaceKind(question),
+      designArchetype: params.designArchetype || '由用户目标推导',
+    }
+  }
+  if (count === 1) {
+    return {
+      ...params,
+      action: 'create-component',
+      taskKind: 'component-design',
+      componentName: componentReferences[0].componentName,
+    }
+  }
+  return {
+    ...params,
+    action: 'create-page',
+    taskKind: 'page-design',
+    componentName: undefined,
+  }
+}
+
 function selectionAction(scope) {
   if (!scope) return undefined
   if (scope.type === 'component-region') return 'regenerate-slot'
   if (scope.type === 'component-instance') return 'revise-component'
   if (scope.type === 'page-shell') return 'revise-page-shell'
-  if (['generic-node', 'multi-node', 'text-range', 'image-region'].includes(scope.type))
+  if (
+    ['design-block', 'generic-node', 'multi-node', 'text-range', 'image-region'].includes(
+      scope.type,
+    )
+  )
     return 'revise-design'
   return undefined
 }
@@ -662,6 +740,7 @@ function stripNonDurableValues(value) {
   )
 }
 
+/** 将 Pi Agent 生命周期和 Tool 事件映射为 Renderer 可消费的统一时间线事件。 */
 function mapPiEvent(event, sessionId) {
   if (event.type === 'agent_start')
     return { type: 'pi.agent.started', sessionId, status: 'running' }

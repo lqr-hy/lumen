@@ -156,6 +156,14 @@
   background: rgba(109, 40, 217, 0.92);
 }
 
+.prompt-reference-role[data-role='auto'] {
+  background: rgba(37, 99, 235, 0.92);
+}
+
+.prompt-reference-role[data-role='content'] {
+  background: rgba(5, 150, 105, 0.92);
+}
+
 .prompt-reference-role[data-role='prototype'] {
   background: rgba(3, 105, 161, 0.92);
 }

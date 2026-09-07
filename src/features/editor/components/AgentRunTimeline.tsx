@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import {
   CheckCircle2,
   ChevronDown,
@@ -113,49 +113,95 @@ export function AgentRunTimeline({
           ) : null}
           {run.deliverables.length ? (
             <div className="agent-run-deliverables">
-              {run.deliverables.map((deliverable) =>
-                deliverable.conflictResolution ? (
-                  <DesignSpecConflictEditor
-                    key={deliverable.id}
-                    deliverable={deliverable}
-                    onResolve={onResolveConflict}
-                  />
-                ) : isCanvasRevisionConflict(deliverable) ? (
-                  <CanvasConflictDiagnostics
-                    key={deliverable.id}
-                    deliverable={deliverable}
-                    onLocate={onLocate}
-                    onRetry={onRetry}
-                  />
-                ) : deliverable.patchOperations?.length ? (
-                  <DesignPatchDiagnostics
-                    key={deliverable.id}
-                    deliverable={deliverable}
-                    scope={selectionScope}
-                    document={document}
-                    onLocate={onLocate}
-                  />
-                ) : (
-                  <button
-                    key={deliverable.id}
-                    type="button"
-                    disabled={!deliverable.artboardId && !deliverable.elementId}
-                    onClick={() => onLocate?.(deliverable)}
-                  >
-                    <LocateFixed size={14} />
-                    <span>
-                      <strong>{deliverable.title}</strong>
-                      <small>{deliverable.summary}</small>
-                    </span>
-                  </button>
-                ),
-              )}
+              {run.deliverables.map((deliverable) => (
+                <Fragment key={deliverable.id}>
+                  {deliverable.conflictResolution ? (
+                    <DesignSpecConflictEditor
+                      deliverable={deliverable}
+                      onResolve={onResolveConflict}
+                    />
+                  ) : isCanvasRevisionConflict(deliverable) ? (
+                    <CanvasConflictDiagnostics
+                      deliverable={deliverable}
+                      onLocate={onLocate}
+                      onRetry={onRetry}
+                    />
+                  ) : deliverable.patchOperations?.length ? (
+                    <DesignPatchDiagnostics
+                      deliverable={deliverable}
+                      scope={selectionScope}
+                      document={document}
+                      onLocate={onLocate}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={!deliverable.artboardId && !deliverable.elementId}
+                      onClick={() => onLocate?.(deliverable)}
+                    >
+                      <LocateFixed size={14} />
+                      <span>
+                        <strong>{deliverable.title}</strong>
+                        <small>{deliverable.summary}</small>
+                      </span>
+                    </button>
+                  )}
+                  {deliverable.qualityReport ? (
+                    <QualityGateStatus report={deliverable.qualityReport} />
+                  ) : null}
+                </Fragment>
+              ))}
             </div>
           ) : null}
           {run.error ? <RunError error={run.error} /> : null}
         </div>
       ) : null}
     </div>
+  )
+}
+
+function QualityGateStatus({
+  report,
+}: {
+  report: NonNullable<ChatRunDeliverable['qualityReport']>
+}) {
+  const errors = report.issues.filter((issue) => issue.severity === 'error')
+  const warnings = report.issues.filter((issue) => issue.severity === 'warning')
+  const status = report.passed ? (warnings.length ? 'warning' : 'passed') : 'blocked'
+  const label = status === 'passed' ? '门禁通过' : status === 'warning' ? '有警告' : '门禁阻断'
+  return (
+    <section className={`agent-run-quality-gate ${status}`} aria-label={`设计门禁：${label}`}>
+      <header>
+        {status === 'passed' ? (
+          <CheckCircle2 size={14} />
+        ) : status === 'warning' ? (
+          <Circle size={14} />
+        ) : (
+          <XCircle size={14} />
+        )}
+        <strong>设计门禁</strong>
+        <b>{label}</b>
+        <span>
+          {report.scope} · {Math.round(report.score * 100)} 分
+        </span>
+      </header>
+      <div>
+        <span>{report.targetIds.length} 个目标</span>
+        {errors.length ? <span>{errors.length} 个错误</span> : null}
+        {warnings.length ? <span>{warnings.length} 个警告</span> : null}
+        {report.repairCount ? <span>自动修复 {report.repairCount}/2 轮</span> : null}
+      </div>
+      {errors.length || warnings.length ? (
+        <ul>
+          {[...errors, ...warnings].slice(0, 4).map((issue, index) => (
+            <li key={`${issue.code}-${index}`} className={issue.severity}>
+              <span>{issue.severity === 'error' ? '错误' : '警告'}</span>
+              {issue.message}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
   )
 }
 
