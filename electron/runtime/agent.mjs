@@ -23,7 +23,18 @@ import { assertTurnBudget, consumeTurnBudget, ensureTurnBudget } from './pi/turn
 const activeSessions = new Map()
 const MAX_ITERATIONS = 32
 const DEFAULT_TOOL_TIMEOUT_MS = 5 * 60 * 1000
-// 页面组件工具内部包含多个组件流水线，不能复用单组件的 5 分钟限制。
+// 这些 Tool 内部串行生成多张图片，每张自带 per-request 超时；
+// 外层必须覆盖累计耗时，不能复用单次请求的 5 分钟限制。
+const BATCH_IMAGE_TOOL_TIMEOUT_MS = 20 * 60 * 1000
+const BATCH_IMAGE_TOOLS = new Set([
+  'component.generate-assets',
+  'component.generate-image',
+  'component.regenerate-slots',
+  'page.generate-component',
+  'page.generate-shell',
+  'ui.transform',
+  'design.patch.generate-images',
+])
 const MAX_TOOL_ATTEMPTS = 2
 
 /**
@@ -90,7 +101,24 @@ export async function runDesignWorkflow(payload, callbacks = {}, dependencies) {
   }
 
   const controller = new AbortController()
-  activeSessions.set(session.id, controller)
+  // Renderer 只知道自己的 threadId，而领域 Session 用 projectId::threadId 隔离项目。
+  // 两个 key 都注册，"停止"才能命中真正在执行的 Workflow。
+  const cancelKeys = [
+    session.id,
+    ...(typeof payload.rendererSessionId === 'string' && payload.rendererSessionId.trim()
+      ? [payload.rendererSessionId.trim()]
+      : []),
+  ].filter((key, index, list) => list.indexOf(key) === index)
+  cancelKeys.forEach((key) => activeSessions.set(key, controller))
+  // 上游 Pi Agent 的取消必须继续传导到本次 Workflow 和底层生图请求，
+  // 否则中止 Agent Loop 之后图片仍会继续生成并写入画布。
+  const parentSignal = payload.signal
+  const abortFromParent = () =>
+    controller.abort(
+      parentSignal?.reason ?? createRuntimeError('AGENT_CANCELLED', '用户已取消当前任务。'),
+    )
+  if (parentSignal?.aborted) abortFromParent()
+  else parentSignal?.addEventListener('abort', abortFromParent, { once: true })
   try {
     return await executePlan(
       session,
@@ -100,7 +128,10 @@ export async function runDesignWorkflow(payload, callbacks = {}, dependencies) {
       runtimePlugins,
     )
   } finally {
-    activeSessions.delete(session.id)
+    parentSignal?.removeEventListener('abort', abortFromParent)
+    cancelKeys.forEach((key) => {
+      if (activeSessions.get(key) === controller) activeSessions.delete(key)
+    })
   }
 }
 
@@ -386,7 +417,10 @@ function isPlacementDecision(value) {
   )
 }
 
-/** 取消当前领域 Workflow；若尚未进入领域执行器，则继续取消对应 Pi Agent。 */
+/**
+ * 取消当前领域 Workflow；若尚未进入领域执行器，则继续取消对应 Pi Agent。
+ * sessionId 可以是 Renderer 的 threadId 或领域 projectId::threadId，两者都已注册。
+ */
 export function cancelDesignWorkflow(sessionId) {
   const controller = activeSessions.get(sessionId)
   if (controller) {
@@ -1433,11 +1467,14 @@ async function executeToolWithRetry(
   throw lastError
 }
 
+/**
+ * 按 Tool 实际工作量分配超时。批量生图 Tool 内部已有 per-request 超时和重试，
+ * 外层预算必须覆盖串行累计耗时，否则整个 Tool 会被重试、已生成的图片重复付费。
+ */
 function getToolTimeout(toolName) {
-  const defaultTimeout = DEFAULT_TOOL_TIMEOUT_MS
-  const envName = 'AGENT_TOOL_TIMEOUT_MS'
-  const configured = Number(process.env[envName])
-  return Number.isFinite(configured) && configured > 0 ? configured : defaultTimeout
+  const configured = Number(process.env.AGENT_TOOL_TIMEOUT_MS)
+  if (Number.isFinite(configured) && configured > 0) return configured
+  return BATCH_IMAGE_TOOLS.has(toolName) ? BATCH_IMAGE_TOOL_TIMEOUT_MS : DEFAULT_TOOL_TIMEOUT_MS
 }
 
 function getToolAttempts(toolName) {

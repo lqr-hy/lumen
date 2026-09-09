@@ -27,6 +27,7 @@ import {
 } from '../features/codegen/compiler-registry'
 import type { CodeDocument, CodeFramework } from '../features/codegen/types'
 import { renderArtboardSnapshot } from '../features/editor/utils/artboard-snapshot'
+import { buildImageDownloadName } from '../features/editor/utils/image-file'
 import {
   buildVisualNormalizationPatches,
   compileVisualDirectionPrompt,
@@ -800,8 +801,7 @@ async function downloadPng(src: string, name: string, scale: 1 | 2) {
   const blob = await response.blob()
   const url = URL.createObjectURL(blob)
   const link = globalThis.document.createElement('a')
-  const suffix = scale === 2 ? '@2x' : ''
-  link.download = `${sanitizeFileName(name) || 'design'}${suffix}.png`
+  link.download = buildImageDownloadName(name || 'design', 'png', scale === 2 ? '@2x' : '')
   link.href = url
   globalThis.document.body.appendChild(link)
   link.click()

@@ -16,6 +16,7 @@ const EXPORT_ADAPTER_TIMEOUT_MS = 10_000
 const MAX_IMPORTED_COMPONENT_BYTES = 2 * 1024 * 1024
 const MAX_IMPORTED_COMPONENT_NODES = 50_000
 const MAX_IMPORTED_COMPONENT_DEPTH = 40
+const MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024
 
 export function configureComponentPackRuntime(config = {}) {
   runtimeConfig = {
@@ -404,7 +405,7 @@ async function loadComponentDescriptor(pack, descriptor, options = {}) {
     )
   }
   const thumbnailUpload = component.thumbnail
-    ? await loadTrustedComponentThumbnail(component.thumbnail, component.name)
+    ? await loadComponentThumbnail(component.thumbnail, component.name)
     : undefined
   return {
     component,
@@ -541,10 +542,10 @@ function validateImportedComponent(component) {
         '组件 thumbnail 不是有效 URL。',
       )
     }
-    if (!isTrustedThumbnailUrl(url)) {
+    if (!isAllowedThumbnailUrl(url)) {
       throw createRuntimeError(
         'COMPONENT_IMPORT_THUMBNAIL_INVALID',
-        '组件 thumbnail 必须来自可信 HTTPS 图片域。',
+        '组件 thumbnail 必须是 HTTPS 图片地址。',
       )
     }
   }
@@ -648,7 +649,7 @@ function resolveInside(root, relativePath) {
   return target
 }
 
-async function loadTrustedComponentThumbnail(value, componentName) {
+async function loadComponentThumbnail(value, componentName) {
   let url
   try {
     url = new URL(value)
@@ -658,16 +659,17 @@ async function loadTrustedComponentThumbnail(value, componentName) {
       `${componentName} 的 thumbnail URL 无效。`,
     )
   }
-  if (!isTrustedThumbnailUrl(url)) {
+  if (!isAllowedThumbnailUrl(url)) {
     throw createRuntimeError(
       'COMPONENT_THUMBNAIL_UNTRUSTED',
-      `${componentName} 的 thumbnail 不在允许的图片域中。`,
+      `${componentName} 的 thumbnail 必须是 HTTPS 图片地址。`,
     )
   }
   let response
   try {
-    response = await fetch(url, { signal: AbortSignal.timeout(15_000) })
+    response = await fetchPublicThumbnail(url)
   } catch (error) {
+    if (error?.code === 'COMPONENT_THUMBNAIL_UNTRUSTED') throw error
     throw createRuntimeError(
       'COMPONENT_THUMBNAIL_LOAD_FAILED',
       `${componentName} 的 thumbnail 下载失败：${error instanceof Error ? error.message : String(error)}`,
@@ -678,20 +680,28 @@ async function loadTrustedComponentThumbnail(value, componentName) {
       'COMPONENT_THUMBNAIL_LOAD_FAILED',
       `${componentName} 的 thumbnail 下载失败：HTTP ${response.status}。`,
     )
-  if (!isTrustedThumbnailUrl(new URL(response.url))) {
+  const declaredBytes = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declaredBytes) && declaredBytes > MAX_THUMBNAIL_BYTES) {
     throw createRuntimeError(
-      'COMPONENT_THUMBNAIL_UNTRUSTED',
-      `${componentName} 的 thumbnail 重定向到了非可信图片域。`,
+      'COMPONENT_THUMBNAIL_INVALID',
+      `${componentName} 的 thumbnail 超过 8MB。`,
     )
   }
-  const bytes = Buffer.from(await response.arrayBuffer())
-  if (!bytes.length || bytes.length > 8 * 1024 * 1024) {
+  const bytes = await readResponseBytes(response, MAX_THUMBNAIL_BYTES)
+  if (!bytes.length) {
     throw createRuntimeError(
       'COMPONENT_THUMBNAIL_INVALID',
       `${componentName} 的 thumbnail 大小无效。`,
     )
   }
-  const mime = normalizeThumbnailMime(response.headers.get('content-type'), url.pathname)
+  const responsePathname = response.url ? new URL(response.url).pathname : url.pathname
+  const mime = normalizeThumbnailMime(response.headers.get('content-type'), responsePathname)
+  if (!isSupportedThumbnail(bytes, mime)) {
+    throw createRuntimeError(
+      'COMPONENT_THUMBNAIL_INVALID',
+      `${componentName} 的 thumbnail 响应不是受支持的 PNG、JPEG 或 WebP 图片。`,
+    )
+  }
   return {
     type: 'file',
     name: `${componentName}-thumbnail.${extensionForThumbnailMime(mime)}`,
@@ -701,15 +711,78 @@ async function loadTrustedComponentThumbnail(value, componentName) {
   }
 }
 
-function isTrustedThumbnailUrl(url) {
-  const hostname = url.hostname.toLowerCase()
+function isAllowedThumbnailUrl(url) {
+  // thumbnail 域名不做白名单或公网 IP 限制，以兼容 UAT、内网和自定义 CDN。
+  // 仍要求 HTTPS 且禁止在 URL 中携带账号密码；内容本身继续执行大小、格式和超时校验。
   return (
     url.protocol === 'https:' &&
-    (hostname === 'bilibili.com' ||
-      hostname.endsWith('.bilibili.com') ||
-      hostname === 'hdslb.com' ||
-      hostname.endsWith('.hdslb.com'))
+    !url.username &&
+    !url.password
   )
+}
+
+async function fetchPublicThumbnail(initialUrl) {
+  let url = initialUrl
+  for (let redirects = 0; redirects <= 4; redirects += 1) {
+    if (!isAllowedThumbnailUrl(url)) {
+      throw createRuntimeError(
+        'COMPONENT_THUMBNAIL_UNTRUSTED',
+        'thumbnail 地址或重定向目标必须是 HTTPS 地址。',
+      )
+    }
+    const response = await fetch(url, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response
+    const location = response.headers.get('location')
+    if (!location) throw new Error('thumbnail 重定向缺少 Location。')
+    await response.body?.cancel()
+    url = new URL(location, url)
+  }
+  throw new Error('thumbnail 重定向次数超过限制。')
+}
+
+function isSupportedThumbnail(bytes, mime) {
+  if (mime === 'image/png') {
+    return bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+  }
+  if (mime === 'image/jpeg') return bytes[0] === 0xff && bytes[1] === 0xd8
+  if (mime === 'image/webp') {
+    return (
+      bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      bytes.subarray(8, 12).toString('ascii') === 'WEBP'
+    )
+  }
+  return false
+}
+
+async function readResponseBytes(response, maximumBytes) {
+  if (!response.body?.getReader) {
+    const bytes = Buffer.from(await response.arrayBuffer())
+    if (bytes.length > maximumBytes) {
+      throw createRuntimeError('COMPONENT_THUMBNAIL_INVALID', 'thumbnail 超过 8MB。')
+    }
+    return bytes
+  }
+  const reader = response.body.getReader()
+  const chunks = []
+  let totalBytes = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      totalBytes += value.byteLength
+      if (totalBytes > maximumBytes) {
+        await reader.cancel()
+        throw createRuntimeError('COMPONENT_THUMBNAIL_INVALID', 'thumbnail 超过 8MB。')
+      }
+      chunks.push(Buffer.from(value))
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return Buffer.concat(chunks, totalBytes)
 }
 
 function normalizeThumbnailMime(contentType, pathname) {
@@ -718,6 +791,7 @@ function normalizeThumbnailMime(contentType, pathname) {
     .trim()
     .toLowerCase()
   if (['image/png', 'image/jpeg', 'image/webp'].includes(value)) return value
+  if (value && value !== 'application/octet-stream') return ''
   const extension = path.extname(pathname).toLowerCase()
   if (extension === '.jpg' || extension === '.jpeg') return 'image/jpeg'
   if (extension === '.webp') return 'image/webp'

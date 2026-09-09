@@ -1,5 +1,4 @@
 import {
-  createAssistantMessageEventStream,
   createImagesModels,
   createImagesProvider,
   createModels,
@@ -8,15 +7,6 @@ import {
 } from '@earendil-works/pi-ai'
 import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy'
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy'
-
-const EMPTY_USAGE = Object.freeze({
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  totalTokens: 0,
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-})
 
 /** 根据项目 Provider 配置创建 Pi 文本模型注册表和当前模型定义。 */
 export function createStudioPiModels({ provider, runtime, model }) {
@@ -28,7 +18,7 @@ export function createStudioPiModels({ provider, runtime, model }) {
       id: provider.id,
       name: provider.label,
       baseUrl: runtime.baseUrl,
-      auth: { apiKey: envApiKeyAuth(provider.id, [provider.apiKeyEnv]) },
+      auth: { apiKey: envApiKeyAuth(provider.id, [runtime.apiKeyEnv || provider.apiKeyEnv]) },
       models: [modelDefinition],
       api,
     }),
@@ -41,14 +31,14 @@ export function createStudioPiModels({ provider, runtime, model }) {
  */
 export async function requestPiImages({ provider, runtime, model, payload, transport }) {
   const imageModels = createImagesModels()
-  const modelDefinition = createImageModel(provider, model)
+  const modelDefinition = createImageModel(provider, model, runtime)
   let transportResult
   let transportError
   imageModels.setProvider(
     createImagesProvider({
       id: provider.id,
       name: provider.label,
-      auth: { apiKey: envApiKeyAuth(provider.id, [provider.apiKeyEnv]) },
+      auth: { apiKey: envApiKeyAuth(provider.id, [runtime.apiKeyEnv || provider.apiKeyEnv]) },
       models: [modelDefinition],
       api: {
         async generateImages(_selectedModel, context, options) {
@@ -69,7 +59,7 @@ export async function requestPiImages({ provider, runtime, model, payload, trans
             transportResult.artifacts ??
             (transportResult.artifact ? [transportResult.artifact] : [])
           return {
-            api: 'bili-openai-images',
+            api: 'studio-openai-images',
             provider: provider.id,
             model,
             output: artifacts.map((artifact) => ({
@@ -140,27 +130,26 @@ function createReasoningModel(provider, runtime, model) {
   }
 }
 
-function createImageModel(provider, model) {
+function createImageModel(provider, model, runtime) {
   return {
     id: model,
     name: model,
-    api: 'bili-openai-images',
+    api: 'studio-openai-images',
     provider: provider.id,
-    baseUrl: provider.defaultBaseUrl,
+    baseUrl: runtime.baseUrl,
     input: ['text', 'image'],
     output: ['image'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   }
 }
 
-/** 选择标准 Responses、Anthropic Messages 或项目自定义的推理协议适配器。 */
+/** 选择标准 Responses 或 Anthropic Messages 协议适配器。 */
 function resolveReasoningApi(provider, runtime) {
   if (provider.wireApi === 'openai-responses') {
     const api = openAIResponsesApi()
-    return provider.id === 'codex' ? withBiliCodexProtocol(api) : api
+    return runtime.codexCompatibility ? withBiliCodexProtocol(api) : api
   }
   if (provider.wireApi === 'anthropic-messages') return anthropicMessagesApi()
-  if (provider.wireApi === 'copilot-prediction') return createCopilotPredictionApi(runtime)
   throw new Error(`Pi 不支持推理协议：${provider.wireApi}`)
 }
 
@@ -339,99 +328,4 @@ function waitForRetry(delay, signal) {
 function createPiUserAgent() {
   if (typeof process === 'undefined') return 'pi (browser)'
   return `pi (${process.platform}; ${process.arch})`
-}
-
-function createCopilotPredictionApi(runtime) {
-  const stream = (model, context, options) =>
-    createDirectTextStream(
-      model,
-      async () => {
-        const response = await fetch(runtime.baseUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'text/event-stream, application/json, text/plain',
-            ...(runtime.apiKey ? { Authorization: `Bearer ${runtime.apiKey}` } : {}),
-          },
-          body: JSON.stringify({
-            question: flattenContext(context),
-            stream: false,
-            streaming: false,
-          }),
-          signal: options?.signal,
-        })
-        if (!response.ok) throw new Error(`Copilot 请求失败：${response.status}`)
-        return extractDirectText(await response.text())
-      },
-      options?.signal,
-    )
-  return { stream, streamSimple: stream }
-}
-
-function createDirectTextStream(model, produce, signal) {
-  const stream = createAssistantMessageEventStream()
-  queueMicrotask(async () => {
-    const base = createAssistantMessage(model)
-    try {
-      if (signal?.aborted) throw signal.reason || new Error('请求已取消。')
-      stream.push({ type: 'start', partial: base })
-      const text = String((await produce()) || '')
-      const partial = { ...base, content: [{ type: 'text', text }], stopReason: 'stop' }
-      stream.push({ type: 'text_start', contentIndex: 0, partial: base })
-      if (text) stream.push({ type: 'text_delta', contentIndex: 0, delta: text, partial })
-      stream.push({ type: 'text_end', contentIndex: 0, content: text, partial })
-      stream.push({ type: 'done', reason: 'stop', message: partial })
-      stream.end(partial)
-    } catch (error) {
-      const failed = {
-        ...base,
-        stopReason: signal?.aborted ? 'aborted' : 'error',
-        errorMessage: error instanceof Error ? error.message : String(error),
-      }
-      stream.push({ type: 'error', reason: failed.stopReason, error: failed })
-      stream.end(failed)
-    }
-  })
-  return stream
-}
-
-function flattenContext(context) {
-  return [
-    context.systemPrompt,
-    ...(context.messages ?? []).map((message) => {
-      if (typeof message.content === 'string') return message.content
-      return (message.content ?? [])
-        .filter((item) => item.type === 'text')
-        .map((item) => item.text)
-        .join('\n')
-    }),
-  ]
-    .filter(Boolean)
-    .join('\n\n')
-}
-
-function extractDirectText(source) {
-  try {
-    const value = JSON.parse(source)
-    return value.text || value.answer || value.output_text || value.result || source
-  } catch {
-    return source
-      .split(/\r?\n/)
-      .map((line) => line.replace(/^data:\s*/, ''))
-      .filter(Boolean)
-      .join('')
-  }
-}
-
-function createAssistantMessage(model) {
-  return {
-    role: 'assistant',
-    content: [],
-    api: model.api,
-    provider: model.provider,
-    model: model.id,
-    usage: EMPTY_USAGE,
-    stopReason: 'pending',
-    timestamp: Date.now(),
-  }
 }

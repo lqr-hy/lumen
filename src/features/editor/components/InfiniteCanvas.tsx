@@ -20,6 +20,7 @@ import { useEditorStore } from '../store/editor-store'
 import type { Artboard, DesignElement, ImageElement, Point } from '../types'
 import { clampZoom, screenToWorld, zoomAtPoint } from '../utils/coordinates'
 import { rasterizeNode } from '../utils/rasterize-node'
+import { buildImageDownloadName } from '../utils/image-file'
 import {
   canRegenerateComponentSlot,
   createComponentSlotRegenerationText,
@@ -1432,10 +1433,12 @@ export function InfiniteCanvas({
     const node = getElementNode(element)
     if (!node) return null
     // 与画板快照共用 foreignObject 光栅化：html2canvas 会裁掉紧凑行高文字的字形。
-    const bounds = node.getBoundingClientRect()
+    // 尺寸必须用元素逻辑尺寸，不能用 getBoundingClientRect：后者带画布 zoom 缩放，
+    // 而 rasterizeNode 会把克隆体的 transform 清成 none 并从原点排布。缩小视图
+    // （zoom < 1）时 SVG 画布比内容小，导出图会被裁掉右下部分。
     const canvas = await rasterizeNode(node, {
-      width: bounds.width,
-      height: bounds.height,
+      width: element.width,
+      height: element.height,
       background: options?.format === 'jpeg' ? '#ffffff' : null,
       scale: options?.scale ?? 2,
     })
@@ -1493,7 +1496,7 @@ export function InfiniteCanvas({
 
   const downloadImageData = (image: { name: string; src: string }, format: 'png' | 'jpeg') => {
     const link = globalThis.document.createElement('a')
-    link.download = `${image.name || 'canvas-image'}.${format === 'jpeg' ? 'jpg' : 'png'}`
+    link.download = buildImageDownloadName(image.name, format === 'jpeg' ? 'jpg' : 'png')
     link.href = image.src
     link.click()
   }

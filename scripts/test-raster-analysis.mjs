@@ -65,6 +65,65 @@ assert.equal(filledOverlay.analysis.transform.mode, 'fill-content')
 assert.equal(filledOverlay.analysis.contentBounds.width, 180)
 assert.equal(filledOverlay.analysis.contentBounds.height, 64)
 
+// 非透明 cover 路径必须真正居中裁剪。放大再 clamp 会被图片边界挡回原尺寸，
+// 让 resize 变成非等比拉伸：正圆会被压成椭圆，而归一化后的 ratioError 恒为 0，
+// 门禁完全看不见。这里用正圆直接验证几何不失真。
+const circleSource = new PNG({ width: 1024, height: 1536 })
+for (let y = 0; y < circleSource.height; y += 1) {
+  for (let x = 0; x < circleSource.width; x += 1) {
+    const offset = (y * circleSource.width + x) * 4
+    const inside = Math.hypot(x - 512, y - 768) < 140
+    circleSource.data.set(inside ? [255, 255, 255, 255] : [20, 20, 20, 255], offset)
+  }
+}
+const circleBuffer = PNG.sync.write(circleSource)
+for (const target of [
+  { width: 375, height: 812 },
+  { width: 375, height: 1600 },
+]) {
+  const covered = normalizeRasterForTarget(circleBuffer, 'image/png', target, {
+    transparent: false,
+  })
+  assert.equal(covered.analysis.transform.mode, 'cover')
+  const targetRatio = target.width / target.height
+  const bounds = covered.analysis.transform.sourceBounds
+  // 裁剪后的取样框比例必须等于目标比例，否则 resize 就是非等比拉伸。
+  assert(
+    Math.abs(bounds.width / bounds.height - targetRatio) / targetRatio < 0.01,
+    `裁剪框必须匹配目标比例：${JSON.stringify(bounds)}`,
+  )
+  assert(bounds.width <= circleSource.width && bounds.height <= circleSource.height)
+  const output = PNG.sync.read(covered.buffer)
+  let minX = Infinity
+  let maxX = -1
+  let minY = Infinity
+  let maxY = -1
+  for (let y = 0; y < output.height; y += 1) {
+    for (let x = 0; x < output.width; x += 1) {
+      if (output.data[(y * output.width + x) * 4] > 200) {
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+      }
+    }
+  }
+  const circleAspect = (maxX - minX + 1) / (maxY - minY + 1)
+  assert(
+    Math.abs(circleAspect - 1) < 0.06,
+    `正圆不得被拉伸成椭圆，实测 aspect=${circleAspect.toFixed(3)}`,
+  )
+  assert(covered.analysis.transform.cropLoss > 0 && covered.analysis.transform.cropLoss < 1)
+}
+// 比例一致时不应产生任何裁切损失。
+const exactRatio = normalizeRasterForTarget(
+  circleBuffer,
+  'image/png',
+  { width: 512, height: 768 },
+  { transparent: false },
+)
+assert.equal(exactRatio.analysis.transform.cropLoss, 0)
+
 const fakeTransparent = new PNG({ width: 96, height: 96 })
 for (let y = 0; y < fakeTransparent.height; y += 1) {
   for (let x = 0; x < fakeTransparent.width; x += 1) {
@@ -160,6 +219,8 @@ console.log(
       fakeTransparencyDetection: true,
       chromaKeyTransparency: true,
       maskOutsidePixelsPreserved: true,
+      coverCropsWithoutDistortion: true,
+      cropLossReported: true,
     },
     null,
     2,

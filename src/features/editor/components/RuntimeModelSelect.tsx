@@ -11,6 +11,7 @@ interface RuntimeProviderState {
   models: string[]
   hasApiKey: boolean
   apiKeyEnv: string
+  baseUrlHost?: string
   capabilities: {
     chat: boolean
     vision?: boolean
@@ -26,11 +27,12 @@ interface RuntimeModelSelectProps {
 }
 
 const BUILT_IN_IMAGE_PROVIDER: RuntimeProviderState = {
-  id: 'biliImage',
-  label: 'Bilibili Image',
+  id: 'image',
+  label: 'Image',
   models: ['gpt-image-2', 'nano-banana-pro'],
   hasApiKey: true,
-  apiKeyEnv: 'BILI_IMAGE_API_KEY',
+  apiKeyEnv: 'IMAGE_API_KEY',
+  baseUrlHost: 'configured',
   capabilities: {
     chat: false,
     vision: false,
@@ -67,14 +69,14 @@ export function RuntimeModelSelect({ value, onChange, purpose = 'chat' }: Runtim
       .filter((provider) =>
         purpose === 'image' ? provider.capabilities?.rasterImage : provider.capabilities?.chat,
       )
+      .filter((provider) => provider.hasApiKey && Boolean(provider.baseUrlHost))
       .flatMap((provider) =>
         provider.models.map((model) => ({
           key: `${provider.id}:${model}`,
           provider: provider.id,
           model,
+          providerLabel: provider.label,
           label: purpose === 'image' ? `生图 / ${model}` : `推理 / ${model}`,
-          hasApiKey: provider.hasApiKey,
-          apiKeyEnv: provider.apiKeyEnv,
         })),
       )
   }, [providers, purpose])
@@ -109,8 +111,7 @@ export function RuntimeModelSelect({ value, onChange, purpose = 'chat' }: Runtim
       options={options.map((option) => ({
         value: option.key,
         label: shortModelLabel(option.model),
-        description: option.hasApiKey ? option.model : `缺少 ${option.apiKeyEnv}`,
-        disabled: !option.hasApiKey,
+        description: `${option.providerLabel} · ${option.model}`,
       }))}
       onChange={(key) => selectOption(key, options, onChange)}
     />

@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { cancelDesignWorkflow, runDesignWorkflow } from '../electron/runtime/agent.mjs'
+import { createProjectSessionId } from '../electron/runtime/pi/agent-runtime.mjs'
 import {
   configureAgentSessionStore,
   loadAgentSession,
@@ -48,6 +49,8 @@ try {
   await testProjectRepository()
   await testCheckpointResume()
   await testCancellation()
+  await testCancellationByRendererSessionId()
+  await testParentSignalPropagates()
   console.log(
     JSON.stringify(
       {
@@ -55,6 +58,8 @@ try {
         artifactPersistence: true,
         checkpointResume: true,
         cancellation: true,
+        cancellationByRendererSessionId: true,
+        parentSignalPropagates: true,
       },
       null,
       2,
@@ -248,4 +253,105 @@ async function testCancellation() {
   assert.equal(cancelDesignWorkflow(sessionId), true)
   await assert.rejects(running, (error) => error?.code === 'AGENT_CANCELLED')
   assert.equal((await loadAgentSession(sessionId)).status, 'cancelled')
+}
+
+/**
+ * Renderer 只持有自己的 threadId，而领域 Session 被 Pi 重写成 projectId::threadId。
+ * "停止"按钮传的是前者，必须能命中同一个 Workflow。
+ */
+async function testCancellationByRendererSessionId() {
+  const rendererSessionId = 'panel-thread-cancel'
+  const domainSessionId = createProjectSessionId('project-reliability', rendererSessionId)
+  assert.notEqual(domainSessionId, rendererSessionId)
+  let notifyStarted
+  const started = new Promise((resolve) => {
+    notifyStarted = resolve
+  })
+  const running = runDesignWorkflow(
+    {
+      type: 'agent_run',
+      sessionId: domainSessionId,
+      rendererSessionId,
+      projectId: 'project-reliability',
+      provider: 'codex',
+      model: 'test',
+      question: '生成一张活动海报',
+      uploads: [],
+      canvasTarget,
+    },
+    {},
+    {
+      invokeProvider: async (payload) => {
+        if (payload.type !== 'generate_image') throw new Error(`未预期请求：${payload.type}`)
+        notifyStarted()
+        return new Promise((resolve, reject) => {
+          payload.signal.addEventListener('abort', () => reject(payload.signal.reason), {
+            once: true,
+          })
+        })
+      },
+    },
+  )
+  await started
+  assert.equal(cancelDesignWorkflow(rendererSessionId), true, 'Renderer threadId 必须能取消工作流')
+  await assert.rejects(running, (error) => error?.code === 'AGENT_CANCELLED')
+  assert.equal((await loadAgentSession(domainSessionId)).status, 'cancelled')
+  // 两个 key 都要释放，否则下一次提交会撞 AGENT_SESSION_BUSY。
+  assert.equal(cancelDesignWorkflow(rendererSessionId), false)
+  assert.equal(cancelDesignWorkflow(domainSessionId), false)
+}
+
+/**
+ * Pi Agent Loop 的取消必须传导到领域工作流和底层生图请求，
+ * 否则中止 Agent 之后图片仍会继续生成并写入画布。
+ */
+async function testParentSignalPropagates() {
+  const parentController = new AbortController()
+  let notifyStarted
+  const started = new Promise((resolve) => {
+    notifyStarted = resolve
+  })
+  let imageSignalAborted = false
+  const running = runDesignWorkflow(
+    {
+      type: 'agent_run',
+      sessionId: 'parent-signal-session',
+      projectId: 'project-reliability',
+      provider: 'codex',
+      model: 'test',
+      question: '生成一张活动海报',
+      uploads: [],
+      canvasTarget,
+      signal: parentController.signal,
+    },
+    {},
+    {
+      invokeProvider: async (payload) => {
+        if (payload.type !== 'generate_image') throw new Error(`未预期请求：${payload.type}`)
+        notifyStarted()
+        return new Promise((resolve, reject) => {
+          payload.signal.addEventListener(
+            'abort',
+            () => {
+              imageSignalAborted = true
+              reject(payload.signal.reason)
+            },
+            { once: true },
+          )
+        })
+      },
+    },
+  )
+  await started
+  parentController.abort(new Error('Pi Agent 已中止'))
+  // 未传导时这个 Promise 永远挂起。加超时让回归以断言失败告终，而不是整套测试卡死。
+  const outcome = await Promise.race([
+    running.then(
+      () => 'resolved',
+      () => 'rejected',
+    ),
+    new Promise((resolve) => setTimeout(() => resolve('hung'), 5_000)),
+  ])
+  assert.equal(imageSignalAborted, true, '上游取消必须中止进行中的生图请求')
+  assert.equal(outcome, 'rejected', '上游取消后工作流必须以错误结束')
 }

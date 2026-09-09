@@ -544,7 +544,7 @@ export interface ChatEditResult {
     | 'confirmation'
   document: DesignDocument
   message: string
-  source: 'copilot' | 'runtime'
+  source: 'runtime'
   image?: GeneratedCanvasImage
   images?: GeneratedCanvasImage[]
   componentDesign?: ComponentDesignMeta

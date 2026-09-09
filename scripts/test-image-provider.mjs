@@ -36,17 +36,17 @@ const server = http.createServer((request, response) => {
 
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 const address = server.address()
-const previousBaseUrl = process.env.BILI_IMAGE_BASE_URL
-const previousApiKey = process.env.BILI_IMAGE_API_KEY
-process.env.BILI_IMAGE_BASE_URL = `http://127.0.0.1:${address.port}/v1`
-process.env.BILI_IMAGE_API_KEY = 'test-image-key'
+const previousBaseUrl = process.env.IMAGE_BASE_URL
+const previousApiKey = process.env.IMAGE_API_KEY
+process.env.IMAGE_BASE_URL = `http://127.0.0.1:${address.port}/v1`
+process.env.IMAGE_API_KEY = 'test-image-key'
 
 try {
   const generated = await requestProvider({
     type: 'generate_image',
     provider: 'codex',
     model: 'gpt-5.6-sol',
-    imageProvider: 'biliImage',
+    imageProvider: 'image',
     imageModel: 'gpt-image-2',
     question: '生成黄色活动 KV',
     imageTasks: [
@@ -67,7 +67,7 @@ try {
 
   await requestProvider({
     type: 'generate_image',
-    imageProvider: 'biliImage',
+    imageProvider: 'image',
     imageModel: 'nano-banana-pro',
     question: '生成另一个 KV 版本',
     imageTasks: [
@@ -86,7 +86,7 @@ try {
     type: 'generate_assets',
     provider: 'codex',
     model: 'gpt-5.6-sol',
-    imageProvider: 'biliImage',
+    imageProvider: 'image',
     imageModel: 'gpt-image-2',
     question: '生成两个独立按钮底图',
     imageTasks: [
@@ -107,7 +107,7 @@ try {
 
   await requestProvider({
     type: 'generate_assets',
-    imageProvider: 'biliImage',
+    imageProvider: 'image',
     imageModel: 'gpt-image-2',
     question: '参考 KV 生成按钮',
     uploads: [
@@ -128,7 +128,7 @@ try {
 
   await requestProvider({
     type: 'generate_image',
-    imageProvider: 'biliImage',
+    imageProvider: 'image',
     imageModel: 'gpt-image-2',
     question: '全局主题：黄色 KV，thumbnail 只负责结构。',
     uploads: [
@@ -167,7 +167,7 @@ try {
   nextImageBase64 = validBase64
   await requestProvider({
     type: 'generate_image',
-    imageProvider: 'biliImage',
+    imageProvider: 'image',
     imageModel: 'gpt-image-2',
     question: '只修改透明 Mask 区域。',
     uploads: [
@@ -202,7 +202,7 @@ try {
   await assert.rejects(
     requestProvider({
       type: 'generate_image',
-      imageProvider: 'biliImage',
+      imageProvider: 'image',
       imageModel: 'gpt-image-2',
       question: '缺少 Mask 时禁止降级。',
       uploads: [
@@ -220,7 +220,7 @@ try {
   await assert.rejects(
     requestProvider({
       type: 'generate_image',
-      imageProvider: 'biliImage',
+      imageProvider: 'image',
       imageModel: 'gpt-image-2',
       question: '尺寸不一致时禁止请求。',
       uploads: [
@@ -248,7 +248,7 @@ try {
   await assert.rejects(
     requestProvider({
       type: 'generate_image',
-      imageProvider: 'biliImage',
+      imageProvider: 'image',
       imageModel: 'gpt-image-2',
       question: '模拟 Provider 违约返回 JPEG',
       imageTasks: [
@@ -259,7 +259,7 @@ try {
   )
 
   const publicState = getPublicRuntimeState()
-  const imageProvider = publicState.providers.find((provider) => provider.id === 'biliImage')
+  const imageProvider = publicState.providers.find((provider) => provider.id === 'image')
   assert.equal(imageProvider?.hasApiKey, true)
   assert.deepEqual(imageProvider?.models, ['gpt-image-2', 'nano-banana-pro'])
   assert.equal(JSON.stringify(publicState).includes('test-image-key'), false)
@@ -285,8 +285,8 @@ try {
   )
 } finally {
   await new Promise((resolve) => server.close(resolve))
-  if (previousBaseUrl === undefined) delete process.env.BILI_IMAGE_BASE_URL
-  else process.env.BILI_IMAGE_BASE_URL = previousBaseUrl
-  if (previousApiKey === undefined) delete process.env.BILI_IMAGE_API_KEY
-  else process.env.BILI_IMAGE_API_KEY = previousApiKey
+  if (previousBaseUrl === undefined) delete process.env.IMAGE_BASE_URL
+  else process.env.IMAGE_BASE_URL = previousBaseUrl
+  if (previousApiKey === undefined) delete process.env.IMAGE_API_KEY
+  else process.env.IMAGE_API_KEY = previousApiKey
 }

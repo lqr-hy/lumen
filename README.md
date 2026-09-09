@@ -72,29 +72,68 @@ npm run electron:dev
 
 ## 模型配置
 
-Renderer 不读取 API Key。Electron 主进程从启动进程的环境变量读取凭证，并通过内置 Provider 白名单发起请求。
+Renderer 不读取 API Key。Electron 主进程按“环境变量 → Studio 配置 → Codex/Claude Code 系统配置 → 公共默认值”的顺序解析 Provider，并通过内置 Provider 白名单发起请求。
 
 常用变量：
 
-| 用途         | Provider     | Base URL              | API Key                 |
-| ------------ | ------------ | --------------------- | ----------------------- |
-| Codex 推理   | `codex`      | `AICODING_BASE_URL`   | `AICODING_API_KEY`      |
-| Claude 推理  | `claudeCode` | `ANTHROPIC_BASE_URL`  | `ANTHROPIC_AUTH_TOKEN`  |
-| Copilot 推理 | `copilot`    | `COPILOT_API_URL`     | `COPILOT_API_KEY`，可选 |
-| 图片生成     | `biliImage`  | `BILI_IMAGE_BASE_URL` | `BILI_IMAGE_API_KEY`    |
+| 用途           | Provider     | Base URL             | API Key                |
+| -------------- | ------------ | -------------------- | ---------------------- |
+| Codex 推理     | `codex`      | `AICODING_BASE_URL`  | `AICODING_API_KEY`     |
+| Claude 推理    | `claudeCode` | `ANTHROPIC_BASE_URL` | `ANTHROPIC_AUTH_TOKEN` |
+| OpenAI 兼容    | `openai`     | `OPENAI_BASE_URL`    | `OPENAI_API_KEY`       |
+| Anthropic 兼容 | `anthropic`  | `ANTHROPIC_BASE_URL` | `ANTHROPIC_API_KEY`    |
+| 图片生成       | `image`      | `IMAGE_BASE_URL`     | `IMAGE_API_KEY`        |
 
 示例：
 
 ```bash
-export AICODING_BASE_URL="http://api-ai-coding.bilibili.co/api/v1/codex"
+export AICODING_BASE_URL="https://your-codex-gateway.example/v1"
 export AICODING_API_KEY="your-key"
-export BILI_IMAGE_BASE_URL="http://llmapi.bilibili.co/v1"
-export BILI_IMAGE_API_KEY="your-image-key"
+export IMAGE_BASE_URL="https://your-image-api.example/v1"
+export IMAGE_API_KEY="your-image-key"
 
 npm run electron:dev
 ```
 
-不要把真实 Key 写入 `VITE_*` 变量。`VITE_*` 会进入前端构建产物并出现在浏览器网络请求中。完整配置和安全边界见 [docs/runtime-context.md](docs/runtime-context.md)。
+应用首次启动会创建 `~/.ai-campaign-page-studio/config.json`。它保存图片模型列表、默认模型、URL 和环境变量名，不保存密钥。要接入其他 OpenAI/Anthropic 兼容服务，也可以在这里增加 Provider：
+
+```json
+{
+  "providers": {
+    "image": {
+      "baseUrlEnv": "IMAGE_BASE_URL",
+      "apiKeyEnv": "IMAGE_API_KEY",
+      "model": "gpt-image-2",
+      "models": ["gpt-image-2", "nano-banana-pro"]
+    },
+    "openai": {
+      "baseUrl": "https://your-openai-compatible.example/v1",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "model": "your-model-id",
+      "models": ["your-model-id"]
+    }
+  }
+}
+```
+
+如果不方便在终端设置环境变量，也可以直接在 `providers.image` 中填写 `apiKey`（仅由 Electron 主进程读取，不会展示给页面）：
+
+```json
+{
+  "providers": {
+    "image": {
+      "baseUrl": "http://llmapi.bilibili.co/v1",
+      "apiKey": "你的生图密钥",
+      "model": "gpt-image-2",
+      "models": ["gpt-image-2", "nano-banana-pro"]
+    }
+  }
+}
+```
+
+Codex 会自动复用 `~/.codex/config.toml` 当前的 `model`、`model_provider`、`base_url` 与 `env_key`。Claude Code 会自动复用 `~/.claude/settings.json` 的 `model`（或 `ANTHROPIC_MODEL`）、`ANTHROPIC_BASE_URL` 和认证变量。若不使用它们，可选择 `openai` 或 `anthropic`，在 Studio 配置中填写兼容协议的 URL、key 环境变量名和任意模型列表。更新配置并重启 Studio 后，模型选择器会同步更新。`AI_CAMPAIGN_STUDIO_CONFIG`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR` 可以覆盖默认配置位置。
+
+优先使用环境变量或系统 Keychain；直接写入 Studio `config.json` 的 `apiKey` 会以明文保存在本机文件中。不要把真实 Key 写入 `VITE_*` 变量。完整配置和安全边界见 [docs/runtime-context.md](docs/runtime-context.md)。
 
 ## 常用命令
 

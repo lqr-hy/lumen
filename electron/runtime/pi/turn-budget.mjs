@@ -3,7 +3,10 @@ const DEFAULTS = Object.freeze({
   maxIterations: 32,
   maxToolAttempts: 48,
   maxModelRequests: 40,
-  maxImageRequests: 12,
+  // 单个组件最多 15 个素材任务（见 agent-tools.mjs component.plan-assets），
+  // 每个任务最多重试 2 次，再为页面外壳和后续修订留余量。
+  // 这个值必须大于素材任务上限，否则会在跑到一半时抛非重试性的预算错误。
+  maxImageRequests: 36,
 })
 
 export function createTurnBudget(overrides = {}) {

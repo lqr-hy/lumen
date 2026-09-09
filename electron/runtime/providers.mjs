@@ -1,13 +1,29 @@
 export const DEFAULT_PROVIDER_ID = 'codex'
 
 export const PROVIDERS = {
+  openai: {
+    id: 'openai',
+    label: 'OpenAI Compatible',
+    wireApi: 'openai-responses',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+    baseUrlEnv: 'OPENAI_BASE_URL',
+    baseUrlEnvs: ['OPENAI_BASE_URL'],
+    apiKeyEnv: 'OPENAI_API_KEY',
+    apiKeyEnvs: ['OPENAI_API_KEY'],
+    modelEnvs: ['OPENAI_MODEL'],
+    models: ['gpt-5.5'],
+    capabilities: { chat: true, vision: true, structuredOutput: true, rasterImage: false },
+  },
   codex: {
     id: 'codex',
     label: 'Codex',
     wireApi: 'openai-responses',
-    defaultBaseUrl: 'http://api-ai-coding.bilibili.co/api/v1/codex',
+    defaultBaseUrl: 'https://api.openai.com/v1',
     baseUrlEnv: 'AICODING_BASE_URL',
+    baseUrlEnvs: ['AICODING_BASE_URL', 'OPENAI_BASE_URL'],
     apiKeyEnv: 'AICODING_API_KEY',
+    apiKeyEnvs: ['AICODING_API_KEY', 'OPENAI_API_KEY'],
+    modelEnvs: ['AICODING_MODEL', 'OPENAI_MODEL'],
     models: ['gpt-5.6-sol', 'gpt-5.6-terra'],
     capabilities: { chat: true, vision: true, structuredOutput: true, rasterImage: false },
   },
@@ -15,32 +31,37 @@ export const PROVIDERS = {
     id: 'claudeCode',
     label: 'Claude Code',
     wireApi: 'anthropic-messages',
-    defaultBaseUrl: 'http://api-ai-coding.bilibili.co/api',
+    defaultBaseUrl: 'https://api.anthropic.com',
     baseUrlEnv: 'ANTHROPIC_BASE_URL',
     apiKeyEnv: 'ANTHROPIC_AUTH_TOKEN',
+    apiKeyEnvs: ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY'],
+    modelEnvs: ['ANTHROPIC_MODEL'],
     models: ['claude-opus-4-8'],
     capabilities: { chat: true, vision: true, structuredOutput: true, rasterImage: false },
   },
-  copilot: {
-    id: 'copilot',
-    label: 'Copilot',
-    wireApi: 'copilot-prediction',
-    defaultBaseUrl:
-      'https://copilot.bilibili.co/api/v1/prediction/e3558bcf-64ee-4522-85a5-e07ccfc7d99f',
-    baseUrlEnv: 'COPILOT_API_URL',
-    apiKeyEnv: 'COPILOT_API_KEY',
-    models: ['default'],
-    apiKeyOptional: true,
-    capabilities: { chat: true, vision: true, structuredOutput: false, rasterImage: false },
+  anthropic: {
+    id: 'anthropic',
+    label: 'Anthropic Compatible',
+    wireApi: 'anthropic-messages',
+    defaultBaseUrl: 'https://api.anthropic.com',
+    baseUrlEnv: 'ANTHROPIC_BASE_URL',
+    baseUrlEnvs: ['ANTHROPIC_BASE_URL'],
+    apiKeyEnv: 'ANTHROPIC_API_KEY',
+    apiKeyEnvs: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
+    modelEnvs: ['ANTHROPIC_MODEL'],
+    models: ['claude-opus-4-8'],
+    capabilities: { chat: true, vision: true, structuredOutput: true, rasterImage: false },
   },
-  biliImage: {
-    id: 'biliImage',
-    label: 'Bilibili Image',
+  image: {
+    id: 'image',
+    label: 'Image',
     wireApi: 'openai_images',
-    defaultBaseUrl: 'http://llmapi.bilibili.co/v1',
-    defaultApiKey: 'bsk-f8f0c4d36ce44f053ef55555cf889164',
-    baseUrlEnv: 'BILI_IMAGE_BASE_URL',
-    apiKeyEnv: 'BILI_IMAGE_API_KEY',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+    baseUrlEnv: 'IMAGE_BASE_URL',
+    baseUrlEnvs: ['IMAGE_BASE_URL', 'OPENAI_BASE_URL'],
+    apiKeyEnv: 'IMAGE_API_KEY',
+    apiKeyEnvs: ['IMAGE_API_KEY', 'OPENAI_API_KEY'],
+    modelEnvs: ['IMAGE_MODEL'],
     models: ['gpt-image-2', 'nano-banana-pro'],
     capabilities: {
       chat: false,
@@ -65,9 +86,10 @@ export function resolveProvider(providerId = DEFAULT_PROVIDER_ID) {
   return provider
 }
 
-export function resolveModel(provider, model) {
-  const selectedModel = model || provider.models[0]
-  if (!provider.models.includes(selectedModel)) {
+export function resolveModel(provider, model, runtime) {
+  const models = runtime?.models?.length ? runtime.models : provider.models
+  const selectedModel = model || runtime?.defaultModel || models[0]
+  if (!models.includes(selectedModel)) {
     throw createRuntimeError(
       'UNSUPPORTED_MODEL',
       `当前模型不属于 ${provider.label} 可选列表：${selectedModel}。`,

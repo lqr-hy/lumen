@@ -42,7 +42,7 @@ export function describeGenerationBrief(brief) {
     : '无'
   return [
     `输出类型：${outputLabel}`,
-    `目标宽度：${brief.target.width}px；初始高度：${brief.target.height}px（内容可自然延展，不是硬性裁切高度）`,
+    `目标尺寸：${brief.target.width}x${brief.target.height}px（Runtime 会居中裁剪并缩放到该尺寸）`,
     `放置方式：${brief.target.placementMode}`,
     `参考图职责：\n${references}`,
     `约束：\n${brief.constraints.map((item) => `- ${item}`).join('\n')}`,
@@ -91,7 +91,7 @@ function normalizeOutputKind(value, placementMode, editScope) {
 
 function createConstraints(outputKind, target, references) {
   const constraints = [
-    `输出必须匹配 ${target.width}px 逻辑宽度，避免裁切和横向溢出；高度以内容自然延展为准，不得为了适配初始高度压缩或截断。`,
+    `构图必须按 ${target.width}:${target.height} 的目标比例组织，关键内容留在居中安全区内；比例不符时 Runtime 会居中裁剪，边缘内容会丢失。`,
     '输出最终图片，不要返回解释、方案、HTML 或代码。',
   ]
   if (outputKind === 'section') constraints.push('只生成当前页面要追加的模块，不重复完整页面。')

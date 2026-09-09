@@ -886,27 +886,24 @@ export function createAgentToolRegistry({
     const uploads = getPreparedUploads(context)
     const brief = context.memory.get('design.brief')?.data?.brief || context.session.generationBrief
     const question = buildDesignQuestion(context, brief)
-    const result = await invokeProvider(
-      {
-        ...context.payload,
-        type: 'generate_image',
-        question,
-        uploads,
-        imageTasks: [
-          createImageTask({
-            id: 'design-image',
-            name: 'AI 生成设计图.png',
-            targetSize: context.session.canvasTarget,
-            transparent: false,
-            prompt: question,
-          }),
-        ],
-      },
-      context.providerCallbacks,
-    )
-    if (!result.artifact) {
-      throw createRuntimeError('AGENT_ARTIFACT_MISSING', '图片生成工具没有返回制品。')
-    }
+    const result = await requestImageWithTrace({
+      invokeProvider,
+      context,
+      traceTool: 'design.generate',
+      task: createImageTask({
+        id: 'design-image',
+        name: 'AI 生成设计图.png',
+        role: 'design-image',
+        targetSize: context.session.canvasTarget,
+        transparent: false,
+        prompt: question,
+      }),
+      question,
+      uploads,
+      // 这一步只有一个图片请求，executeToolWithRetry 已经会整步重试。
+      // 内层再重试会让单个 Step 变成 4 次生图请求。
+      maxAttempts: 1,
+    })
     return {
       summary: '设计图生成完成。',
       data: { artifact: result.artifact },
@@ -949,27 +946,23 @@ export function createAgentToolRegistry({
       '上一版没有通过 Runtime 质量审查。请重新生成完整 SVG，不要只解释问题。',
       `必须修正的问题：\n${issueText}`,
     ].join('\n\n')
-    const result = await invokeProvider(
-      {
-        ...context.payload,
-        type: 'generate_image',
-        question,
-        uploads,
-        imageTasks: [
-          createImageTask({
-            id: 'design-image-refined',
-            name: 'AI 生成设计图.png',
-            targetSize: context.session.canvasTarget,
-            transparent: false,
-            prompt: question,
-          }),
-        ],
-      },
-      context.providerCallbacks,
-    )
-    if (!result.artifact) {
-      throw createRuntimeError('AGENT_ARTIFACT_MISSING', '自动修正没有返回设计制品。')
-    }
+    const result = await requestImageWithTrace({
+      invokeProvider,
+      context,
+      traceTool: 'design.refine',
+      task: createImageTask({
+        id: 'design-image-refined',
+        name: 'AI 生成设计图.png',
+        role: 'design-image',
+        targetSize: context.session.canvasTarget,
+        transparent: false,
+        prompt: question,
+      }),
+      question,
+      uploads,
+      // 同 design.generate：整步重试由 executeToolWithRetry 负责。
+      maxAttempts: 1,
+    })
     const review = inspectImageArtifact(result.artifact, context.session.canvasTarget)
     if (!review.passed) {
       const message = review.issues
@@ -1508,6 +1501,10 @@ export function createAgentToolRegistry({
     if (!resolved || !blueprint || !planned) {
       throw createRuntimeError('COMPONENT_ASSET_PLAN_MISSING', '缺少组件素材计划。')
     }
+    // 一个 assetTask = 一次独立生图请求（由组件的图片属性推导出的槽位，见
+    // component.plan-assets）。15 × 最多 2 次重试必须落在 turn-budget.mjs 的
+    // maxImageRequests 内，否则素材生成到一半就抛非重试性预算错误，
+    // 前面已经生成并付费的素材全部作废。
     if (planned.assetTasks.length > 15) {
       throw createRuntimeError('COMPONENT_ASSET_COUNT_LIMIT', '组件独立素材总数不能超过 15 个。')
     }
@@ -3994,31 +3991,30 @@ async function materializeVisualAssetPlan(context, sceneGraph, draft, invokeProv
     ]
       .filter(Boolean)
       .join('\n')
-    const result = await invokeProvider(
-      {
-        ...context.payload,
-        type: 'generate_image',
-        question: prompt,
-        uploads: referenceUploads,
-        imageTasks: [
-          createImageTask({
-            id: item.id,
-            name: `${item.id}.png`,
-            role: item.role,
-            kind: item.role === 'hero' ? 'full-background' : 'visual',
-            targetSize: item.targetSize,
-            transparent: false,
-            prompt,
-            referencePolicy: {
-              roles: ['kv', 'visual', 'prototype', 'edit-base'],
-              maxImages: 4,
-            },
-          }),
-        ],
-      },
-      context.providerCallbacks,
-    )
-    if (!result?.artifact || result.artifact.kind !== 'raster' || !result.artifact.content) {
+    const result = await requestImageWithTrace({
+      invokeProvider,
+      context,
+      traceTool: 'ui.transform',
+      task: createImageTask({
+        id: item.id,
+        name: `${item.id}.png`,
+        role: item.role,
+        kind: item.role === 'hero' ? 'full-background' : 'visual',
+        targetSize: item.targetSize,
+        transparent: false,
+        prompt,
+        referencePolicy: {
+          roles: ['kv', 'visual', 'prototype', 'edit-base'],
+          maxImages: 4,
+        },
+      }),
+      question: prompt,
+      uploads: referenceUploads,
+      // 这里位于 ui.transform 中段，前面的资产已经生成。交给外层整步重试会连
+      // HTML 和已完成的图片一起重做，所以单张图在内层自己重试一次。
+      maxAttempts: 2,
+    })
+    if (result.artifact.kind !== 'raster' || !result.artifact.content) {
       throw createRuntimeError('VISUAL_ASSET_GENERATION_FAILED', `${item.id} 未返回有效位图资产。`)
     }
     const src = `data:${result.artifact.mime};base64,${result.artifact.content}`
@@ -4763,6 +4759,16 @@ export function inspectImageArtifact(artifact, canvasTarget = {}) {
   if (Number.isFinite(analysis.ratioError) && analysis.ratioError > 0.03) {
     addIssue(issues, 'image-normalized-ratio', '归一化后的位图比例与目标比例不一致。')
   }
+  // 归一化后尺寸必然等于目标，ratioError 恒为 0；构图损失只能靠裁切占比暴露。
+  const cropLoss = analysis.transform?.cropLoss
+  if (Number.isFinite(cropLoss) && cropLoss > 0.4) {
+    addIssue(
+      issues,
+      'image-crop-loss',
+      `目标比例与生图画布差异较大，居中裁剪丢弃了 ${Math.round(cropLoss * 100)}% 画面，边缘构图可能缺失。`,
+      'warning',
+    )
+  }
   if (
     Number.isFinite(sourceAnalysis.checkerboardCoverage) &&
     sourceAnalysis.checkerboardCoverage > 0.025
@@ -4991,7 +4997,96 @@ function getAssetTaskTimeoutMs(task) {
   const configured = Number(process.env.AGENT_ASSET_TIMEOUT_MS)
   if (Number.isFinite(configured) && configured > 0) return configured
   if (task.role === 'component-backdrop') return 60_000
+  // 整页设计图和视觉资产是全画幅构图，比组件局部素材慢得多。
+  if (task.role === 'design-image' || task.role === 'hero') return 150_000
   return task.designOnly ? 120_000 : 90_000
+}
+
+/**
+ * 单张图片请求的统一外壳：per-request 超时、有限重试和逐张时间线 trace。
+ * 与 generateArtifactNode 的区别是失败直接抛出，不回退本地 SVG —— 整页设计图和
+ * 视觉资产没有可接受的确定性替代品，静默降级会把坏结果当成交付物。
+ */
+async function requestImageWithTrace({
+  invokeProvider,
+  context,
+  task,
+  question,
+  uploads,
+  traceTool,
+  maxAttempts = 2,
+}) {
+  let lastError
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const startedAt = Date.now()
+    emitToolTrace(context, {
+      stage: 'design.transform',
+      tool: traceTool,
+      operation: 'image',
+      taskId: task.id,
+      label: task.name || task.id,
+      status: attempt === 1 ? 'started' : 'retrying',
+      attempt,
+      maxAttempts,
+      targetSize: task.targetSize,
+      message: `${attempt === 1 ? '开始生成' : '重新生成'} ${task.name || task.id}`,
+    })
+    try {
+      const result = await invokeProviderWithTimeout({
+        invokeProvider,
+        payload: {
+          ...context.payload,
+          type: 'generate_image',
+          question,
+          uploads,
+          imageTasks: [task],
+        },
+        parentSignal: context.payload.signal,
+        timeoutMs: getAssetTaskTimeoutMs(task),
+        task,
+      })
+      if (!result?.artifact) {
+        throw createRuntimeError('AGENT_ARTIFACT_MISSING', `${task.id} 没有返回图片制品。`)
+      }
+      emitToolTrace(context, {
+        stage: 'design.transform',
+        tool: traceTool,
+        operation: 'image',
+        taskId: task.id,
+        label: task.name || task.id,
+        status: 'completed',
+        attempt,
+        maxAttempts,
+        elapsedMs: Date.now() - startedAt,
+        targetSize: task.targetSize,
+        message: `${task.name || task.id} 生成完成`,
+      })
+      return result
+    } catch (error) {
+      lastError = error
+      if (context.payload.signal?.aborted || error?.code === 'AGENT_CANCELLED') throw error
+      const rateLimited = isImageRateLimitError(error)
+      const retryable =
+        attempt < maxAttempts && error?.code !== 'COMPONENT_ASSET_TIMEOUT' && !rateLimited
+      emitToolTrace(context, {
+        stage: 'design.transform',
+        tool: traceTool,
+        operation: 'image',
+        taskId: task.id,
+        label: task.name || task.id,
+        status: retryable ? 'retrying' : 'failed',
+        attempt,
+        maxAttempts,
+        elapsedMs: Date.now() - startedAt,
+        targetSize: task.targetSize,
+        errorCode: error?.code,
+        message: safeTraceError(error),
+      })
+      // 超时的上游请求不会立刻恢复，限流重试只会加重限流。
+      if (!retryable) break
+    }
+  }
+  throw lastError
 }
 
 export function repairFailedTextOverlaySiblings(results, tasks) {

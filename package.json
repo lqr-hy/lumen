@@ -5,10 +5,10 @@
   "type": "module",
   "main": "electron/main.mjs",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --port 4173",
     "dev:test": "vite --host 127.0.0.1 --port 4173 --strictPort",
-    "electron:dev": "VITE_DEV_SERVER_URL=http://localhost:5173 electron electron/main.mjs",
-    "electron:dev:debug": "VITE_DEV_SERVER_URL=http://localhost:5173 electron electron/main.mjs",
+    "electron:dev": "VITE_DEV_SERVER_URL=http://localhost:4173 electron electron/main.mjs",
+    "electron:dev:debug": "VITE_DEV_SERVER_URL=http://localhost:4173 electron electron/main.mjs",
     "build": "tsc -b && vite build",
     "build:dmg": "npm run build && electron-builder --mac dmg",
     "test:agent-design": "node scripts/test-agent-design-flow.mjs",
@@ -18,6 +18,7 @@
     "test:image-skill": "node scripts/test-design-image-generation-skill.mjs",
     "test:raster-analysis": "node scripts/test-raster-analysis.mjs",
     "test:pi-direct": "node scripts/test-pi-direct-provider.mjs",
+    "test:provider-config": "node scripts/test-provider-config.mjs",
     "test:pi-runtime": "node scripts/test-pi-runtime.mjs",
     "test:pi-context": "node scripts/test-pi-context-policy.mjs",
     "test:turn-budget": "node scripts/test-turn-budget.mjs",
@@ -56,11 +57,12 @@
     "test:render-ir": "node scripts/test-render-ir.mjs",
     "test:visual-brief": "node scripts/test-visual-brief.mjs",
     "test:codegen": "node scripts/test-codegen.mjs",
-    "test:all": "npm run test:agent-design && npm run test:agent-reliability && npm run test:agent-upgrades && npm run test:image-provider && npm run test:image-skill && npm run test:raster-analysis && npm run test:pi-direct && npm run test:pi-runtime && npm run test:pi-context && npm run test:turn-budget && npm run test:canvas-lease && npm run test:canvas-rebase && npm run test:chat-run && npm run test:canvas-target && npm run test:generic-ui && npm run test:generic-ui-incremental && npm run test:scene-graph && npm run test:runtime-dom-adapter && npm run test:design-patch && npm run test:design-spec-patch && npm run test:component-packs && npm run test:component-plugin && npm run test:user-extensions && npm run test:component-actions && npm run test:component-canvas && npm run test:component-design && npm run test:component-export && npm run test:design-pipeline && npm run test:design-eval && npm run test:layered-design-gates && npm run test:layer-tree && npm run test:canvas-performance && npm run test:page-agent && npm run test:render-ir && npm run test:visual-brief && npm run test:codegen && npm run lint && npm run build",
+    "test:all": "npm run test:agent-design && npm run test:agent-reliability && npm run test:agent-upgrades && npm run test:image-provider && npm run test:image-skill && npm run test:raster-analysis && npm run test:image-download-name && npm run test:pi-direct && npm run test:provider-config && npm run test:pi-runtime && npm run test:pi-context && npm run test:turn-budget && npm run test:canvas-lease && npm run test:canvas-rebase && npm run test:chat-run && npm run test:canvas-target && npm run test:generic-ui && npm run test:generic-ui-incremental && npm run test:scene-graph && npm run test:runtime-dom-adapter && npm run test:design-patch && npm run test:design-spec-patch && npm run test:component-packs && npm run test:component-plugin && npm run test:user-extensions && npm run test:component-actions && npm run test:component-canvas && npm run test:component-design && npm run test:component-export && npm run test:design-pipeline && npm run test:design-eval && npm run test:layered-design-gates && npm run test:layer-tree && npm run test:canvas-performance && npm run test:page-agent && npm run test:render-ir && npm run test:visual-brief && npm run test:codegen && npm run lint && npm run build",
     "preview": "vite preview",
     "lint": "eslint .",
     "format": "prettier --write \"src/**/*.{ts,tsx,scss}\" \"electron/**/*.mjs\" \"scripts/**/*.mjs\" \"*.{json,md}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx,scss}\" \"electron/**/*.mjs\" \"scripts/**/*.mjs\" \"*.{json,md}\""
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,scss}\" \"electron/**/*.mjs\" \"scripts/**/*.mjs\" \"*.{json,md}\"",
+    "test:image-download-name": "node scripts/test-image-download-name.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

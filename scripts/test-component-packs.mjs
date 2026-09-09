@@ -27,7 +27,7 @@ try {
     status: 200,
     url: String(url),
     headers: new Headers({ 'content-type': 'image/png' }),
-    arrayBuffer: async () => Uint8Array.from([137, 80, 78, 71]).buffer,
+    arrayBuffer: async () => Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]).buffer,
   })
 
   configureComponentPackRuntime({
@@ -54,11 +54,41 @@ try {
     source: JSON.stringify({
       name: 'ImportedCard',
       label: '导入卡片',
-      thumbnail: 'https://i0.hdslb.com/bfs/activity-plat/imported-card.png',
+      thumbnail: 'https://assets.example.org/imported-card.png',
       props: { width: 375, height: 240, backgroundImage: '' },
     }),
   })
   assert.equal(imported.packId, 'project-imports')
+  await assert.rejects(
+    () =>
+      importProjectComponent({
+        projectId: 'component-pack-test-project',
+        fileName: 'LocalCard.json',
+        source: JSON.stringify({
+          name: 'LocalCard',
+          thumbnail: 'http://127.0.0.1/local-card.png',
+          props: {},
+        }),
+      }),
+    (error) => error?.code === 'COMPONENT_IMPORT_THUMBNAIL_INVALID',
+  )
+  configureComponentPackRuntime({
+    appRoot,
+    resourcesPath: appRoot,
+    userDataPath: testRoot,
+    isPackaged: false,
+  })
+  const privateHostLoaded = await resolveComponentReference(
+    { packId: 'project-imports', componentName: 'ImportedCard' },
+    { projectId: 'component-pack-test-project' },
+  )
+  assert.equal(privateHostLoaded.component.name, 'ImportedCard')
+  configureComponentPackRuntime({
+    appRoot,
+    resourcesPath: appRoot,
+    userDataPath: testRoot,
+    isPackaged: false,
+  })
   const importedPacks = await listPublicComponentPacks('component-pack-test-project')
   assert.equal(
     importedPacks.some((pack) => pack.components.some((item) => item.name === 'ImportedCard')),

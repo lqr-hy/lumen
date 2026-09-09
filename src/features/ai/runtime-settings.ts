@@ -5,8 +5,8 @@ import { getSelectedStylePackId, saveSelectedStylePackId } from './style-packs'
 const CHAT_MODEL_KEY = 'ai-campaign-chat-model-v1'
 const IMAGE_MODEL_KEY = 'ai-campaign-image-model-v1'
 
-const DEFAULT_CHAT_MODEL: RuntimeModelSelection = { provider: 'codex', model: 'gpt-5.5' }
-const DEFAULT_IMAGE_MODEL: RuntimeModelSelection = { provider: 'biliImage', model: 'gpt-image-2' }
+const DEFAULT_CHAT_MODEL: RuntimeModelSelection = { provider: 'codex', model: 'gpt-5.6-sol' }
+const DEFAULT_IMAGE_MODEL: RuntimeModelSelection = { provider: 'image', model: 'gpt-image-2' }
 
 export function useRuntimeSettings() {
   const [runtimeModel, setRuntimeModelState] = useState(() =>
@@ -45,9 +45,7 @@ function readModel(key: string, fallback: RuntimeModelSelection) {
     const value = JSON.parse(
       window.localStorage.getItem(key) || 'null',
     ) as Partial<RuntimeModelSelection> | null
-    return value?.provider && value.model
-      ? { provider: value.provider, model: value.model }
-      : fallback
+    return value?.provider && value.model ? { provider: value.provider, model: value.model } : fallback
   } catch {
     return fallback
   }

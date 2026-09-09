@@ -2,7 +2,7 @@ import { Agent } from '@earendil-works/pi-agent-core'
 import { Type } from '@earendil-works/pi-ai'
 import { runDesignWorkflow } from '../agent.mjs'
 import { loadAgentSession, saveAgentSession } from '../agent-session-store.mjs'
-import { getProviderRuntime } from '../env.mjs'
+import { assertProviderRuntime, getProviderRuntime } from '../env.mjs'
 import { createRuntimeError, resolveModel, resolveProvider } from '../providers.mjs'
 import { activateSkill, buildSkillCatalogPrompt, readSkillResource } from '../skills.mjs'
 import { registerPiAgent } from './cancellation.mjs'
@@ -51,8 +51,9 @@ const STANDALONE_GREETING_PATTERN =
  */
 export async function runPiStudioAgent(payload, callbacks = {}, dependencies) {
   const provider = resolveProvider(payload.provider)
-  const modelId = resolveModel(provider, payload.model)
   const runtime = getProviderRuntime(provider)
+  assertProviderRuntime(provider, runtime)
+  const modelId = resolveModel(provider, payload.model, runtime)
   const domainSessionId = createProjectSessionId(payload.projectId, payload.sessionId)
   const domainSession = await loadAgentSession(domainSessionId)
   const componentReferences = normalizeComponentReferences(payload.componentReferences)
@@ -79,6 +80,7 @@ export async function runPiStudioAgent(payload, callbacks = {}, dependencies) {
       {
         ...payload,
         sessionId: domainSessionId,
+        rendererSessionId: payload.sessionId,
         workflowDecision: {
           version: 2,
           mode: 'execute',
@@ -107,6 +109,7 @@ export async function runPiStudioAgent(payload, callbacks = {}, dependencies) {
       {
         ...payload,
         sessionId: domainSessionId,
+        rendererSessionId: payload.sessionId,
         componentReferences: [],
         uploads: [],
         workflowDecision: {
@@ -330,7 +333,13 @@ function createWorkflowTool({
       let result
       try {
         result = await runDesignWorkflow(
-          { ...payload, sessionId: domainSessionId, signal, workflowDecision: decision },
+          {
+            ...payload,
+            sessionId: domainSessionId,
+            rendererSessionId: payload.sessionId,
+            signal,
+            workflowDecision: decision,
+          },
           callbacks,
           dependencies,
         )

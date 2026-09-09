@@ -91,8 +91,11 @@ interface Window {
         id: string
         label: string
         models: string[]
+        defaultModel: string
+        modelSource: string
         wireApi: string
         baseUrlHost?: string
+        baseUrlSource: string
         hasApiKey: boolean
         apiKeyEnv: string
         baseUrlEnv: string
@@ -278,7 +281,11 @@ interface Window {
           | {
               kind: 'generic-ui-runtime'
               sceneGraph: import('./features/editor/scene/scene-graph').SceneGraph
-              runtimeDraft?: { version: 1; title: string; viewport: { width: number; height: number } }
+              runtimeDraft?: {
+                version: 1
+                title: string
+                viewport: { width: number; height: number }
+              }
               expectedNodeCount: number
               visualAssetReport?: import('./features/ai/types').GenericUiRuntimeCanvasDeliverable['visualAssetReport']
             }

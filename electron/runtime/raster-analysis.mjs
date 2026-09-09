@@ -247,6 +247,9 @@ export function normalizeRasterForTarget(buffer, mime, target, options = {}) {
         sourceBounds: fitted,
         sourceSize: { width: source.width, height: source.height },
         targetSize: { width: target.width, height: target.height },
+        // 居中裁剪丢弃的像素占比。模型画布比例与目标差得越远，丢弃越多，
+        // 归一化后的 ratioError 恒为 0，只能靠这个指标暴露构图损失。
+        cropLoss: cropLossRatio(fitted, source),
       },
     },
   }
@@ -515,16 +518,28 @@ function fullBounds(png) {
   return { x: 0, y: 0, width: png.width, height: png.height }
 }
 
+function cropLossRatio(bounds, source) {
+  const sourceArea = source.width * source.height
+  if (!sourceArea) return 0
+  const keptArea = Math.max(0, bounds.width) * Math.max(0, bounds.height)
+  return Math.max(0, Math.min(1, 1 - keptArea / sourceArea))
+}
+
+/**
+ * 把 bounds 居中裁剪到目标比例。
+ * 只能缩小：放大后再 clamp 会被图片边界挡回原尺寸，导致后续 resize 变成非等比拉伸。
+ */
 function fitBoundsToRatio(bounds, imageWidth, imageHeight, targetRatio) {
   let { x, y, width, height } = bounds
+  if (!Number.isFinite(targetRatio) || targetRatio <= 0) return { x, y, width, height }
   const ratio = width / height
-  if (ratio < targetRatio) {
-    const nextWidth = Math.min(imageWidth, Math.ceil(height * targetRatio))
-    x = clamp(Math.round(x - (nextWidth - width) / 2), 0, imageWidth - nextWidth)
+  if (ratio > targetRatio) {
+    const nextWidth = Math.max(1, Math.min(width, Math.round(height * targetRatio)))
+    x = clamp(Math.round(x + (width - nextWidth) / 2), 0, Math.max(0, imageWidth - nextWidth))
     width = nextWidth
-  } else if (ratio > targetRatio) {
-    const nextHeight = Math.min(imageHeight, Math.ceil(width / targetRatio))
-    y = clamp(Math.round(y - (nextHeight - height) / 2), 0, imageHeight - nextHeight)
+  } else if (ratio < targetRatio) {
+    const nextHeight = Math.max(1, Math.min(height, Math.round(width / targetRatio)))
+    y = clamp(Math.round(y + (height - nextHeight) / 2), 0, Math.max(0, imageHeight - nextHeight))
     height = nextHeight
   }
   return { x, y, width, height }

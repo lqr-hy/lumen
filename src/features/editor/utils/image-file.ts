@@ -22,6 +22,24 @@ export function readFileAsDataUrl(file: File) {
   })
 }
 
+/**
+ * 拼下载文件名。元素名常常已经带扩展名（AI 素材的元素名就是「AI 生成素材.png」），
+ * 直接追加会得到「AI 生成素材.png.jpg」这类双扩展名，且和实际编码格式矛盾。
+ * 这里先剥掉已有图片扩展名，再按真实导出格式补一个。
+ */
+export function buildImageDownloadName(
+  name: string,
+  extension: 'png' | 'jpg',
+  suffix = '',
+): string {
+  const cleaned = String(name ?? '')
+    .trim()
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\.(?:png|jpe?g|webp|gif|svg)$/i, '')
+    .trim()
+  return `${cleaned || 'canvas-image'}${suffix}.${extension}`
+}
+
 export function readImageSize(src: string) {
   return new Promise<{ width: number; height: number }>((resolve, reject) => {
     const image = new globalThis.Image()

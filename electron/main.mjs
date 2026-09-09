@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getPublicRuntimeState } from './runtime/env.mjs'
+import { ensureStudioProviderConfig } from './runtime/provider-config.mjs'
 import { startRuntimeStream } from './runtime/request.mjs'
 import { cancelDesignWorkflow } from './runtime/agent.mjs'
 import { configureAgentSessionStore } from './runtime/agent-session-store.mjs'
@@ -134,6 +135,7 @@ function isInternalUrl(url) {
 }
 
 app.whenReady().then(() => {
+  ensureStudioProviderConfig()
   configureAgentSessionStore(app.getPath('userData'))
   configurePiSessionStore(app.getPath('userData'))
   configureProjectRepository(app.getPath('userData'))

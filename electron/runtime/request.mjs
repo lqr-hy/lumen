@@ -1,4 +1,4 @@
-import { getProviderRuntime } from './env.mjs'
+import { assertProviderRuntime, getProviderRuntime } from './env.mjs'
 import { createRuntimeError, resolveModel, resolveProvider } from './providers.mjs'
 import {
   executeSkillTool,
@@ -49,11 +49,13 @@ export async function requestProvider(payload, callbacks = {}) {
   const provider = resolveProvider(
     isImageTask ? payload.imageProvider || payload.provider : payload.provider,
   )
+  const runtime = getProviderRuntime(provider)
+  assertProviderRuntime(provider, runtime)
   const model = resolveModel(
     provider,
     isImageTask ? payload.imageModel || payload.model : payload.model,
+    runtime,
   )
-  const runtime = getProviderRuntime(provider)
 
   if (isImageTask && !provider.capabilities?.rasterImage) {
     throw createRuntimeError('IMAGE_GENERATION_UNSUPPORTED', `${provider.label} 不支持图片生成。`)
@@ -69,14 +71,6 @@ export async function requestProvider(payload, callbacks = {}) {
         : `${provider.label} 不支持图片视觉评审。`,
     )
   }
-  if (!runtime.hasApiKey && !provider.apiKeyOptional) {
-    throw createRuntimeError(
-      'MISSING_API_KEY',
-      `未检测到 ${provider.apiKeyEnv}，请配置后重启应用。`,
-      { provider: provider.id, apiKeyEnv: provider.apiKeyEnv },
-    )
-  }
-
   if (provider.wireApi === 'openai_images') {
     const { requestPiImages } = await import('./pi/model-runtime.mjs')
     return requestPiImages({ provider, runtime, model, payload, transport: requestOpenAiImagesApi })
@@ -196,6 +190,16 @@ async function requestOpenAiImagesApi({ provider, runtime, model, payload }) {
     taskType: payload.type,
     artifactCount: artifacts.length,
     artifactBytes: artifacts.reduce((total, artifact) => total + artifact.content.length, 0),
+    // 归一化后 ratioError 恒为 0，构图损失只能靠这两个值观察。
+    normalization: artifacts.map((artifact) => ({
+      name: artifact.name,
+      mode: artifact.analysis?.transform?.mode,
+      sourceSize: artifact.analysis?.transform?.sourceSize,
+      cropBounds: artifact.analysis?.transform?.sourceBounds,
+      cropLoss: Number.isFinite(artifact.analysis?.transform?.cropLoss)
+        ? `${Math.round(artifact.analysis.transform.cropLoss * 100)}%`
+        : undefined,
+    })),
   })
   return payload.type === 'generate_image'
     ? { text: '已生成设计图并放入画布。', artifact: artifacts[0] }
@@ -254,6 +258,9 @@ async function requestOpenAiImageTask({ provider, runtime, model, payload, task 
     compiled.taskPrompt ? `当前素材任务：\n${compiled.taskPrompt}` : '',
     `本次只生成一个素材：${task.name || task.id}。`,
     `目标比例约为 ${task.targetSize.width}:${task.targetSize.height}。`,
+    // 生图 API 只有固定几档画布尺寸，比例对不上时 Runtime 会居中裁剪。
+    // 告知安全区，让裁切可预期，而不是随机切掉主体或标题。
+    describeSafeArea(size, task),
     task.transparent
       ? chromaKey
         ? '在完全均匀的纯 #00ff00 色键背景上生成主体，背景不得有阴影、渐变、纹理、反射或光照变化；主体中禁止使用 #00ff00。Runtime 会把色键背景转换成真实透明 Alpha。'
@@ -509,6 +516,31 @@ function shouldUseThemeOnlyTransparentGeneration(provider, task, uploads) {
     provider.capabilities?.transparentEditParameter !== true &&
     provider.capabilities?.transparentGenerationParameter === true
   )
+}
+
+/**
+ * 说明生成画布与目标比例的差异，并给出必须保留关键内容的居中安全区。
+ * 只对非透明素材生效：非透明走 cover，必须铺满目标，超出比例的部分会被居中裁掉；
+ * 透明素材走 contain（等比缩放 + 四周补透明边距），不会裁切，因此不需要安全区。
+ */
+function describeSafeArea(size, task) {
+  if (task.transparent) return ''
+  const [canvasWidth, canvasHeight] = String(size)
+    .split('x')
+    .map((value) => Number(value))
+  const targetRatio = task.targetSize.width / task.targetSize.height
+  if (!canvasWidth || !canvasHeight || !Number.isFinite(targetRatio) || targetRatio <= 0) return ''
+  const canvasRatio = canvasWidth / canvasHeight
+  let safeWidth = canvasWidth
+  let safeHeight = canvasHeight
+  if (canvasRatio > targetRatio) safeWidth = Math.round(canvasHeight * targetRatio)
+  else if (canvasRatio < targetRatio) safeHeight = Math.round(canvasWidth / targetRatio)
+  if (safeWidth === canvasWidth && safeHeight === canvasHeight) return ''
+  const keptPercent = Math.round(((safeWidth * safeHeight) / (canvasWidth * canvasHeight)) * 100)
+  return [
+    `画布为 ${canvasWidth}x${canvasHeight}，与目标比例不一致：Runtime 只会保留居中的 ${safeWidth}x${safeHeight} 区域（约占画面 ${keptPercent}%），其余部分会被裁掉。`,
+    `主标题、主体、按钮和所有关键信息必须完整落在这个居中 ${safeWidth}x${safeHeight} 安全区内；只把背景、氛围光和可丢弃的装饰放在安全区之外。安全区边缘不要出现被截断的文字或主体。`,
+  ].join('\n')
 }
 
 function resolveImageApiSize(targetSize) {

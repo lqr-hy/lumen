@@ -2,13 +2,13 @@
 
 ## 目标
 
-为 `AI Campaign Page Studio` 提供一套类似 Codex 的本地 runtime 上下文能力：页面聊天框可以选择不同 provider/model，例如 Codex、Claude Code、Copilot；Electron 主进程根据选择直接读取本机环境变量中的 API 地址和 key，并代理请求。
+为 `AI Campaign Page Studio` 提供一套类似 Codex 的本地 runtime 上下文能力：页面聊天框可以选择 Codex、Claude Code、OpenAI/Anthropic 兼容服务和独立图片模型；Electron 主进程根据选择读取系统配置、本机环境变量或 Studio 配置，并代理请求。
 
-本方案不引入项目自己的 `config.toml`。用户只需要在本机环境里配置变量，应用运行时继承这些变量。
+本方案支持主进程本地配置 `~/.ai-campaign-page-studio/config.json`，并自动复用 Codex 与 Claude Code 的系统配置。应用运行时仍优先继承环境变量，Renderer 不接触配置文件或密钥。
 
 当前项目是 Vite + React + Electron。本文描述的 Provider、IPC、Agent 与 Skill Runtime 已落地；文中的“后续扩展”仍是路线图。
 
-项目快照、Artifact、Agent Run 检查点和取消协议见 [`agent-engineering-runtime.md`](agent-engineering-runtime.md)。Provider 公共状态包含 `chat/vision/structuredOutput/rasterImage` 能力位；推理模型通过 Pi Models 负责对话、规划和 Tool Calling，`Bilibili Image` 通过 Pi ImagesModels 负责真实位图生成。
+项目快照、Artifact、Agent Run 检查点和取消协议见 [`agent-engineering-runtime.md`](agent-engineering-runtime.md)。Provider 公共状态包含 `chat/vision/structuredOutput/rasterImage` 能力位；推理模型通过 Pi Models 负责对话、规划和 Tool Calling，图片 Provider 通过 Pi ImagesModels 负责真实位图生成。
 
 - 前端入口运行在 renderer 进程。
 - Electron 主进程位于 `electron/main.mjs`。
@@ -24,19 +24,20 @@
    - 不通过 `import.meta.env` 暴露 key。
    - 不把 key 返回给 renderer。
 
-2. 不维护额外配置文件
-   - 不新增 `~/.ai-campaign-page-studio/config.toml`。
-   - 不要求用户维护 provider 配置。
-   - 直接继承启动 Electron 进程时可见的 `process.env`。
+2. 配置复用且不泄露密钥
+   - 首次启动创建 `~/.ai-campaign-page-studio/config.json`，声明图片模型、Provider URL 与密钥环境变量名；也支持在主进程配置中直接填写 `apiKey`。
+   - 自动读取 `~/.codex/config.toml` 当前 `model_provider`。
+   - 自动读取 `~/.claude/settings.json` 的 Provider 环境配置。
+   - 环境变量优先，任何密钥都不返回 Renderer。
 
 3. 前端只传选择，不传凭证
    - renderer 调用 `window.aiCampaignElectron.runtime.startStream(...)`。
    - 请求中包含 `provider`、`model`、`prompt`、画布上下文等。
    - 主进程负责查白名单、读环境变量、拼装认证头和请求协议。
 
-4. provider 白名单内置在应用代码中
-   - 聊天框可以展示 Codex、Claude Code、Copilot 等选项。
-   - 每个 provider 的 `baseUrlEnv`、`apiKeyEnv`、`wireApi` 由应用代码定义。
+4. provider 能力白名单内置在应用代码中
+   - 聊天框展示 Codex、Claude Code 和图片模型选项。
+   - 每个 provider 的协议和能力由应用代码定义；URL 可从受控本地配置解析。
    - renderer 不能任意传 URL、header 或 env key 名称。
 
 ## 环境变量设计
@@ -45,29 +46,27 @@
 
 ```bash
 export AICODING_API_KEY="你的本地 key"
-export COPILOT_API_KEY="你的本地 key"
 export ANTHROPIC_API_KEY="你的本地 key"
 export OPENAI_API_KEY="你的本地 key"
-export BILI_IMAGE_API_KEY="你的本地生图 key"
+export IMAGE_API_KEY="你的本地生图 key"
 ```
 
 可选 base URL：
 
 ```bash
-export AICODING_BASE_URL="https://api-ai-coding.bilibili.co/api/v1/codex"
-export COPILOT_API_URL="https://copilot.bilibili.co/api/v1/prediction/e3558bcf-64ee-4522-85a5-e07ccfc7d99f"
+export AICODING_BASE_URL="https://your-codex-gateway.example/v1"
 export ANTHROPIC_BASE_URL="https://api.anthropic.com"
 export OPENAI_BASE_URL="https://api.openai.com/v1"
-export BILI_IMAGE_BASE_URL="http://llmapi.bilibili.co/v1"
+export IMAGE_BASE_URL="https://your-image-api.example/v1"
 ```
 
-`biliImage` 当前按项目要求内置了应用级默认 Key；`BILI_IMAGE_API_KEY` 仍可在运行时覆盖。其他 Provider 不得把真实 key 提交到仓库，也不要写进任何 `VITE_*` 变量。
+`image` 不内置密钥；通过 `IMAGE_API_KEY`、Studio 配置中的 `apiKey` 或 `OPENAI_API_KEY` 提供。直接填写 `apiKey` 会以明文保存在本机配置文件中，应优先使用环境变量或系统 Keychain。
 
 注意：macOS 双击打开 `.app` 时不一定继承 shell 环境变量。开发阶段建议从终端启动；正式方案可以提供启动脚本、登录项环境注入，或后续接入 Keychain。
 
 ## Provider Registry
 
-provider 不从用户配置文件读取，而是写在应用代码中，形成可审计的白名单。
+Provider 的协议、模型和能力仍由应用代码形成可审计白名单；Base URL 与密钥环境变量名可以从主进程本地配置解析。
 
 实现位置：
 
@@ -82,7 +81,7 @@ export const PROVIDERS = {
   codex: {
     label: 'Codex',
     wireApi: 'openai-responses',
-    defaultBaseUrl: 'https://api-ai-coding.bilibili.co/api/v1/codex',
+    defaultBaseUrl: 'https://api.openai.com/v1',
     baseUrlEnv: 'AICODING_BASE_URL',
     apiKeyEnv: 'AICODING_API_KEY',
     models: ['default', 'gpt-5', 'gpt-5-mini'],
@@ -95,20 +94,28 @@ export const PROVIDERS = {
     apiKeyEnv: 'ANTHROPIC_API_KEY',
     models: ['claude-opus-4-1', 'claude-sonnet-4'],
   },
-  copilot: {
-    label: 'Copilot',
-    wireApi: 'copilot-prediction',
-    defaultBaseUrl: 'https://copilot.bilibili.co/api/v1/prediction/e3558bcf-64ee-4522-85a5-e07ccfc7d99f',
-    baseUrlEnv: 'COPILOT_API_URL',
-    apiKeyEnv: 'COPILOT_API_KEY',
-    models: ['default'],
+  openai: {
+    label: 'OpenAI Compatible',
+    wireApi: 'openai-responses',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+    baseUrlEnv: 'OPENAI_BASE_URL',
+    apiKeyEnv: 'OPENAI_API_KEY',
+    models: ['gpt-5.5'],
   },
-  biliImage: {
-    label: 'Bilibili Image',
+  anthropic: {
+    label: 'Anthropic Compatible',
+    wireApi: 'anthropic-messages',
+    defaultBaseUrl: 'https://api.anthropic.com',
+    baseUrlEnv: 'ANTHROPIC_BASE_URL',
+    apiKeyEnv: 'ANTHROPIC_API_KEY',
+    models: ['claude-opus-4-8'],
+  },
+  image: {
+    label: 'Image',
     wireApi: 'openai_images',
-    defaultBaseUrl: 'http://llmapi.bilibili.co/v1',
-    baseUrlEnv: 'BILI_IMAGE_BASE_URL',
-    apiKeyEnv: 'BILI_IMAGE_API_KEY',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+    baseUrlEnv: 'IMAGE_BASE_URL',
+    apiKeyEnv: 'IMAGE_API_KEY',
     models: ['gpt-image-2', 'nano-banana-pro'],
   },
 }
@@ -118,20 +125,22 @@ export const PROVIDERS = {
 
 ```ts
 type RuntimeModelSelection = {
-  provider: 'codex' | 'claudeCode' | 'copilot' | 'biliImage'
+  provider: 'codex' | 'claudeCode' | 'image'
   model: string
 }
 ```
 
-主进程按 provider id 查 registry，再读取环境变量：
+主进程按 provider id 查 registry，再按优先级解析环境变量与本地配置：
 
 ```js
 const provider = PROVIDERS[payload.provider]
-const apiKey = process.env[provider.apiKeyEnv]
-const baseUrl = process.env[provider.baseUrlEnv] || provider.defaultBaseUrl
+const runtime = resolveProviderRuntimeConfig(provider)
+// 环境变量 > Studio config.json > Codex/Claude 系统配置 > 公共默认值
 ```
 
-这样既不需要 `config.toml`，也不会允许 renderer 任意指定 URL 或 key 名称。
+这样允许用户复用本机配置，同时不会允许 renderer 任意指定 URL、Header 或密钥值。
+
+`openai` 与 `anthropic` 是通用兼容入口：它们允许在 Studio 配置中使用任意兼容服务 URL、环境变量名和模型 ID，但协议仍固定为 Responses 或 Anthropic Messages。完全不同协议的服务需要新增受控 Provider 适配器，不能只填一个 URL。
 
 ## Electron 架构
 
@@ -184,7 +193,6 @@ electron/
 
 - `openai-responses`：Codex / OpenAI Responses API，由 Pi 官方适配器执行；B 站 Codex Provider 仅增加网关要求的 Codex 请求体与 Header 映射。
 - `anthropic-messages`：Claude / Anthropic Messages API，由 Pi 官方适配器执行。
-- `copilot-prediction`：当前 Copilot prediction 接口的受控直接 Provider。
 - `openai_images`：OpenAI Images 兼容协议；无参考图调用 `/images/generations`，有参考图调用 `/images/edits`。
 
 Codex Provider 不补写 terminal event。B 站网关必须返回真实的 `response.completed` 或
@@ -200,14 +208,16 @@ Renderer 分别提交两套选择：
 {
   provider: 'codex',
   model: 'gpt-5.6-sol',
-  imageProvider: 'biliImage',
+  imageProvider: 'image',
   imageModel: 'gpt-image-2',
 }
 ```
 
 - Conversation、Blueprint、VisualTheme 和 Pi Tool Calling 使用推理模型 `provider/model`。
 - `generate_image`、`generate_assets` 使用 `imageProvider/imageModel`。
-- `gpt-image-2` 与 `nano-banana-pro` 共用 `biliImage` Provider、Base URL 和 Key，只切换请求体中的 `model`。
+- Codex 当前模型读取 `~/.codex/config.toml` 顶层 `model`；Claude Code 读取 `settings.json` 的 `model` 或 `ANTHROPIC_MODEL`。
+- 图片模型读取 Studio `config.json` 的 `providers.image.model/models`。
+- `gpt-image-2` 与 `nano-banana-pro` 共用 `image` Provider、Base URL 和 Key，只切换请求体中的 `model`。
 - 多素材任务通过 `imageTasks[]` 描述名称、目标尺寸、透明背景和独立提示词，主进程最多并发三张，按输入顺序返回。
 - API 返回 URL 时主进程立即下载；最终统一为 Base64 Raster Artifact，Renderer 和检查点都不依赖远程 URL。
 - Key 只用于主进程请求，公共状态仅返回 `hasApiKey`。
@@ -326,7 +336,7 @@ process.resourcesPath/componentsJson
 
 Skill 位于 `app.asar` 外部的只读应用资源中。Pi Agent 只获得 Skill Catalog，并通过受控 Tool 渐进激活正文或读取 references；API Key、环境变量快照和 Agent Session 不进入 Skill。详细规范见 [`runtime-skills.md`](runtime-skills.md)。
 
-这套机制不改变凭证原则：Provider 仍直接读取 Electron 进程可见的本地环境变量，不增加 `config.toml`，Skill 也不能读取或声明用户凭证。
+这套机制不改变凭证原则：Provider 只在 Electron 主进程读取环境变量与受控本地配置，Skill 和 Renderer 都不能读取或声明用户凭证。
 
 ## 前端迁移方案
 
@@ -382,7 +392,7 @@ contextBridge.exposeInMainWorld('aiCampaignRuntime', {
 ```ts
 type RuntimeRequest = {
   type: 'chat_edit' | 'generate_design'
-  provider: 'codex' | 'claudeCode' | 'copilot'
+  provider: 'codex' | 'claudeCode'
   model: string
   prompt: string
   document?: unknown
