@@ -55,7 +55,7 @@ export function HomePage() {
   const setDocument = useEditorStore((state) => state.setDocument)
   const [loading, setLoading] = useState(false)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
-  const [projectsLoading, setProjectsLoading] = useState(Boolean(window.aiCampaignProjects))
+  const [projectsLoading, setProjectsLoading] = useState(Boolean(window.lumenProjects))
   const [projectsError, setProjectsError] = useState<string>()
   const [referenceImages, setReferenceImages] = useState<string[]>([])
   const [mentions, setMentions] = useState<ComposerMention[]>([])
@@ -72,7 +72,7 @@ export function HomePage() {
   })
 
   async function loadProjects() {
-    if (!window.aiCampaignProjects) {
+    if (!window.lumenProjects) {
       setProjectsLoading(false)
       return
     }
@@ -80,7 +80,7 @@ export function HomePage() {
     setProjectsError(undefined)
     try {
       setProjects(
-        (await window.aiCampaignProjects.list()).sort((a, b) =>
+        (await window.lumenProjects.list()).sort((a, b) =>
           b.updatedAt.localeCompare(a.updatedAt),
         ),
       )
@@ -107,7 +107,7 @@ export function HomePage() {
         referenceImages,
       })
       setDocument(result.document)
-      if (window.aiCampaignElectron) {
+      if (window.lumenElectron) {
         openAppTab({
           path: `/editor/${result.projectId}`,
           title: result.document.title,
@@ -122,10 +122,10 @@ export function HomePage() {
   }
 
   async function deleteProject(project: ProjectSummary) {
-    if (!window.aiCampaignProjects) return
+    if (!window.lumenProjects) return
     if (!window.confirm(`确定删除项目“${project.title}”吗？此操作不可撤销。`)) return
     try {
-      await window.aiCampaignProjects.delete(project.projectId)
+      await window.lumenProjects.delete(project.projectId)
       setProjects((current) => current.filter((item) => item.projectId !== project.projectId))
     } catch (error) {
       setProjectsError(error instanceof Error ? error.message : '项目删除失败。')

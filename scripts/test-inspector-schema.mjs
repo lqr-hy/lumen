@@ -5,7 +5,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 
-const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-campaign-inspector-schema-'))
+const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lumen-inspector-schema-'))
 const bundle = path.join(root, 'inspector-schema.mjs')
 
 try {

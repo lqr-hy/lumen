@@ -1,5 +1,5 @@
 {
-  "name": "ai-campaign-page-studio",
+  "name": "lumen",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -117,8 +117,8 @@
     "vite": "^7.0.3"
   },
   "build": {
-    "appId": "com.bilibili.ai-campaign-page-studio",
-    "productName": "AI Campaign Page Studio",
+    "appId": "com.bilibili.lumen",
+    "productName": "Lumen",
     "asar": true,
     "directories": {
       "output": "release"

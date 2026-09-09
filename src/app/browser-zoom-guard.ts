@@ -1,5 +1,5 @@
 const zoomGuardOptions: AddEventListenerOptions = { passive: false, capture: true }
-const cleanupKey = '__aiCampaignPageStudioZoomGuardCleanup__'
+const cleanupKey = '__lumenZoomGuardCleanup__'
 
 declare global {
   interface Window {

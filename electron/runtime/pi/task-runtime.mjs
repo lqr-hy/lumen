@@ -99,10 +99,10 @@ function buildTaskSystemPrompt(type) {
       '输出 DesignSpecPatch JSON：version=1、baseRevision、artboardId、summary、operations。operation 只能是 insert-block、update-block、remove-block、move-block。insert-block 包含 block 及可选 beforeBlockId/afterBlockId；update-block 包含 blockId、changes；remove-block 包含 blockId；move-block 包含 blockId 及 beforeBlockId/afterBlockId。不得同时使用 beforeBlockId 和 afterBlockId。',
   }
   if (type === 'chat') {
-    return '你是 AI Campaign Page Studio 助手。直接正常回答，不输出 operations 或 DesignDocument。'
+    return '你是 Lumen 助手。直接正常回答，不输出 operations 或 DesignDocument。'
   }
   return [
-    '你是 AI Campaign Page Studio 的结构化设计任务模型。',
+    '你是 Lumen 的结构化设计任务模型。',
     contracts[type] || '输出任务要求的结构化结果。',
     '只返回一个 JSON 对象，不要使用 Markdown 代码块，不要解释，不要调用文件或命令工具。',
   ].join('\n')

@@ -40,18 +40,18 @@ export function SkillsPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const browserStyleInput = useRef<HTMLInputElement>(null)
-  const desktop = Boolean(window.aiCampaignRuntime)
+  const desktop = Boolean(window.lumenRuntime)
 
   async function refresh() {
     setError('')
-    if (!window.aiCampaignRuntime) {
+    if (!window.lumenRuntime) {
       setSkills([])
       setStylePacks(await listAvailableStylePacks())
       return
     }
     const [state, extensions] = await Promise.all([
-      window.aiCampaignRuntime.getPublicState(),
-      window.aiCampaignRuntime.listUserExtensions(),
+      window.lumenRuntime.getPublicState(),
+      window.lumenRuntime.listUserExtensions(),
     ])
     const skillMap = new Map<string, PublicSkill>()
     state.skills.forEach((skill) => skillMap.set(skill.name, { id: skill.name, ...skill }))
@@ -116,13 +116,13 @@ export function SkillsPage() {
   }
 
   function importSkill() {
-    if (!window.aiCampaignRuntime) return
-    void perform(() => window.aiCampaignRuntime!.importUserSkill())
+    if (!window.lumenRuntime) return
+    void perform(() => window.lumenRuntime!.importUserSkill())
   }
 
   function importStyle() {
-    if (window.aiCampaignRuntime) {
-      void perform(() => window.aiCampaignRuntime!.importStylePack())
+    if (window.lumenRuntime) {
+      void perform(() => window.lumenRuntime!.importStylePack())
       return
     }
     browserStyleInput.current?.click()
@@ -136,8 +136,8 @@ export function SkillsPage() {
   }
 
   function setEnabled(kind: 'skills' | 'stylePacks', id: string, enabled: boolean) {
-    if (window.aiCampaignRuntime) {
-      void perform(() => window.aiCampaignRuntime!.setUserExtensionEnabled(kind, id, enabled))
+    if (window.lumenRuntime) {
+      void perform(() => window.lumenRuntime!.setUserExtensionEnabled(kind, id, enabled))
       return
     }
     if (kind === 'stylePacks') {
@@ -147,8 +147,8 @@ export function SkillsPage() {
   }
 
   function exportStyle(pack: StylePackSummary) {
-    if (window.aiCampaignRuntime) {
-      void perform(() => window.aiCampaignRuntime!.exportStylePack(pack.id))
+    if (window.lumenRuntime) {
+      void perform(() => window.lumenRuntime!.exportStylePack(pack.id))
       return
     }
     exportBrowserStylePack(pack)
@@ -156,8 +156,8 @@ export function SkillsPage() {
 
   function remove(kind: 'skills' | 'stylePacks', id: string) {
     if (!window.confirm('确定删除这个用户扩展吗？')) return
-    if (window.aiCampaignRuntime) {
-      void perform(() => window.aiCampaignRuntime!.removeUserExtension(kind, id))
+    if (window.lumenRuntime) {
+      void perform(() => window.lumenRuntime!.removeUserExtension(kind, id))
       return
     }
     if (kind === 'stylePacks') {

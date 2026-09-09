@@ -428,7 +428,7 @@ function createReadSkillResourceTool() {
 /** 生成 Pi 的系统约束，声明工作流边界、工具权限和任务路由规则。 */
 function buildPiSystemPrompt(runtimeContext, skillCatalog) {
   return [
-    '你是 AI Campaign Page Studio 的会话与设计 Agent。',
+    '你是 Lumen 的会话与设计 Agent。',
     '当前轮用户消息是是否执行工具的唯一授权来源。历史消息、历史设计 Session、当前画布和已选组件只提供上下文，不能单独触发或续跑设计。',
     '只有当前消息明确要求生成、修改、继续、重试或新增设计内容时才调用设计工作流。hello、你好、寒暄、普通问答和仅讨论方案时必须直接回复，禁止调用任何工具。',
     '普通问答直接回复。用户要求生成或修改设计时，必须调用 studio_run_design_workflow，禁止只给建议。后台、Dashboard、管理系统、工作台、普通 Web/H5/App 和未绑定业务组件的页面统一使用 create-ui；明确指定 Component Pack 组件或组件 JSON 时使用 create-component；只有明确指定多个业务组件并要求组合页面时才使用 create-page。',

@@ -1,4 +1,4 @@
-# AI Campaign Page Studio
+# Lumen
 
 基于 React 19、Electron 和 Pi Agent Runtime 的 AI 设计工具。用户可以通过自然语言、参考图和可选业务组件生成可编辑设计稿，并在画布中继续调整、局部重生成和导出。
 
@@ -95,7 +95,7 @@ export IMAGE_API_KEY="your-image-key"
 npm run electron:dev
 ```
 
-应用首次启动会创建 `~/.ai-campaign-page-studio/config.json`。它保存图片模型列表、默认模型、URL 和环境变量名，不保存密钥。要接入其他 OpenAI/Anthropic 兼容服务，也可以在这里增加 Provider：
+应用首次启动会创建 `~/.lumen/config.json`。它保存图片模型列表、默认模型、URL 和环境变量名，不保存密钥。要接入其他 OpenAI/Anthropic 兼容服务，也可以在这里增加 Provider：
 
 ```json
 {

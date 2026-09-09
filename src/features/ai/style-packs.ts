@@ -13,12 +13,12 @@ export interface StylePackSummary {
   enabled: boolean
 }
 
-const PACKS_KEY = 'ai-campaign-style-packs-v1'
-const SELECTED_KEY = 'ai-campaign-selected-style-pack-v1'
+const PACKS_KEY = 'lumen-style-packs-v1'
+const SELECTED_KEY = 'lumen-selected-style-pack-v1'
 
 export async function listAvailableStylePacks(): Promise<StylePackSummary[]> {
-  if (window.aiCampaignRuntime) {
-    const state = await window.aiCampaignRuntime.getPublicState()
+  if (window.lumenRuntime) {
+    const state = await window.lumenRuntime.getPublicState()
     return state.stylePacks ?? []
   }
   return readBrowserStylePacks()

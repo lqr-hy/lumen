@@ -23,7 +23,7 @@ import { ResponsiveVisualFixturePage } from '../pages/ResponsiveVisualFixturePag
 import { CodegenParityFixturePage } from '../pages/CodegenParityFixturePage'
 import { SnapshotFixturePage } from '../pages/SnapshotFixturePage'
 
-const createAppRouter = window.aiCampaignElectron ? createHashRouter : createBrowserRouter
+const createAppRouter = window.lumenElectron ? createHashRouter : createBrowserRouter
 
 function lazyElement(element: ReactNode) {
   return <Suspense fallback={<div className="route-loading">加载中…</div>}>{element}</Suspense>

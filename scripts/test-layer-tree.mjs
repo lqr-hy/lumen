@@ -5,7 +5,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 
-const outputDirectory = await mkdtemp(path.join(tmpdir(), 'ai-campaign-layer-tree-'))
+const outputDirectory = await mkdtemp(path.join(tmpdir(), 'lumen-layer-tree-'))
 const outputFile = path.join(outputDirectory, 'layer-tree.mjs')
 
 try {

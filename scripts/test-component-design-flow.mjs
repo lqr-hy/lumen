@@ -13,7 +13,7 @@ import {
 } from '../electron/runtime/skills.mjs'
 
 const appRoot = path.resolve(import.meta.dirname, '..')
-const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-campaign-component-flow-'))
+const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lumen-component-flow-'))
 configureAgentSessionStore(testRoot)
 configureSkillRuntime({ appRoot, resourcesPath: appRoot, isPackaged: false })
 

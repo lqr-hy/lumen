@@ -22,8 +22,8 @@ export function ProjectsPage() {
   const [versions, setVersions] = useState<Record<string, ProjectVersion[]>>({})
 
   useEffect(() => {
-    if (!window.aiCampaignProjects) return
-    void window.aiCampaignProjects
+    if (!window.lumenProjects) return
+    void window.lumenProjects
       .list()
       .then(setProjects)
       .catch((error) => setMessage(error instanceof Error ? error.message : '项目列表加载失败。'))
@@ -31,7 +31,7 @@ export function ProjectsPage() {
 
   async function importProject() {
     try {
-      const imported = await window.aiCampaignProjects?.import()
+      const imported = await window.lumenProjects?.import()
       if (!imported) return
       setProjects((current) => [
         imported,
@@ -45,7 +45,7 @@ export function ProjectsPage() {
 
   async function exportProject(projectId: string) {
     try {
-      await window.aiCampaignProjects?.export(projectId)
+      await window.lumenProjects?.export(projectId)
       setMessage('项目已导出。')
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '项目导出失败。')
@@ -53,9 +53,9 @@ export function ProjectsPage() {
   }
 
   async function loadVersions(projectId: string) {
-    if (!window.aiCampaignProjects) return
+    if (!window.lumenProjects) return
     try {
-      const result = await window.aiCampaignProjects.listVersions(projectId)
+      const result = await window.lumenProjects.listVersions(projectId)
       setVersions((current) => ({ ...current, [projectId]: result }))
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '版本列表加载失败。')
@@ -63,23 +63,23 @@ export function ProjectsPage() {
   }
 
   async function restoreVersion(projectId: string, versionId: string) {
-    if (!window.aiCampaignProjects) return
+    if (!window.lumenProjects) return
     try {
-      const snapshot = await window.aiCampaignProjects.loadVersion(projectId, versionId)
+      const snapshot = await window.lumenProjects.loadVersion(projectId, versionId)
       if (!snapshot) throw new Error('版本不存在。')
-      await window.aiCampaignProjects.save(snapshot)
+      await window.lumenProjects.save(snapshot)
       setMessage('版本已恢复。')
-      setProjects(await window.aiCampaignProjects.list())
+      setProjects(await window.lumenProjects.list())
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '版本恢复失败。')
     }
   }
 
   async function deleteProject(project: ProjectSummary) {
-    if (!window.aiCampaignProjects) return
+    if (!window.lumenProjects) return
     if (!window.confirm(`确定删除项目“${project.title}”吗？此操作不可撤销。`)) return
     try {
-      await window.aiCampaignProjects.delete(project.projectId)
+      await window.lumenProjects.delete(project.projectId)
       setProjects((current) => current.filter((item) => item.projectId !== project.projectId))
       setVersions((current) => {
         const next = { ...current }
@@ -96,7 +96,7 @@ export function ProjectsPage() {
     <div className="page compact-page">
       <div className="utility-page-header">
         <h1>项目列表</h1>
-        {window.aiCampaignProjects ? (
+        {window.lumenProjects ? (
           <button
             type="button"
             className="utility-action-button"
@@ -121,7 +121,7 @@ export function ProjectsPage() {
                   {project.artboardCount} 个画板 · {new Date(project.updatedAt).toLocaleString()}
                 </small>
               </Link>
-              {window.aiCampaignProjects ? (
+              {window.lumenProjects ? (
                 <button
                   type="button"
                   className="utility-inline-action"
@@ -134,7 +134,7 @@ export function ProjectsPage() {
                   <Download size={14} /> 导出
                 </button>
               ) : null}
-              {window.aiCampaignProjects ? (
+              {window.lumenProjects ? (
                 <button
                   type="button"
                   className="utility-inline-action utility-danger-action"
@@ -148,7 +148,7 @@ export function ProjectsPage() {
                   <Trash2 size={14} /> 删除
                 </button>
               ) : null}
-              {window.aiCampaignProjects ? (
+              {window.lumenProjects ? (
                 <details
                   className="utility-versions"
                   onToggle={(event) => {
@@ -183,7 +183,7 @@ export function ProjectsPage() {
         <div className="empty-state">
           <FolderKanban size={32} />
           <h2>暂无已保存项目</h2>
-          {!window.aiCampaignProjects ? <p>项目持久化仅支持 Electron 桌面版。</p> : null}
+          {!window.lumenProjects ? <p>项目持久化仅支持 Electron 桌面版。</p> : null}
         </div>
       )}
     </div>

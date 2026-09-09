@@ -108,11 +108,11 @@ export function createDesignTurnCanvasBridge(options: DesignTurnCanvasBridgeOpti
         }
       }
       const observation = applyIncrementalCanvasDeliverable(target, deliverable)
-      if (observation.status === 'success' && window.aiCampaignProjects) {
+      if (observation.status === 'success' && window.lumenProjects) {
         try {
           const state = useEditorStore.getState()
           if (!state.document) throw new Error('当前项目文档不存在。')
-          await window.aiCampaignProjects.save({
+          await window.lumenProjects.save({
             schemaVersion: 2,
             projectId: state.document.id,
             document: { ...state.document, viewport: state.viewport },

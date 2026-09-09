@@ -71,7 +71,7 @@ function createWindow() {
     height: 960,
     minWidth: 1120,
     minHeight: 760,
-    title: 'AI Campaign Page Studio',
+    title: 'Lumen',
     backgroundColor: '#f6f7fb',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 14, y: 9 },
@@ -118,7 +118,7 @@ function createChildWindow() {
     height: 900,
     minWidth: 1040,
     minHeight: 720,
-    title: 'AI Campaign Page Studio',
+    title: 'Lumen',
     backgroundColor: '#f6f7fb',
     titleBarStyle: 'hiddenInset',
     webPreferences: {
@@ -176,8 +176,8 @@ function registerRuntimeHandlers() {
     const snapshot = await loadProjectSnapshot(projectId)
     if (!snapshot) throw new Error('项目不存在，无法导出。')
     const result = await dialog.showSaveDialog(mainWindow, {
-      defaultPath: `${snapshot.document.title || '未命名项目'}.aicampaign.zip`,
-      filters: [{ name: 'AI Campaign Project', extensions: ['zip'] }],
+      defaultPath: `${snapshot.document.title || '未命名项目'}.lumen.zip`,
+      filters: [{ name: 'Lumen Project', extensions: ['zip'] }],
     })
     if (result.canceled || !result.filePath) return undefined
     return exportProjectArchive(projectId, result.filePath)
@@ -185,7 +185,7 @@ function registerRuntimeHandlers() {
   ipcMain.handle('project:import', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile'],
-      filters: [{ name: 'AI Campaign Project', extensions: ['zip'] }],
+      filters: [{ name: 'Lumen Project', extensions: ['zip'] }],
     })
     if (result.canceled || !result.filePaths[0]) return undefined
     return importProjectArchive(result.filePaths[0])

@@ -6,7 +6,7 @@ import { configureAgentSessionStore } from '../electron/runtime/agent-session-st
 import { inspectSvgArtifact } from '../electron/runtime/agent-tools.mjs'
 import { routeAgentIntent } from '../electron/runtime/intent-router.mjs'
 
-const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-campaign-design-flow-'))
+const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lumen-design-flow-'))
 configureAgentSessionStore(testRoot)
 
 const validSvg = [

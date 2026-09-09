@@ -1,4 +1,4 @@
-# AI Campaign Page Studio Agent Runtime 技术方案
+# Lumen Agent Runtime 技术方案
 
 ## 1. 目标
 

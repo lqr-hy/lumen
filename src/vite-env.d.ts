@@ -1,10 +1,10 @@
 /// <reference types="vite/client" />
 
 interface Window {
-  readonly aiCampaignElectron?: {
+  readonly lumenElectron?: {
     platform: 'electron'
   }
-  readonly aiCampaignProjects?: {
+  readonly lumenProjects?: {
     list: () => Promise<
       Array<{
         projectId: string
@@ -70,7 +70,7 @@ interface Window {
       | undefined
     >
   }
-  readonly aiCampaignRuntime?: {
+  readonly lumenRuntime?: {
     listComponentPacks: (projectId: string) => Promise<
       Array<{
         id: string

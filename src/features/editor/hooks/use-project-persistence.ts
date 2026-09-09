@@ -8,7 +8,7 @@ export function useProjectPersistence(projectId: string | undefined, ready: bool
   const [retryToken, setRetryToken] = useState(0)
 
   useEffect(() => {
-    if (!ready || !projectId || !window.aiCampaignProjects) {
+    if (!ready || !projectId || !window.lumenProjects) {
       setStatus('idle')
       return undefined
     }
@@ -33,7 +33,7 @@ export function useProjectPersistence(projectId: string | undefined, ready: bool
       saving = true
       setStatus('saving')
       try {
-        await window.aiCampaignProjects?.save({
+        await window.lumenProjects?.save({
           schemaVersion: 1,
           projectId: document.id,
           document: { ...document, viewport: state.viewport },

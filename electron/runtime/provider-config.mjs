@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const APP_CONFIG_DIRECTORY = '.ai-campaign-page-studio'
+const APP_CONFIG_DIRECTORY = '.lumen'
 
 let configuredPaths = {}
 let cachedFileConfig

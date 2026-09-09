@@ -36,7 +36,7 @@ import {
   type VisualRedesignBrief,
 } from '../features/editor/utils/visual-brief'
 
-const PANEL_WIDTH_STORAGE_KEY = 'ai-campaign-page-studio:panel-widths:v1'
+const PANEL_WIDTH_STORAGE_KEY = 'lumen:panel-widths:v1'
 const PANEL_WIDTHS = {
   left: { default: 246, min: 200, max: 420 },
   right: { default: 316, min: 280, max: 520 },
@@ -96,7 +96,7 @@ export function EditorPage() {
         if (!cancelled) setWorkspaceReady(true)
         return
       }
-      const saved = await window.aiCampaignProjects?.load(resolvedProjectId)
+      const saved = await window.lumenProjects?.load(resolvedProjectId)
       if (cancelled) return
       hydrateWorkspace(
         saved
@@ -188,9 +188,9 @@ export function EditorPage() {
     const instance = document.componentInstances?.[instanceId]
     if (!instance) return
     let packageBytes = buildComponentExportPackage(document, instanceId)
-    if (instance.design.packId && window.aiCampaignRuntime?.adaptComponentExport) {
+    if (instance.design.packId && window.lumenRuntime?.adaptComponentExport) {
       try {
-        const adapted = await window.aiCampaignRuntime.adaptComponentExport({
+        const adapted = await window.lumenRuntime.adaptComponentExport({
           packId: instance.design.packId,
           componentName: instance.componentName,
           profile: instance.profile,

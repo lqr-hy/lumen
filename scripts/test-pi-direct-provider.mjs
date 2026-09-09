@@ -66,7 +66,7 @@ try {
   assert.equal(captured.body.tool_choice, 'auto')
   assert.equal(captured.body.parallel_tool_calls, true)
   assert(captured.body.include.includes('reasoning.encrypted_content'))
-  assert.match(captured.body.instructions, /Studio 助手/)
+  assert.match(captured.body.instructions, /Lumen 助手/)
   assert(!captured.body.input.some((item) => ['system', 'developer'].includes(item.role)))
   assert(captured.body.input.some((item) => item.role === 'user'))
 

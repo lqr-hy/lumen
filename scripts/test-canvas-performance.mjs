@@ -5,7 +5,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 
-const outputDirectory = await mkdtemp(path.join(tmpdir(), 'ai-campaign-canvas-performance-'))
+const outputDirectory = await mkdtemp(path.join(tmpdir(), 'lumen-canvas-performance-'))
 const outputFile = path.join(outputDirectory, 'canvas-performance.mjs')
 
 try {

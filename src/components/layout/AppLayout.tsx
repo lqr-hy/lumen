@@ -27,7 +27,7 @@ export function AppLayout() {
   const location = useLocation()
   const navigate = useNavigate()
   const editorMode = location.pathname.startsWith('/editor/')
-  const electronMode = Boolean(window.aiCampaignElectron)
+  const electronMode = Boolean(window.lumenElectron)
   const [tabs, setTabs] = useState<AppTabRequest[]>([{ path: '/', title: '首页' }])
 
   const activePath = location.pathname

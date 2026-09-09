@@ -46,7 +46,7 @@ export function RuntimeModelSelect({ value, onChange, purpose = 'chat' }: Runtim
 
   useEffect(() => {
     let cancelled = false
-    window.aiCampaignRuntime
+    window.lumenRuntime
       ?.getPublicState()
       .then((state) => {
         if (cancelled) return

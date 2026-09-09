@@ -4,9 +4,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { configureArtifactRepository } from '../artifacts/artifact-repository.mjs'
 
-let storageRoot = path.join(os.homedir(), '.ai-campaign-page-studio', 'agent-sessions')
-let checkpointsRoot = path.join(os.homedir(), '.ai-campaign-page-studio', 'agent-checkpoints')
-let sessionAssetsRoot = path.join(os.homedir(), '.ai-campaign-page-studio', 'agent-assets')
+let storageRoot = path.join(os.homedir(), '.lumen', 'agent-sessions')
+let checkpointsRoot = path.join(os.homedir(), '.lumen', 'agent-checkpoints')
+let sessionAssetsRoot = path.join(os.homedir(), '.lumen', 'agent-assets')
 
 export function configureAgentSessionStore(root) {
   if (typeof root === 'string' && root.trim()) {

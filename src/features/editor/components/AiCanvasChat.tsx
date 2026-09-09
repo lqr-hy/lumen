@@ -616,7 +616,7 @@ export function AiCanvasChat({ onOpenChatPanel }: AiCanvasChatProps) {
           onCursorChange={setComposerCursorOffset}
           onSubmit={submitPrompt}
           onStop={() =>
-            activeRunSessionId && window.aiCampaignRuntime?.cancelAgent(activeRunSessionId)
+            activeRunSessionId && window.lumenRuntime?.cancelAgent(activeRunSessionId)
           }
         />
       </div>
