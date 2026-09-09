@@ -2,9 +2,9 @@
 
 ## 目标
 
-为 `AI Campaign Page Studio` 提供一套类似 Codex 的本地 runtime 上下文能力：页面聊天框可以选择 Codex、Claude Code、OpenAI/Anthropic 兼容服务和独立图片模型；Electron 主进程根据选择读取系统配置、本机环境变量或 Studio 配置，并代理请求。
+为 `Lumen` 提供一套类似 Codex 的本地 runtime 上下文能力：页面聊天框可以选择 Codex、Claude Code、OpenAI/Anthropic 兼容服务和独立图片模型；Electron 主进程根据选择读取系统配置、本机环境变量或 Studio 配置，并代理请求。
 
-本方案支持主进程本地配置 `~/.ai-campaign-page-studio/config.json`，并自动复用 Codex 与 Claude Code 的系统配置。应用运行时仍优先继承环境变量，Renderer 不接触配置文件或密钥。
+本方案支持主进程本地配置 `~/.lumen/config.json`，并自动复用 Codex 与 Claude Code 的系统配置。应用运行时仍优先继承环境变量，Renderer 不接触配置文件或密钥。
 
 当前项目是 Vite + React + Electron。本文描述的 Provider、IPC、Agent 与 Skill Runtime 已落地；文中的“后续扩展”仍是路线图。
 
@@ -12,7 +12,7 @@
 
 - 前端入口运行在 renderer 进程。
 - Electron 主进程位于 `electron/main.mjs`。
-- `electron/preload.mjs` 已通过 `contextBridge` 暴露了 `window.aiCampaignElectron`。
+- `electron/preload.mjs` 已通过 `contextBridge` 暴露了 `window.lumenElectron`。
 - Renderer 的 `src/features/ai/api.ts` 只负责构造 IPC Payload，不读取 AI Key，也不直接访问模型 URL。
 
 核心改造是：密钥只在 Electron 主进程读取，renderer 不直接接触 key；页面只传用户选择的 `provider/model` 和业务请求内容。
@@ -25,13 +25,13 @@
    - 不把 key 返回给 renderer。
 
 2. 配置复用且不泄露密钥
-   - 首次启动创建 `~/.ai-campaign-page-studio/config.json`，声明图片模型、Provider URL 与密钥环境变量名；也支持在主进程配置中直接填写 `apiKey`。
+   - 首次启动创建 `~/.lumen/config.json`，声明图片模型、Provider URL 与密钥环境变量名；也支持在主进程配置中直接填写 `apiKey`。
    - 自动读取 `~/.codex/config.toml` 当前 `model_provider`。
    - 自动读取 `~/.claude/settings.json` 的 Provider 环境配置。
    - 环境变量优先，任何密钥都不返回 Renderer。
 
 3. 前端只传选择，不传凭证
-   - renderer 调用 `window.aiCampaignElectron.runtime.startStream(...)`。
+   - renderer 调用 `window.lumenElectron.runtime.startStream(...)`。
    - 请求中包含 `provider`、`model`、`prompt`、画布上下文等。
    - 主进程负责查白名单、读环境变量、拼装认证头和请求协议。
 
@@ -242,7 +242,7 @@ ipcMain.handle('runtime:startStream', async (event, payload) => {
 preload 暴露：
 
 ```js
-contextBridge.exposeInMainWorld('aiCampaignRuntime', {
+contextBridge.exposeInMainWorld('lumenRuntime', {
   getPublicState: () => ipcRenderer.invoke('runtime:getPublicState'),
   startStream: (payload) => ipcRenderer.invoke('runtime:startStream', payload),
 })
@@ -251,7 +251,7 @@ contextBridge.exposeInMainWorld('aiCampaignRuntime', {
 renderer 使用：
 
 ```ts
-const result = await window.aiCampaignRuntime?.request({
+const result = await window.lumenRuntime?.request({
   type: 'chat_edit',
   provider: selectedProvider,
   model: selectedModel,
@@ -364,7 +364,7 @@ ipcMain.handle('runtime:startStream', async (event, payload) => {
 preload：
 
 ```js
-contextBridge.exposeInMainWorld('aiCampaignRuntime', {
+contextBridge.exposeInMainWorld('lumenRuntime', {
   startStream: (payload) => ipcRenderer.invoke('runtime:startStream', payload),
   onStreamToken: (listener) => {
     const wrapped = (_event, data) => listener(data)
@@ -447,8 +447,8 @@ type RuntimeRequest = {
    - 注入 API key
 
 4. 扩展 preload
-   - 暴露 `window.aiCampaignRuntime`
-   - 保留现有 `window.aiCampaignElectron`
+   - 暴露 `window.lumenRuntime`
+   - 保留现有 `window.lumenElectron`
 
 5. 修改前端 AI API
    - `applyChatEdit` 只走 Electron Runtime
@@ -456,7 +456,7 @@ type RuntimeRequest = {
    - 非 Electron 环境不发起模型请求
 
 6. 增加类型声明
-   - 在 `src/vite-env.d.ts` 增加 `Window.aiCampaignRuntime`
+   - 在 `src/vite-env.d.ts` 增加 `Window.lumenRuntime`
    - 定义 request、stream、public state 类型
 
 7. 增加文档说明

@@ -5,7 +5,7 @@ export interface AppTabRequest {
 }
 
 export function openAppTab(request: AppTabRequest) {
-  if (window.aiCampaignElectron) {
+  if (window.lumenElectron) {
     window.dispatchEvent(new CustomEvent<AppTabRequest>('app-tab-open', { detail: request }))
     return
   }

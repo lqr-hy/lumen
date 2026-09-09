@@ -766,7 +766,7 @@ export function ChatPanel({ onClose, initialPrompt }: ChatPanelProps) {
           onSubmit={onSubmit}
           onStop={() => {
             const sessionId = activeRunSessionId ?? activeThread?.id
-            if (sessionId) void window.aiCampaignRuntime?.cancelAgent(sessionId)
+            if (sessionId) void window.lumenRuntime?.cancelAgent(sessionId)
           }}
         />
       </div>

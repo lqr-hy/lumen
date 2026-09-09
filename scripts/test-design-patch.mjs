@@ -13,7 +13,7 @@ import {
 } from '../electron/runtime/design-action-compiler.mjs'
 import { routeAgentIntent } from '../electron/runtime/intent-router.mjs'
 
-const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-campaign-design-patch-'))
+const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lumen-design-patch-'))
 const bundleFile = path.join(testRoot, 'design-patch.mjs')
 configureAgentSessionStore(testRoot)
 

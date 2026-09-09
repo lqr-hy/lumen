@@ -207,7 +207,7 @@ test('左右面板支持拖拽、键盘调整和双击复位宽度', async ({ pa
   await expect
     .poll(() =>
       page.evaluate(() =>
-        JSON.parse(localStorage.getItem('ai-campaign-page-studio:panel-widths:v1') ?? '{}'),
+        JSON.parse(localStorage.getItem('lumen:panel-widths:v1') ?? '{}'),
       ),
     )
     .toEqual({ left: 246, right: 348 })

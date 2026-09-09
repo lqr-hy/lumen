@@ -23,7 +23,7 @@ import {
   writeArtifact,
 } from '../electron/artifacts/artifact-repository.mjs'
 
-const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-campaign-reliability-'))
+const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lumen-reliability-'))
 configureAgentSessionStore(testRoot)
 configureProjectRepository(testRoot)
 configureArtifactRepository(testRoot)

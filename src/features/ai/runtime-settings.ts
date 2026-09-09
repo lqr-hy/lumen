@@ -2,8 +2,8 @@ import { useCallback, useState } from 'react'
 import type { RuntimeModelSelection } from './types'
 import { getSelectedStylePackId, saveSelectedStylePackId } from './style-packs'
 
-const CHAT_MODEL_KEY = 'ai-campaign-chat-model-v1'
-const IMAGE_MODEL_KEY = 'ai-campaign-image-model-v1'
+const CHAT_MODEL_KEY = 'lumen-chat-model-v1'
+const IMAGE_MODEL_KEY = 'lumen-image-model-v1'
 
 const DEFAULT_CHAT_MODEL: RuntimeModelSelection = { provider: 'codex', model: 'gpt-5.6-sol' }
 const DEFAULT_IMAGE_MODEL: RuntimeModelSelection = { provider: 'image', model: 'gpt-image-2' }

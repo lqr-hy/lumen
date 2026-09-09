@@ -21,7 +21,7 @@
 
 内置资源仍为只读：开发环境读取 `.agents/skills/` 和 `style-packs/`，DMG 读取 `Resources/skills/` 和 `Resources/style-packs/`。
 
-浏览器版只支持 Style Pack，使用 `localStorage` 的 `ai-campaign-style-packs-v1` 保存，不安装或执行 Skill。
+浏览器版只支持 Style Pack，使用 `localStorage` 的 `lumen-style-packs-v1` 保存，不安装或执行 Skill。
 
 ## 3. Style Pack 契约
 

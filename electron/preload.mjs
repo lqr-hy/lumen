@@ -1,10 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-contextBridge.exposeInMainWorld('aiCampaignElectron', {
+contextBridge.exposeInMainWorld('lumenElectron', {
   platform: 'electron',
 })
 
-contextBridge.exposeInMainWorld('aiCampaignProjects', {
+contextBridge.exposeInMainWorld('lumenProjects', {
   list: () => ipcRenderer.invoke('project:list'),
   load: (projectId) => ipcRenderer.invoke('project:load', projectId),
   save: (snapshot) => ipcRenderer.invoke('project:save', snapshot),
@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('aiCampaignProjects', {
     ipcRenderer.invoke('project:loadVersion', projectId, versionId),
 })
 
-contextBridge.exposeInMainWorld('aiCampaignRuntime', {
+contextBridge.exposeInMainWorld('lumenRuntime', {
   getPublicState: () => ipcRenderer.invoke('runtime:getPublicState'),
   listUserExtensions: () => ipcRenderer.invoke('runtime:listUserExtensions'),
   importUserSkill: () => ipcRenderer.invoke('runtime:importUserSkill'),

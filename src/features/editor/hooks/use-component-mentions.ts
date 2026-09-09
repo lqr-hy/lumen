@@ -5,11 +5,11 @@ export function useComponentMentions(projectId?: string) {
   const [options, setOptions] = useState<PromptMentionOption[]>([])
 
   const refresh = useCallback(async () => {
-    if (!projectId || !window.aiCampaignRuntime?.listComponentPacks) {
+    if (!projectId || !window.lumenRuntime?.listComponentPacks) {
       setOptions([])
       return
     }
-    const packs = await window.aiCampaignRuntime.listComponentPacks(projectId)
+    const packs = await window.lumenRuntime.listComponentPacks(projectId)
     setOptions(
       packs.flatMap((pack) =>
         pack.components
@@ -40,12 +40,12 @@ export function useComponentMentions(projectId?: string) {
 
   const importComponent = useCallback(
     async (file: File) => {
-      if (!projectId || !window.aiCampaignRuntime?.importProjectComponent) {
+      if (!projectId || !window.lumenRuntime?.importProjectComponent) {
         throw new Error('当前 Runtime 不支持导入组件 JSON。')
       }
       if (!file.name.toLowerCase().endsWith('.json')) throw new Error('只支持导入 .json 组件文件。')
       if (file.size > 2 * 1024 * 1024) throw new Error('组件 JSON 不能超过 2MB。')
-      const imported = await window.aiCampaignRuntime.importProjectComponent({
+      const imported = await window.lumenRuntime.importProjectComponent({
         projectId,
         fileName: file.name,
         source: await file.text(),
@@ -68,6 +68,6 @@ export function useComponentMentions(projectId?: string) {
 
   return {
     componentMentionOptions: options,
-    importComponent: window.aiCampaignRuntime?.importProjectComponent ? importComponent : undefined,
+    importComponent: window.lumenRuntime?.importProjectComponent ? importComponent : undefined,
   }
 }

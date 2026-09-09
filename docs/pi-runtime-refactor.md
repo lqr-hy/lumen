@@ -176,7 +176,7 @@ npm run test:pi-direct
 - `gpt-image-2`、`nano-banana-pro`、Generation、Edit、多素材和 Raster Artifact：通过。
 - Agent、组件、页面、导出、Runtime Adapter、Lint 和生产构建回归：通过。
 - Playwright 桌面与 390px 兼容视口：4/4 通过；设计画板宽度仍为 375px。
-- Electron arm64 DMG：构建通过，产物为 `release/AI Campaign Page Studio-0.1.0-arm64.dmg`。
+- Electron arm64 DMG：构建通过，产物为 `release/Lumen-0.1.0-arm64.dmg`。
 
 Node 22 执行 SQLite 专项测试时会输出 `node:sqlite` ExperimentalWarning，这是 Node 当前 API
 状态提示，不影响测试和 Electron 43 打包结果。

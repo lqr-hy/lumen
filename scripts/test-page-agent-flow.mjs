@@ -12,7 +12,7 @@ import {
 } from '../electron/runtime/skills.mjs'
 
 const appRoot = path.resolve(import.meta.dirname, '..')
-const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-campaign-page-agent-'))
+const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'lumen-page-agent-'))
 
 // 每个组件的真实渲染高度。Blueprint 必须用这些值而不是固定估算值。
 const RUNTIME_HEIGHTS = { EraLottery: 742, EraTasklist: 528 }

@@ -98,7 +98,7 @@ test.describe('视觉优化主流程', () => {
           antiPatterns: [],
         },
       }
-      Object.defineProperty(window, 'aiCampaignProjects', {
+      Object.defineProperty(window, 'lumenProjects', {
         configurable: true,
         value: {
           load: async () => ({
@@ -223,7 +223,7 @@ test.describe('视觉优化主流程', () => {
         content: '春日音乐节，等你来现场',
         style: { fontSize: 24, color: '#111' },
       }
-      Object.defineProperty(window, 'aiCampaignProjects', {
+      Object.defineProperty(window, 'lumenProjects', {
         configurable: true,
         value: {
           load: async () => ({

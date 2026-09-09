@@ -550,7 +550,7 @@ try {
   const elementCountBeforeFailedCommit = getDocument(useEditorStore).elements.length
   const ledgerCountBeforeFailedCommit = stateBeforeFailedCommit.mutationLedger.length
   globalThis.window = {
-    aiCampaignProjects: {
+    lumenProjects: {
       save: async () => {
         throw new Error('模拟项目保存失败')
       },

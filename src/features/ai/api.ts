@@ -157,7 +157,7 @@ export async function applyChatEdit(
 }
 
 async function readRuntimeStream(request: ChatEditRequest, callbacks: ChatEditCallbacks) {
-  const runtime = window.aiCampaignRuntime
+  const runtime = window.lumenRuntime
   if (!runtime) throw new Error('Runtime 不可用。')
 
   const streamId = createId('runtime-stream')
@@ -261,7 +261,7 @@ function createCanvasContext(request: ChatEditRequest): import('./types').Canvas
 }
 
 async function handleCanvasSnapshotRequest(
-  runtime: NonNullable<typeof window.aiCampaignRuntime>,
+  runtime: NonNullable<typeof window.lumenRuntime>,
   request: import('./types').CanvasSnapshotRequest,
   callbacks: ChatEditCallbacks,
 ) {
@@ -284,7 +284,7 @@ async function handleCanvasSnapshotRequest(
 }
 
 async function handleCanvasTargetRequest(
-  runtime: NonNullable<typeof window.aiCampaignRuntime>,
+  runtime: NonNullable<typeof window.lumenRuntime>,
   request: import('./types').CanvasTargetRequest,
   callbacks: ChatEditCallbacks,
 ) {
@@ -401,7 +401,7 @@ function summarizePatchProperties(element: import('../editor/types').DesignEleme
 }
 
 async function handleIncrementalDeliverable(
-  runtime: NonNullable<typeof window.aiCampaignRuntime>,
+  runtime: NonNullable<typeof window.lumenRuntime>,
   deliverable: RawIncrementalDeliverable,
   callbacks: ChatEditCallbacks,
 ) {
