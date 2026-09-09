@@ -1,10 +1,12 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import AdmZip from 'adm-zip'
 
 let projectsRoot
 let assetsRoot
 const projectSaveQueues = new Map()
+const MAX_PROJECT_ARCHIVE_BYTES = 128 * 1024 * 1024
 
 export function configureProjectRepository(userDataRoot) {
   projectsRoot = path.join(userDataRoot, 'projects')
@@ -114,6 +116,59 @@ export async function deleteProject(projectId) {
   assertConfigured()
   await fs.rm(getProjectDirectory(normalizeId(projectId)), { recursive: true, force: true })
   return true
+}
+
+export async function exportProjectArchive(projectId, filePath) {
+  assertConfigured()
+  const snapshot = await loadProjectSnapshot(projectId)
+  if (!snapshot) throw new Error('项目不存在，无法导出。')
+  const zip = new AdmZip()
+  zip.addFile(
+    'manifest.json',
+    Buffer.from(
+      JSON.stringify({
+        schemaVersion: 1,
+        projectId: snapshot.projectId,
+        title: snapshot.document.title,
+      }),
+      'utf8',
+    ),
+  )
+  zip.addFile('project.json', Buffer.from(JSON.stringify(snapshot), 'utf8'))
+  await fs.writeFile(filePath, zip.toBuffer())
+  return summarizeProject(snapshot)
+}
+
+export async function importProjectArchive(filePath) {
+  assertConfigured()
+  const stat = await fs.stat(filePath)
+  if (!stat.isFile() || stat.size > MAX_PROJECT_ARCHIVE_BYTES) {
+    throw new Error('项目 ZIP 不存在或超过 128MB。')
+  }
+  const zip = new AdmZip(filePath)
+  const entries = zip.getEntries()
+  const names = new Set(entries.map((entry) => entry.entryName))
+  if (!names.has('manifest.json') || !names.has('project.json')) {
+    throw new Error('项目 ZIP 缺少 manifest.json 或 project.json。')
+  }
+  if (entries.some((entry) => entry.entryName.includes('..') || entry.entryName.startsWith('/'))) {
+    throw new Error('项目 ZIP 包含非法路径。')
+  }
+  let snapshot
+  try {
+    snapshot = JSON.parse(zip.readAsText('project.json'))
+  } catch {
+    throw new Error('项目 ZIP 的 project.json 无效。')
+  }
+  if (!snapshot?.document || typeof snapshot.document !== 'object') {
+    throw new Error('项目 ZIP 缺少有效 DesignDocument。')
+  }
+  const projectId = `import-${crypto.randomUUID()}`
+  return saveProjectSnapshot({
+    ...snapshot,
+    projectId,
+    document: { ...snapshot.document, id: projectId },
+  })
 }
 
 function normalizeSnapshot(input) {

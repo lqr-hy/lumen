@@ -1,6 +1,7 @@
 export interface AppTabRequest {
   path: string
   title: string
+  initialPrompt?: string
 }
 
 export function openAppTab(request: AppTabRequest) {

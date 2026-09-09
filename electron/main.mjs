@@ -31,6 +31,8 @@ import {
   loadProjectVersion,
   loadProjectSnapshot,
   saveProjectSnapshot,
+  exportProjectArchive,
+  importProjectArchive,
 } from './projects/project-repository.mjs'
 import { configureArtifactRepository } from './artifacts/artifact-repository.mjs'
 import { appendAgentRunLog, configureAgentRunLogger } from './runtime/agent-run-logger.mjs'
@@ -170,6 +172,24 @@ function registerRuntimeHandlers() {
   ipcMain.handle('project:load', (_event, projectId) => loadProjectSnapshot(projectId))
   ipcMain.handle('project:save', (_event, snapshot) => saveProjectSnapshot(snapshot))
   ipcMain.handle('project:delete', (_event, projectId) => deleteProject(projectId))
+  ipcMain.handle('project:export', async (_event, projectId) => {
+    const snapshot = await loadProjectSnapshot(projectId)
+    if (!snapshot) throw new Error('项目不存在，无法导出。')
+    const result = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: `${snapshot.document.title || '未命名项目'}.aicampaign.zip`,
+      filters: [{ name: 'AI Campaign Project', extensions: ['zip'] }],
+    })
+    if (result.canceled || !result.filePath) return undefined
+    return exportProjectArchive(projectId, result.filePath)
+  })
+  ipcMain.handle('project:import', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters: [{ name: 'AI Campaign Project', extensions: ['zip'] }],
+    })
+    if (result.canceled || !result.filePaths[0]) return undefined
+    return importProjectArchive(result.filePaths[0])
+  })
   ipcMain.handle('project:listVersions', (_event, projectId) => listProjectVersions(projectId))
   ipcMain.handle('project:loadVersion', (_event, projectId, versionId) =>
     loadProjectVersion(projectId, versionId),

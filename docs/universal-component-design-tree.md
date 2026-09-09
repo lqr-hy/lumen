@@ -83,7 +83,19 @@ Runtime Inspect > Component JSON > Thumbnail Vision
 ```ts
 interface DesignTreeNode {
   id: string
-  type: 'container' | 'surface' | 'text' | 'button' | 'image' | 'icon' | 'input' | 'progress' | 'list' | 'list-item' | 'divider' | 'badge'
+  type:
+    | 'container'
+    | 'surface'
+    | 'text'
+    | 'button'
+    | 'image'
+    | 'icon'
+    | 'input'
+    | 'progress'
+    | 'list'
+    | 'list-item'
+    | 'divider'
+    | 'badge'
   role: string
   parentId?: string
   children?: string[]
@@ -99,14 +111,14 @@ interface DesignTreeNode {
 
 合并原则：
 
-| 信息 | 来源优先级 |
-| --- | --- |
-| 父子关系 | Runtime > JSON > Thumbnail |
-| Props 绑定 | JSON/Runtime > AI 推断 |
-| 文案内容 | Runtime > 视觉识别 |
-| 位置尺寸 | Runtime > Thumbnail |
-| 颜色样式 | 当前 KV Theme > Runtime > Thumbnail |
-| 装饰节点 | Thumbnail |
+| 信息       | 来源优先级                          |
+| ---------- | ----------------------------------- |
+| 父子关系   | Runtime > JSON > Thumbnail          |
+| Props 绑定 | JSON/Runtime > AI 推断              |
+| 文案内容   | Runtime > 视觉识别                  |
+| 位置尺寸   | Runtime > Thumbnail                 |
+| 颜色样式   | 当前 KV Theme > Runtime > Thumbnail |
+| 装饰节点   | Thumbnail                           |
 
 ## 4. Theme 与颜色 Props
 
@@ -261,15 +273,15 @@ EraTasklist Root
 
 ## 10. 验收标准
 
-| 场景 | 预期 |
-| --- | --- |
-| 无源码任务组件 + thumbnail | 至少生成容器、文本、按钮、进度等通用节点 |
-| 任务组件只有颜色 Props | 跳过生图，Theme 写入 Props Patch |
-| 组件包含图片 Slot | 仅图片 Slot 调用生图，背景和结构仍由节点树承载 |
-| Thumbnail 识别不完整 | 保留 visual-only 节点，不覆盖未知业务 Props |
-| 组件 JSON 有继承 | 合并后按完整路径和 Profile 生成设计值 |
-| KV 颜色改变 | 颜色 Token 和 Props Patch 随本轮 KV 更新 |
-| 多次重试 | 使用本轮冻结的 JSON、thumbnail、KV 和 Revision |
+| 场景                       | 预期                                           |
+| -------------------------- | ---------------------------------------------- |
+| 无源码任务组件 + thumbnail | 至少生成容器、文本、按钮、进度等通用节点       |
+| 任务组件只有颜色 Props     | 跳过生图，Theme 写入 Props Patch               |
+| 组件包含图片 Slot          | 仅图片 Slot 调用生图，背景和结构仍由节点树承载 |
+| Thumbnail 识别不完整       | 保留 visual-only 节点，不覆盖未知业务 Props    |
+| 组件 JSON 有继承           | 合并后按完整路径和 Profile 生成设计值          |
+| KV 颜色改变                | 颜色 Token 和 Props Patch 随本轮 KV 更新       |
+| 多次重试                   | 使用本轮冻结的 JSON、thumbnail、KV 和 Revision |
 
 ## 11. 状态
 
@@ -286,7 +298,7 @@ EraTasklist Root
 当前实现入口：
 
 - `electron/runtime/component-design-tree.mjs`：负责节点协议、边界/数量/置信度归一化、Contract 与 Vision Tree 合并，以及向现有 Blueprint 区域编译。
-- `electron/runtime/component-runtime-inspector.mjs`：下载受限大小的 HTTPS Bundle/CSS，在隔离 Session 和隐藏 Sandbox Window 中挂载组件，提取真实 DOM Design Tree，并在结束时销毁窗口。
+- `electron/runtime/component-runtime-inspector.mjs`：下载受限大小的 HTTP/HTTPS Bundle/CSS（不限制域名），在隔离 Session 和隐藏 Sandbox Window 中挂载组件，提取真实 DOM Design Tree，并在结束时销毁窗口。
 - `electron/runtime/agent-planner.mjs`：组件任务在 `component.resolve` 后先执行 `component.inspect-runtime`，不支持或失败后再执行 `component.inspect-thumbnail`。
 - `electron/runtime/agent-tools.mjs`：Runtime Tree 成功时跳过 Thumbnail Vision；否则调用 `extract_design_tree`，只上传当前组件 thumbnail。两条链路都禁止降级为普通整图。
 - `electron/runtime/pi/task-runtime.mjs`：为 Vision 任务提供严格 JSON 协议和允许 Props 路径约束。
@@ -503,15 +515,15 @@ Runtime Inspect > Component JSON Contract > Thumbnail Vision
 
 具体规则：
 
-| 内容 | 优先来源 |
-|---|---|
-| 合法 Props 路径 | Contract / Runtime |
-| 节点位置和尺寸 | Runtime / Thumbnail |
-| 节点角色 | Runtime / Thumbnail / Contract |
-| 业务文案 | Runtime / Contract / Thumbnail |
-| KV 颜色主题 | 当前 KV Theme |
-| 装饰节点 | Thumbnail |
-| 图片 Slot | Contract |
+| 内容            | 优先来源                       |
+| --------------- | ------------------------------ |
+| 合法 Props 路径 | Contract / Runtime             |
+| 节点位置和尺寸  | Runtime / Thumbnail            |
+| 节点角色        | Runtime / Thumbnail / Contract |
+| 业务文案        | Runtime / Contract / Thumbnail |
+| KV 颜色主题     | 当前 KV Theme                  |
+| 装饰节点        | Thumbnail                      |
+| 图片 Slot       | Contract                       |
 
 ### 15.2 合并规则
 
@@ -573,17 +585,17 @@ KV/视觉参考
 
 Canonical Tree 当前投影到 Blueprint，再由编辑器 Store 编译为原生节点：
 
-| Design Tree 类型 | Canvas 节点 |
-|---|---|
-| container | Section / Runtime Placeholder |
-| surface | Shape |
-| text / heading | Text |
-| button | Button |
-| image + Slot | Image |
-| image 无 Slot | 可编辑占位节点 |
-| progress | Shape + 文本语义 |
-| divider | Shape |
-| badge | Shape / Text |
+| Design Tree 类型 | Canvas 节点                   |
+| ---------------- | ----------------------------- |
+| container        | Section / Runtime Placeholder |
+| surface          | Shape                         |
+| text / heading   | Text                          |
+| button           | Button                        |
+| image + Slot     | Image                         |
+| image 无 Slot    | 可编辑占位节点                |
+| progress         | Shape + 文本语义              |
+| divider          | Shape                         |
+| badge            | Shape / Text                  |
 | list / list-item | Section / Runtime Placeholder |
 
 视觉外壳的 z-index 必须低于可编辑节点：
@@ -691,7 +703,7 @@ Runtime Inspect 是增强能力，不是基础依赖。组件 JSON 可以声明�
 
 ```text
 Component JSON
-  -> 校验公网 HTTPS URL 与资源大小
+  -> 校验有效 HTTP/HTTPS URL 与资源大小（不限制域名）
   -> 加载本地固定版本 Framework Runtime
   -> 注入 JSON 默认 Props
   -> Electron Sandbox 挂载 UMD Component
@@ -704,18 +716,18 @@ Component JSON
 
 - 使用非持久化独立 Session、`sandbox: true`、`contextIsolation: true`、`nodeIntegration: false`。
 - 禁止窗口打开和外部导航。
-- 阻断 Script、XHR、Fetch 和 WebSocket 网络请求；只允许公网 HTTPS 图片、字体和媒体静态资源。
+- 阻断 Script、XHR、Fetch 和 WebSocket 网络请求；只允许 HTTP/HTTPS 图片、字体和媒体静态资源，不限制域名或 IP 范围。
 - `componentJs` 最大 4MB，`componentCss` 最大 2MB，默认超时 12 秒。
 - DOM 最多提取 192 个可见节点，进入 Canonical Tree 后继续执行节点上限和边界归一化。
 - 任务成功、失败或超时后都销毁隐藏窗口。
 
 当前框架适配状态：
 
-| Framework | 状态 | 挂载方式 |
-| --- | --- | --- |
-| Vue@2 | 已实现 | 本地 Vue 2 Runtime + UMD 全局组件 |
-| Vue@3 | 未实现 | 回退 Thumbnail Vision |
-| React | 已实现 | 本地 React 19 + ReactDOM Client + JSX Runtime + UMD 全局组件 |
+| Framework | 状态   | 挂载方式                                                     |
+| --------- | ------ | ------------------------------------------------------------ |
+| Vue@2     | 已实现 | 本地 Vue 2 Runtime + UMD 全局组件                            |
+| Vue@3     | 未实现 | 回退 Thumbnail Vision                                        |
+| React     | 已实现 | 本地 React 19 + ReactDOM Client + JSX Runtime + UMD 全局组件 |
 
 适合以下组件：
 

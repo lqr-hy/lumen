@@ -5,6 +5,7 @@ import {
 } from '../electron/runtime/runtime-dom-adapter.mjs'
 import {
   inlineRuntimeImageSources,
+  isAllowedRuntimeUrl,
   resolveInspectorRemValue,
 } from '../electron/runtime/component-runtime-inspector.mjs'
 import {
@@ -14,6 +15,24 @@ import {
 
 assert.equal(resolveInspectorRemValue(375), 50, '375 宽 H5 Runtime 应使用 50px rem 基准')
 assert.equal(resolveInspectorRemValue(750), 100, '750 宽二倍 Runtime 应使用 100px rem 基准')
+for (const url of [
+  'https://cdn.example.com/component.js',
+  'https://uat.example.com/component.css',
+  'http://localhost:3000/assets/image.png',
+  'http://127.0.0.1:4173/assets/image.png',
+  'http://10.0.0.8:8080/assets/image.png',
+  'https://192.168.1.20/assets/image.png',
+]) {
+  assert.equal(isAllowedRuntimeUrl(url), true, `Runtime 应允许任意 HTTP/HTTPS 域名：${url}`)
+}
+for (const url of [
+  'file:///tmp/component.js',
+  'javascript:alert(1)',
+  'data:text/plain,hello',
+  'not-a-url',
+]) {
+  assert.equal(isAllowedRuntimeUrl(url), false, `Runtime 不应接受非 HTTP/HTTPS 地址：${url}`)
+}
 
 const inspection = {
   designTree: {

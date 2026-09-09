@@ -34,7 +34,6 @@ export function AppLayout() {
   const activeTabTitle = useMemo(() => {
     if (activePath === '/') return '首页'
     if (activePath.startsWith('/editor/new')) return '新建画布'
-    if (activePath === '/editor/recent-qinglan-packaging') return '青岚品牌包装'
     if (activePath.startsWith('/editor/')) return '画布'
     return links.find((item) => item.to === activePath)?.label ?? '页面'
   }, [activePath])
@@ -49,7 +48,7 @@ export function AppLayout() {
         if (current.some((tab) => tab.path === request.path)) return current
         return [...current, request]
       })
-      navigate(request.path)
+      navigate(request.path, { state: { initialPrompt: request.initialPrompt } })
     }
 
     window.addEventListener('app-tab-open', onOpenAppTab)

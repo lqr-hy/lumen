@@ -3,23 +3,16 @@ import type { ReactNode } from 'react'
 import {
   Check,
   ChevronDown,
-  ChevronUp,
-  FileCheck2,
-  GripVertical,
   ImagePlus,
   Maximize2,
-  Minus,
   Pencil,
   Plus,
   Trash2,
   WandSparkles,
-  X,
 } from 'lucide-react'
-import { executeDesignChatTurn } from '../../ai/design-chat-controller'
-import { createChatRun, type ChatRunDeliverable } from '../../ai/agent-run'
+import type { ChatRunDeliverable } from '../../ai/agent-run'
 import { useEditorStore } from '../store/editor-store'
 import type { EditorChatImage, EditorChatThread } from '../store/editor-store'
-import type { DesignDocument } from '../types'
 import { PromptComposer, type PromptTextReference } from '../../../components/ui/PromptComposer'
 import {
   getImageMentionIndex,
@@ -35,36 +28,33 @@ import {
   createSelectionScope,
   getSelectionScopeElementIds,
   isComponentSlotRegenerationReference,
-  isAssetRegenerationPrompt,
 } from '../utils/selection-scope'
 import { upsertQueuedComposerReference } from '../utils/composer-target'
 import { AgentRunTimeline } from './AgentRunTimeline'
 import { resolveDesignSpecPatchConflicts } from '../utils/design-spec-patch'
-import { getComponentReferences } from '../../ai/composer-draft'
-import type { BlueprintConfirmation, SelectionScope } from '../../ai/types'
 import { useComponentMentions } from '../hooks/use-component-mentions'
 import { InvalidSelectionScopeChip, SelectionScopeChip } from './SelectionScopeChip'
-import { buildVisualAssetPlan, summarizeVisualRedesignBrief } from '../utils/visual-brief'
-import { DEFAULT_ARTBOARD_HEIGHT, DEFAULT_ARTBOARD_WIDTH } from '../constants'
-import { resolveReferenceImageRoles } from '../../ai/reference-image-role'
+import { useChatRunSubmit } from '../hooks/use-chat-run-submit'
+import { VisualGenerationSummary } from './VisualGenerationSummary'
+import { BlueprintConfirmationEditor } from './BlueprintConfirmationEditor'
+
+export { VisualGenerationSummary } from './VisualGenerationSummary'
 
 interface ChatPanelProps {
   onClose: () => void
+  initialPrompt?: string
 }
 
-export function ChatPanel({ onClose }: ChatPanelProps) {
+export function ChatPanel({ onClose, initialPrompt }: ChatPanelProps) {
   const document = useEditorStore((state) => state.document)
   const selectElement = useEditorStore((state) => state.selectElement)
   const selectArtboard = useEditorStore((state) => state.selectArtboard)
   const setSelectedElements = useEditorStore((state) => state.setSelectedElements)
   const clearSelection = useEditorStore((state) => state.clearSelection)
-  const consumeSelectionScope = useEditorStore((state) => state.consumeSelectionScope)
   const selectedElementIds = useEditorStore((state) => state.selectedElementIds)
   const selectionScopeArmed = useEditorStore((state) => state.selectionScopeArmed)
   const textRangeSelection = useEditorStore((state) => state.textRangeSelection)
   const imageRegionSelection = useEditorStore((state) => state.imageRegionSelection)
-  const activeArtboardId = useEditorStore((state) => state.activeArtboardId)
-  const selectedArtboardId = useEditorStore((state) => state.selectedArtboardId)
   const threads = useEditorStore((state) => state.chatThreads)
   const activeThreadId = useEditorStore((state) => state.activeChatThreadId)
   const setActiveThreadId = useEditorStore((state) => state.setActiveChatThread)
@@ -75,8 +65,6 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
   const consumeQueuedReferenceImages = useEditorStore((state) => state.consumeQueuedReferenceImages)
   const queuedChatTexts = useEditorStore((state) => state.queuedChatTexts)
   const consumeQueuedChatTexts = useEditorStore((state) => state.consumeQueuedChatTexts)
-  const [loading, setLoading] = useState(false)
-  const [activeRunSessionId, setActiveRunSessionId] = useState<string>()
   const [threadMenuOpen, setThreadMenuOpen] = useState(false)
   const threadMenuRef = useRef<HTMLDivElement>(null)
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null)
@@ -85,6 +73,7 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
   const { runtimeModel, imageModel, stylePackId, setRuntimeModel, setImageModel, setStylePackId } =
     useRuntimeSettings()
   const bodyRef = useRef<HTMLDivElement>(null)
+  const initialPromptRef = useRef<string | undefined>(undefined)
   const { componentMentionOptions, importComponent } = useComponentMentions(document?.id)
 
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? threads[0]
@@ -141,6 +130,25 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
     : []
   const activeThreadPending = Boolean(activeThread?.messages.some((message) => message.pending))
   const activeMessageCount = activeThread?.messages.length ?? 0
+  const { loading, activeRunSessionId, onSubmit } = useChatRunSubmit({
+    activeThread,
+    activeThreadPending,
+    regenerationReferences,
+    visibleTextReferences,
+    runtimeModel,
+    imageModel,
+    stylePackId,
+  })
+
+  useEffect(() => {
+    const prompt = initialPrompt?.trim()
+    if (!prompt || !activeThread || activeThread.messages.length || loading) return
+    if (initialPromptRef.current === prompt) return
+    initialPromptRef.current = prompt
+    void onSubmit(prompt)
+    // onSubmit is intentionally omitted; the ref guarantees one dispatch per prompt value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeThread, initialPrompt, loading])
 
   useEffect(() => {
     const body = bodyRef.current
@@ -441,250 +449,6 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
         }
       }),
     }))
-  }
-
-  async function onSubmit(
-    overrideText?: string,
-    blueprintOverride?: import('../types').PageCompositionBlueprint,
-    resumeRunId?: string,
-    silentResume = false,
-  ) {
-    if (loading || activeThreadPending || !activeThread) return
-
-    const resumedMessageIndex = resumeRunId
-      ? activeThread.messages.findIndex((message) => message.runId === resumeRunId)
-      : -1
-    const resumedUserMessage =
-      resumedMessageIndex >= 0
-        ? [...activeThread.messages.slice(0, resumedMessageIndex)]
-            .reverse()
-            .find((message) => message.role === 'user')
-        : undefined
-    const referencedText = overrideText
-      ? ''
-      : visibleTextReferences.map((reference) => reference.text).join(' ')
-    const runControlText = resumeRunId && overrideText ? overrideText : undefined
-    const userPrompt = overrideText ?? activeThread.prompt.trim()
-    const useHistoricalAssetScope = Boolean(resumeRunId) || isAssetRegenerationPrompt(userPrompt)
-    const turnRegenerationReferences = useHistoricalAssetScope ? regenerationReferences : []
-    const text =
-      (runControlText ??
-        (resumeRunId
-          ? resumedUserMessage?.text
-          : [referencedText, overrideText ?? activeThread.prompt.trim()]
-              .filter(Boolean)
-              .join(' '))) ||
-      (turnRegenerationReferences.length ? '重新生成选中的组件素材' : '结合当前画布继续创作')
-    const requestImages = runControlText
-      ? []
-      : resumeRunId
-        ? (resumedUserMessage?.referenceImages ?? [])
-        : overrideText
-          ? []
-          : getPromptReferenceImages(
-              activeThread.prompt,
-              activeThread.referenceImages,
-              activeThread.mentions,
-            )
-    const currentMentions = runControlText
-      ? []
-      : resumeRunId
-        ? (resumedUserMessage?.mentions ?? [])
-        : overrideText
-          ? []
-          : (activeThread.mentions ?? [])
-    const requestDocument = useEditorStore.getState().document
-    if (!requestDocument) return
-    const resumedSelectionScope = resumeRunId
-      ? activeThread.messages.find((message) => message.runId === resumeRunId)?.selectionScope
-      : undefined
-    const frozenSelectionScope = resumeRunId
-      ? refreshRetrySelectionScope(requestDocument, resumedSelectionScope)
-      : (createComponentRegionBatchScope(
-          requestDocument,
-          turnRegenerationReferences.flatMap((reference) =>
-            reference.elementId ? [reference.elementId] : [],
-          ),
-        ) ??
-        createSelectionScope(
-          requestDocument,
-          selectionScopeArmed ? selectedElementIds : [],
-          useEditorStore.getState().textRangeSelection,
-          useEditorStore.getState().imageRegionSelection,
-        ))
-    if (
-      ((!resumeRunId && selectionScopeArmed && selectedElementIds.length > 0) ||
-        turnRegenerationReferences.length) &&
-      !frozenSelectionScope
-    )
-      return
-    const componentReferences = getComponentReferences(currentMentions)
-    const latestDocument = useEditorStore.getState().document ?? requestDocument
-    if (!resumeRunId) consumeSelectionScope()
-
-    const threadTitle =
-      activeThread.messages.length === 0 ? text.slice(0, 18) || '未命名对话' : activeThread.title
-    const threadId = activeThread.id
-    setActiveRunSessionId(threadId)
-    const pendingMessageId = `agent-pending-${Date.now()}`
-    const resumableRun = resumeRunId ? activeThread.runs?.[resumeRunId] : undefined
-    const runId = resumableRun?.id ?? `chat-run-${Date.now()}`
-    const draftSnapshot = {
-      prompt: activeThread.prompt,
-      editorState: activeThread.editorState,
-      mentions: activeThread.mentions ?? [],
-      referenceImages: activeThread.referenceImages,
-      textReferences: activeThread.textReferences,
-      visualOptimizationDraft: activeThread.visualOptimizationDraft,
-    }
-    // 失败任务点击“重试”时，UI 传入的是控制词；视觉优化必须恢复原始
-    // Brief Prompt，否则 Runtime 只会收到“重试”而丢失全部设计约束。
-    const requestPrompt =
-      overrideText === '重试' && draftSnapshot.visualOptimizationDraft ? draftSnapshot.prompt : text
-    updateActiveThread((thread) => ({
-      ...thread,
-      title: threadTitle,
-      prompt: '',
-      editorState: undefined,
-      mentions: [],
-      referenceImages: [],
-      textReferences: [],
-      messages: [
-        ...thread.messages.map((message) =>
-          resumeRunId
-            ? {
-                ...message,
-                ...(overrideText === '确认执行' ? { confirmation: undefined } : {}),
-                ...(message.runId === runId ? { runId: undefined } : {}),
-              }
-            : message,
-        ),
-        ...(!silentResume
-          ? [
-              {
-                id: `user-${Date.now()}`,
-                role: 'user' as const,
-                text,
-                mentions: currentMentions.map((mention) => ({ ...mention })),
-                referenceImages: requestImages.map((image) => ({ ...image })),
-              },
-            ]
-          : []),
-        {
-          id: pendingMessageId,
-          role: 'agent',
-          text: '',
-          pending: true,
-          runId,
-          selectionScope: frozenSelectionScope,
-        },
-      ],
-      runs: {
-        ...thread.runs,
-        [runId]: resumableRun
-          ? {
-              ...resumableRun,
-              messageId: pendingMessageId,
-              status: 'understanding',
-              phaseLabel: '正在继续已确认的页面任务',
-              currentStepId: undefined,
-              finishedAt: undefined,
-              error: undefined,
-              lastSequence: 0,
-            }
-          : createChatRun(runId, pendingMessageId),
-      },
-    }))
-    setLoading(true)
-    try {
-      await executeDesignChatTurn(
-        {
-          sessionId: threadId,
-          provider: runtimeModel.provider,
-          model: runtimeModel.model,
-          imageProvider: imageModel.provider,
-          imageModel: imageModel.model,
-          stylePackId: stylePackId || undefined,
-          prompt: requestPrompt,
-          document: latestDocument,
-          history: activeThread.messages
-            .filter((message) => !message.pending)
-            .map((message) => ({
-              role: message.role,
-              text: message.text,
-              referenceImages: message.referenceImages?.map((image) => ({
-                name: image.name,
-                src: image.src,
-              })),
-              componentReferences: getComponentReferences(message.mentions ?? []),
-            })),
-          mentions: currentMentions,
-          componentReferences,
-          referenceImages: requestImages.map((image) => image.src),
-          referenceImageNames: requestImages.map((image) => image.name),
-          referenceImageRoles: requestImages.map((image) => image.role ?? 'auto'),
-          textReferences: runControlText ? [] : activeThread.textReferences,
-          selectedElementIds: frozenSelectionScope
-            ? getSelectionScopeElementIds(frozenSelectionScope)
-            : selectedElementIds,
-          activeArtboardId,
-          selectedArtboardId,
-          editScope: frozenSelectionScope,
-          componentRegionAction:
-            frozenSelectionScope?.type === 'component-region-batch'
-              ? { kind: 'regenerate-component-regions', targets: frozenSelectionScope.targets }
-              : undefined,
-          blueprintOverride,
-          visualBrief: draftSnapshot.visualOptimizationDraft?.brief,
-          visualAssetPlan: (() => {
-            const draft = draftSnapshot.visualOptimizationDraft
-            const target = latestDocument.artboards.find(
-              (item) => item.id === draft?.sourceArtboardId,
-            )
-            return draft
-              ? buildVisualAssetPlan(
-                  draft.brief,
-                  target ?? { width: DEFAULT_ARTBOARD_WIDTH, height: DEFAULT_ARTBOARD_HEIGHT },
-                )
-              : undefined
-          })(),
-          visualOptimizationContext: draftSnapshot.visualOptimizationDraft
-            ? {
-                mode:
-                  draftSnapshot.visualOptimizationDraft.mode ??
-                  (draftSnapshot.visualOptimizationDraft.sourceArtboardId
-                    ? 'variant'
-                    : 'new-design'),
-                sourceArtboardId:
-                  draftSnapshot.visualOptimizationDraft.sourceArtboardId || undefined,
-              }
-            : undefined,
-        },
-        { threadId, messageId: pendingMessageId, runId, updateThread: updateChatThread },
-      )
-      updateChatThread(threadId, (thread) => ({
-        ...thread,
-        visualOptimizationDraft: undefined,
-      }))
-    } catch {
-      updateChatThread(threadId, (thread) => ({
-        ...thread,
-        prompt: thread.prompt || draftSnapshot.prompt,
-        editorState: thread.editorState || draftSnapshot.editorState,
-        mentions: thread.mentions?.length ? thread.mentions : draftSnapshot.mentions,
-        referenceImages: thread.referenceImages.length
-          ? thread.referenceImages
-          : draftSnapshot.referenceImages,
-        textReferences: thread.textReferences.length
-          ? thread.textReferences
-          : draftSnapshot.textReferences,
-        visualOptimizationDraft:
-          thread.visualOptimizationDraft ?? draftSnapshot.visualOptimizationDraft,
-      }))
-    } finally {
-      setActiveRunSessionId(undefined)
-      setLoading(false)
-    }
   }
 
   return (
@@ -1010,346 +774,6 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
   )
 }
 
-export function VisualGenerationSummary({
-  draft,
-  references,
-  hasAttachedReferences,
-  onRemove,
-}: {
-  draft: NonNullable<EditorChatThread['visualOptimizationDraft']>
-  references: EditorChatImage[]
-  hasAttachedReferences: boolean
-  onRemove?: () => void
-}) {
-  const summary = summarizeVisualRedesignBrief(draft.brief)
-  const roleDescriptions: Record<NonNullable<EditorChatImage['role']>, string> = {
-    auto: 'Auto · 提交时根据任务与图片语义自动判断',
-    content: '原图素材 · 保留像素并直接用于页面',
-    kv: 'KV · 控制颜色、材质与视觉语言',
-    prototype: 'Prototype · 控制结构、模块顺序与原文案',
-    visual: 'Visual · 只影响指定的局部风格',
-    'edit-base': 'Edit Base · 保持主体与未修改区域',
-  }
-  const roleResolutions = resolveReferenceImageRoles(references, {
-    prompt: JSON.stringify(draft.brief),
-    hasVisualBrief: true,
-  })
-  const resolvedRoleLabels = {
-    content: '原图素材',
-    kv: 'KV',
-    prototype: 'Prototype',
-    visual: 'Visual',
-    'edit-base': 'Edit Base',
-  }
-
-  return (
-    <details className="visual-generation-summary" open>
-      <summary>
-        <span>
-          <FileCheck2 size={15} />
-          生成前确认
-        </span>
-        <span className="visual-generation-summary-actions">
-          <em>待确认 · 独立 Variant</em>
-          {onRemove ? (
-            <button
-              type="button"
-              title="取消本次视觉优化，保留参考图"
-              aria-label="取消本次视觉优化"
-              onClick={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                onRemove()
-              }}
-            >
-              <X size={13} />
-            </button>
-          ) : null}
-        </span>
-      </summary>
-      <div className="visual-generation-summary-body">
-        <div className="visual-summary-source">
-          <span>基于原稿</span>
-          <strong>{draft.sourceArtboardName}</strong>
-          <small>原画板不会被覆盖</small>
-        </div>
-        <div className="visual-summary-columns">
-          <section>
-            <strong>必须保留</strong>
-            <div>
-              {summary.preserve.map((item) => (
-                <span key={item}>{item}</span>
-              ))}
-            </div>
-          </section>
-          <section>
-            <strong>重点重设计</strong>
-            <div>
-              {summary.change.map((item) => (
-                <span key={item}>{item}</span>
-              ))}
-            </div>
-          </section>
-        </div>
-        <section className="visual-summary-references">
-          <strong>本次实际发送的参考图</strong>
-          {references.length ? (
-            <div>
-              {references.map((reference, index) => {
-                const role = reference.role ?? 'auto'
-                const resolution = roleResolutions[index]
-                return (
-                  <span key={reference.id} data-role={resolution.resolvedRole}>
-                    <img src={reference.src} alt="" />
-                    <span>
-                      <b>{reference.name}</b>
-                      <small>
-                        {role === 'auto'
-                          ? `Auto → ${resolvedRoleLabels[resolution.resolvedRole]} · ${resolution.reason}`
-                          : roleDescriptions[role]}
-                      </small>
-                    </span>
-                  </span>
-                )
-              })}
-            </div>
-          ) : (
-            <p>
-              {hasAttachedReferences
-                ? '当前 @ 引用没有匹配到附件，本次不会发送参考图。'
-                : '未添加参考图，将从当前画板和 Brief 推导视觉方向。'}
-            </p>
-          )}
-        </section>
-      </div>
-    </details>
-  )
-}
-
-function BlueprintConfirmationEditor({
-  confirmation,
-  componentOptions,
-  disabled,
-  onUpdate,
-  onConfirm,
-}: {
-  confirmation: BlueprintConfirmation
-  componentOptions: import('../../../components/ui/PromptComposer').PromptMentionOption[]
-  disabled: boolean
-  onUpdate: (
-    update: (
-      sections: import('../types').PageCompositionBlueprint['sections'],
-    ) => import('../types').PageCompositionBlueprint['sections'],
-  ) => void
-  onConfirm: () => void
-}) {
-  const [draggedSectionId, setDraggedSectionId] = useState<string>()
-  const blueprint = confirmation.blueprint
-  const replacementOptions = componentOptions.filter(
-    (option) => option.packId && option.componentName,
-  )
-
-  function moveSection(sectionId: string, targetIndex: number) {
-    onUpdate((sections) => {
-      const sourceIndex = sections.findIndex((section) => section.id === sectionId)
-      if (sourceIndex < 0 || targetIndex < 0 || targetIndex >= sections.length) return sections
-      const next = [...sections]
-      const [section] = next.splice(sourceIndex, 1)
-      next.splice(targetIndex, 0, section)
-      return next
-    })
-  }
-
-  function updateSectionHeight(sectionId: string, height: number) {
-    onUpdate((sections) =>
-      sections.map((section) =>
-        section.id === sectionId
-          ? {
-              ...section,
-              bounds: { ...section.bounds, height: Math.max(120, Math.min(3000, height)) },
-            }
-          : section,
-      ),
-    )
-  }
-
-  return (
-    <div className="blueprint-confirmation-card">
-      <div className="blueprint-confirmation-header">
-        <div>
-          <strong>页面结构</strong>
-          <small>拖拽排序 · 调整高度 · 替换组件</small>
-        </div>
-        <span>
-          {blueprint.width} × {blueprint.estimatedHeight}
-        </span>
-      </div>
-      <div className="blueprint-confirmation-sections">
-        {blueprint.sections.map((section, index) => {
-          const currentOption = replacementOptions.find(
-            (option) =>
-              option.componentName === section.component?.componentName &&
-              (!section.component?.reference?.packId ||
-                option.packId === section.component?.reference?.packId),
-          )
-          return (
-            <div
-              className={draggedSectionId === section.id ? 'dragging' : undefined}
-              key={section.id}
-              onDragOver={(event) => {
-                if (!draggedSectionId || draggedSectionId === section.id) return
-                event.preventDefault()
-                event.dataTransfer.dropEffect = 'move'
-              }}
-              onDrop={(event) => {
-                event.preventDefault()
-                if (draggedSectionId) moveSection(draggedSectionId, index)
-                setDraggedSectionId(undefined)
-              }}
-            >
-              <button
-                className="blueprint-drag-handle"
-                type="button"
-                draggable
-                title="拖拽调整模块顺序"
-                aria-label={`拖拽第 ${index + 1} 个模块`}
-                onDragStart={(event) => {
-                  event.dataTransfer.effectAllowed = 'move'
-                  event.dataTransfer.setData('text/plain', section.id)
-                  setDraggedSectionId(section.id)
-                }}
-                onDragEnd={() => setDraggedSectionId(undefined)}
-              >
-                <GripVertical size={14} />
-              </button>
-              <span className="blueprint-section-index">{index + 1}</span>
-              <div className="blueprint-section-copy">
-                <input
-                  className="blueprint-section-role-input"
-                  value={section.role}
-                  aria-label={`第 ${index + 1} 个模块名称`}
-                  onChange={(event) =>
-                    onUpdate((sections) =>
-                      sections.map((item) =>
-                        item.id === section.id ? { ...item, role: event.target.value } : item,
-                      ),
-                    )
-                  }
-                />
-                <small>{section.component?.componentName ?? section.kind}</small>
-              </div>
-              <button
-                className="blueprint-delete-action"
-                type="button"
-                title="删除模块"
-                disabled={blueprint.sections.length <= 1}
-                onClick={() =>
-                  onUpdate((sections) => sections.filter((item) => item.id !== section.id))
-                }
-              >
-                <Trash2 size={14} />
-              </button>
-
-              <div className="blueprint-section-controls">
-                {section.kind === 'component-instance' ? (
-                  <label className="blueprint-component-select">
-                    <span>组件</span>
-                    <select
-                      value={currentOption?.id ?? ''}
-                      disabled={!replacementOptions.length}
-                      onChange={(event) => {
-                        const option = replacementOptions.find(
-                          (item) => item.id === event.target.value,
-                        )
-                        if (!option?.packId || !option.componentName) return
-                        onUpdate((sections) =>
-                          sections.map((item) =>
-                            item.id === section.id
-                              ? {
-                                  ...item,
-                                  component: {
-                                    componentName: option.componentName!,
-                                    reference: {
-                                      packId: option.packId!,
-                                      componentName: option.componentName!,
-                                      label: option.label,
-                                    },
-                                  },
-                                }
-                              : item,
-                          ),
-                        )
-                      }}
-                    >
-                      {!currentOption ? (
-                        <option value="">{section.component?.componentName ?? '选择组件'}</option>
-                      ) : null}
-                      {replacementOptions.map((option) => (
-                        <option key={option.id} value={option.id}>
-                          {option.label || option.componentName}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ) : null}
-                <div className="blueprint-height-control">
-                  <span>高度</span>
-                  <button
-                    type="button"
-                    title="减少模块高度"
-                    onClick={() => updateSectionHeight(section.id, section.bounds.height - 40)}
-                  >
-                    <Minus size={12} />
-                  </button>
-                  <input
-                    type="number"
-                    min={120}
-                    max={3000}
-                    step={20}
-                    value={Math.round(section.bounds.height)}
-                    onChange={(event) =>
-                      updateSectionHeight(section.id, Number(event.target.value) || 120)
-                    }
-                  />
-                  <button
-                    type="button"
-                    title="增加模块高度"
-                    onClick={() => updateSectionHeight(section.id, section.bounds.height + 40)}
-                  >
-                    <Plus size={12} />
-                  </button>
-                </div>
-                <div className="blueprint-order-actions">
-                  <button
-                    type="button"
-                    title="上移模块"
-                    disabled={index === 0}
-                    onClick={() => moveSection(section.id, index - 1)}
-                  >
-                    <ChevronUp size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    title="下移模块"
-                    disabled={index === blueprint.sections.length - 1}
-                    onClick={() => moveSection(section.id, index + 1)}
-                  >
-                    <ChevronDown size={13} />
-                  </button>
-                </div>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-      <button type="button" disabled={disabled} onClick={onConfirm}>
-        <Check size={14} />
-        确认结构并生成
-      </button>
-    </div>
-  )
-}
-
 function collectThreadMentionImages(thread: EditorChatThread | undefined) {
   if (!thread) return []
   const imageMap = new Map<string, EditorChatThread['referenceImages'][number]>()
@@ -1360,25 +784,6 @@ function collectThreadMentionImages(thread: EditorChatThread | undefined) {
     })
   })
   return Array.from(imageMap.values())
-}
-
-function refreshRetrySelectionScope(
-  document: DesignDocument,
-  scope: SelectionScope | undefined,
-): SelectionScope | undefined {
-  if (!scope) return undefined
-  if (scope.type === 'generic-node') {
-    return createSelectionScope(document, [scope.elementId])
-  }
-  if (scope.type === 'design-block') {
-    return createSelectionScope(document, [scope.elementId])
-  }
-  if (scope.type === 'multi-node') {
-    return createSelectionScope(document, scope.elementIds)
-  }
-  // Text ranges and image masks carry user-owned frozen data. Keep them for
-  // conflict validation instead of silently rebuilding a different range.
-  return scope
 }
 
 function renderMessageWithImageMentions(

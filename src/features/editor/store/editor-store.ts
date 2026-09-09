@@ -17,13 +17,11 @@ import {
   DEFAULT_ARTBOARD_HEIGHT,
   DEFAULT_ARTBOARD_WIDTH,
   GENERATED_CONTENT_GAP,
-  MIN_CONVERSATION_FOCUS_ZOOM,
 } from '../constants'
 import type { PlacementMode } from '../utils/placement-intent'
 import type { BlueprintConfirmation } from '../../ai/types'
 import type { ChatRun } from '../../ai/agent-run'
 import type { ComposerMention } from '../../ai/composer-draft'
-import { layoutSection } from '../utils/auto-layout'
 import { createComponentInstance, normalizeComponentInstances } from '../utils/component-instances'
 import {
   DEFAULT_DESIGN_BREAKPOINTS,
@@ -33,20 +31,33 @@ import { applyDesignPatchToDocument, type DesignPatchApplyResult } from '../util
 import type { MutationLedgerEntry } from '../utils/mutation-ledger'
 import { normalizeMutationLedger } from '../utils/mutation-ledger'
 import { compileResponsivePreviews } from '../utils/responsive-preview'
-import { resolveElementLayoutSize, resolveLayoutSizing } from '../utils/design-properties'
 import { compileDesignSpecToSceneCommit } from '../scene/design-spec-adapter'
 import { compileDesignSpecSceneTransaction } from '../scene/design-spec-transaction'
 import { compileComponentDesignToSceneCommit } from '../scene/component-design-adapter'
 import { compileSceneCommit } from '../scene/scene-commit'
 import {
   changeLayerOrder as changeLayerOrderInTree,
-  collectLayerSubtreeElements,
   groupLayerElements,
   moveLayerElement,
   ungroupLayerElement,
   type LayerDropPosition,
   type LayerOrderAction,
 } from '../utils/layer-tree'
+import { createEditorId as createStoreId } from '../utils/id'
+import {
+  applyElementPatches,
+  applySectionAutoLayoutToElements,
+  constrainElementsToArtboard,
+  relayoutLayerParents,
+  setNestedPatchValue,
+  syncComponentInstancesFromElements,
+} from '../utils/document-transforms'
+import {
+  bindThreadToArtboard,
+  createDefaultChatThread,
+  focusConversationArtboard,
+  normalizePersistedChatThreads,
+} from '../utils/editor-workspace'
 
 export interface QueuedReferenceImage {
   id: string
@@ -2618,290 +2629,3 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }
     }),
 }))
-
-function createDefaultChatThread(): EditorChatThread {
-  return {
-    id: 'panel-thread-default',
-    title: '未命名对话',
-    artboardIds: [],
-    placementMode: 'auto',
-    prompt: '',
-    mentions: [],
-    referenceImages: [],
-    textReferences: [],
-    messages: [],
-  }
-}
-
-function normalizePersistedChatThreads(threads: EditorChatThread[]) {
-  return threads.map((thread) => {
-    const interruptedRunIds = new Set(
-      thread.messages
-        .filter((message) => message.pending && message.runId)
-        .map((message) => message.runId!),
-    )
-    return {
-      ...thread,
-      messages: thread.messages.map((message) =>
-        message.pending
-          ? {
-              ...message,
-              pending: false,
-              text: '上次任务在应用重启前中断，可输入“继续”从检查点恢复。',
-            }
-          : message,
-      ),
-      runs: Object.fromEntries(
-        Object.entries(thread.runs ?? {}).map(([id, run]) =>
-          interruptedRunIds.has(id)
-            ? [
-                id,
-                {
-                  ...run,
-                  status: 'interrupted' as const,
-                  phaseLabel: '任务在应用重启前中断',
-                  finishedAt: new Date().toISOString(),
-                },
-              ]
-            : [id, normalizePersistedRun(run)],
-        ),
-      ),
-    }
-  })
-}
-
-function normalizePersistedRun(run: NonNullable<EditorChatThread['runs']>[string]) {
-  if (!run.finishedAt || !['completed', 'failed', 'cancelled'].includes(run.status)) return run
-  return {
-    ...run,
-    steps: run.steps.map((step) => {
-      if (!['running', 'retrying'].includes(step.status)) return step
-      const status =
-        run.status === 'completed'
-          ? ('completed' as const)
-          : run.status === 'cancelled'
-            ? ('cancelled' as const)
-            : ('failed' as const)
-      return { ...step, status, completedAt: step.completedAt ?? run.finishedAt }
-    }),
-  }
-}
-
-function bindThreadToArtboard(
-  thread: EditorChatThread,
-  artboardId: string,
-  mode: Exclude<PlacementMode, 'auto'>,
-): EditorChatThread {
-  return {
-    ...thread,
-    targetArtboardId: artboardId,
-    activeTargetArtboardId: artboardId,
-    assetArtboardId: mode === 'asset-board' ? artboardId : thread.assetArtboardId,
-    artboardIds: Array.from(new Set([...(thread.artboardIds ?? []), artboardId])),
-    lastPlacementMode: mode,
-  }
-}
-
-function focusConversationArtboard(viewport: ViewportState, artboard: Artboard): ViewportState {
-  if (viewport.zoom >= MIN_CONVERSATION_FOCUS_ZOOM) return viewport
-
-  const zoom = DEFAULT_CANVAS_VIEWPORT.zoom
-  return {
-    x: DEFAULT_CANVAS_VIEWPORT.x - artboard.x * zoom,
-    y: DEFAULT_CANVAS_VIEWPORT.y - artboard.y * zoom,
-    zoom,
-  }
-}
-
-function createStoreId(prefix: string) {
-  const suffix =
-    typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(16).slice(2)}`
-  return `${prefix}-${suffix}`
-}
-
-function setNestedPatchValue(target: Record<string, unknown>, path: string, value: unknown) {
-  const segments = path.split('.').filter(Boolean)
-  if (!segments.length) return
-  let current: Record<string, unknown> = target
-  for (let index = 0; index < segments.length - 1; index += 1) {
-    const segment = segments[index]
-    const existing = current[segment]
-    if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
-      current[segment] = {}
-    }
-    current = current[segment] as Record<string, unknown>
-  }
-  current[segments.at(-1)!] = value
-}
-
-function applyElementPatches(
-  elements: DesignElement[],
-  patches: Array<{ id: string; patch: Partial<DesignElement> }>,
-) {
-  const patchMap = new Map(patches.map((item) => [item.id, item.patch]))
-  for (const item of patches) {
-    const root = elements.find((element) => element.id === item.id)
-    if (!root || root.type !== 'section' || root.autoLayout) continue
-    const nextX = Number.isFinite(item.patch.x) ? item.patch.x! : root.x
-    const nextY = Number.isFinite(item.patch.y) ? item.patch.y! : root.y
-    const nextWidth = Number.isFinite(item.patch.width)
-      ? Math.max(1, item.patch.width!)
-      : root.width
-    const nextHeight = Number.isFinite(item.patch.height)
-      ? Math.max(1, item.patch.height!)
-      : root.height
-    const scaleX = nextWidth / Math.max(1, root.width)
-    const scaleY = nextHeight / Math.max(1, root.height)
-    for (const child of collectLayerSubtreeElements(elements, [root.id]).filter(
-      (element) => element.id !== root.id,
-    )) {
-      if (patchMap.has(child.id)) continue
-      patchMap.set(child.id, {
-        x: nextX + (child.x - root.x) * scaleX,
-        y: nextY + (child.y - root.y) * scaleY,
-        width: Math.max(1, child.width * scaleX),
-        height: Math.max(1, child.height * scaleY),
-      })
-    }
-  }
-  let nextElements = elements.map((element) => {
-    const patch = patchMap.get(element.id)
-    return patch ? ({ ...element, ...patch } as DesignElement) : element
-  })
-  const affected = new Set(patches.map((item) => item.id))
-  nextElements = nextElements.map((element) => {
-    if (!affected.has(element.id) || element.type === 'section') return element
-    const sizing = resolveLayoutSizing(element)
-    return sizing.widthMode === 'hug' || sizing.heightMode === 'hug'
-      ? ({ ...element, ...resolveElementLayoutSize(element) } as DesignElement)
-      : element
-  })
-  for (let pass = 0; pass < 4; pass += 1) {
-    const sections = nextElements.filter(
-      (element): element is import('../types').SectionElement =>
-        element.type === 'section' &&
-        Boolean(element.autoLayout) &&
-        (affected.has(element.id) ||
-          nextElements.some((child) => child.parentId === element.id && affected.has(child.id))),
-    )
-    if (!sections.length) break
-    for (const section of sections) {
-      const laidOut = applySectionAutoLayoutToElements(nextElements, section.id, section.autoLayout)
-      if (laidOut) nextElements = laidOut
-      affected.add(section.id)
-    }
-  }
-  return nextElements
-}
-
-/** 图层重排进入或离开 Auto Layout 后，立即把新的子节点顺序写回绝对坐标。 */
-function relayoutLayerParents(elements: DesignElement[], parentIds: Array<string | undefined>) {
-  let nextElements = elements
-  for (const parentId of [...new Set(parentIds.filter((id): id is string => Boolean(id)))]) {
-    const parent = nextElements.find((element) => element.id === parentId)
-    if (parent?.type !== 'section' || !parent.autoLayout) continue
-    const laidOut = applySectionAutoLayoutToElements(nextElements, parent.id, parent.autoLayout)
-    if (laidOut) nextElements = laidOut
-  }
-  return nextElements
-}
-
-function applySectionAutoLayoutToElements(
-  elements: DesignElement[],
-  elementId: string,
-  autoLayout: import('../types').SectionElement['autoLayout'],
-) {
-  const section = elements.find((element) => element.id === elementId)
-  if (!section || section.type !== 'section') return undefined
-  const nextSection = { ...section, autoLayout }
-  const result = layoutSection(nextSection, elements)
-  const patches = new Map(result.childPatches.map((item) => [item.id, item.patch]))
-  return elements.map((element) =>
-    element.id === elementId
-      ? { ...nextSection, ...result.sectionPatch }
-      : patches.has(element.id)
-        ? { ...element, ...patches.get(element.id) }
-        : element,
-  ) as DesignElement[]
-}
-
-function syncComponentInstancesFromElements(
-  componentInstances: NonNullable<DesignDocument['componentInstances']>,
-  elements: DesignElement[],
-  changedIds: Set<string>,
-) {
-  return Object.fromEntries(
-    Object.entries(componentInstances).map(([instanceId, instance]) => {
-      const designElements = elements.filter(
-        (element) =>
-          changedIds.has(element.id) &&
-          element.componentBinding?.instanceId === instanceId &&
-          element.componentBinding.renderMode !== 'root',
-      )
-      if (!designElements.length) return [instanceId, instance]
-      const propsPatch = structuredClone(instance.design.propsPatch)
-      for (const element of designElements) {
-        const binding = element.componentBinding!
-        const root = elements.find((item) => item.id === binding.rootElementId)
-        if (!root) continue
-        const scaleX = root.width / Math.max(1, instance.design.blueprint.width)
-        const scaleY = root.height / Math.max(1, instance.design.blueprint.height)
-        if (binding.bindings.x) {
-          setNestedPatchValue(propsPatch, binding.bindings.x, (element.x - root.x) / scaleX)
-        }
-        if (binding.bindings.y) {
-          setNestedPatchValue(propsPatch, binding.bindings.y, (element.y - root.y) / scaleY)
-        }
-        if (binding.bindings.width) {
-          setNestedPatchValue(propsPatch, binding.bindings.width, element.width / scaleX)
-        }
-        if (binding.bindings.height) {
-          setNestedPatchValue(propsPatch, binding.bindings.height, element.height / scaleY)
-        }
-        if (binding.bindings.visible) {
-          setNestedPatchValue(propsPatch, binding.bindings.visible, element.visible !== false)
-        }
-        if (binding.bindings.image && element.type === 'image') {
-          setNestedPatchValue(propsPatch, binding.bindings.image, element.src)
-        }
-        if (binding.bindings.color) {
-          const color = getElementColor(element)
-          if (color) setNestedPatchValue(propsPatch, binding.bindings.color, color)
-        }
-      }
-      return [
-        instanceId,
-        {
-          ...instance,
-          design: { ...instance.design, propsPatch },
-        },
-      ]
-    }),
-  )
-}
-
-function getElementColor(element: DesignElement) {
-  if (element.type === 'shape') return element.fill
-  if (element.type === 'text') return element.style.color
-  if (element.type === 'button') return element.style.background
-  return undefined
-}
-
-function constrainElementsToArtboard(elements: DesignElement[], artboard: Artboard) {
-  return elements.map((element) => {
-    if (element.artboardId !== artboard.id) return element
-    // 只修正完全跑到画板外的起点，不再压缩节点尺寸。此前这里通过
-    // min(width/height, 剩余空间) 裁短文本、图片和组件，造成底部内容
-    // 被截断。画板高度应由提交阶段的 contentBottom 统一扩展。
-    const maxX = Math.max(artboard.x, artboard.x + artboard.width - Math.max(1, element.width))
-    const x = Math.max(artboard.x, Math.min(element.x, maxX))
-    const y = Math.max(artboard.y, element.y)
-    return {
-      ...element,
-      x,
-      y,
-    }
-  })
-}

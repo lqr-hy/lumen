@@ -55,7 +55,7 @@ Runtime Draft 当前不允许 JavaScript 和真实业务交互。以下内容会
 
 ## Electron 沙箱与 DOM Scene
 
-Runtime Draft 在临时 Electron `BrowserWindow` 中渲染：`sandbox=true`、`contextIsolation=true`、`nodeIntegration=false`，CSP 使用 `script-src 'none'` 和 `connect-src 'none'`。禁止导航和新窗口；网络只放行公网 HTTPS 图片、字体和媒体，窗口销毁后删除临时文档。
+Runtime Draft 在临时 Electron `BrowserWindow` 中渲染：`sandbox=true`、`contextIsolation=true`、`nodeIntegration=false`，CSP 使用 `script-src 'none'` 和 `connect-src 'none'`。禁止导航和新窗口；网络只放行 HTTP/HTTPS 图片、字体和媒体（不限制域名或 IP 范围），窗口销毁后删除临时文档。
 
 Inspector 读取可见 DOM 的语义类型、父子关系、文本、图片源、ComputedStyle 和实际 Bounds。纯包装节点会压缩；表面、文本、按钮、输入框和图片转换为 Canonical Scene Graph。正常通用 UI 最多接收 600 个 Scene 节点，质量门禁要求至少 8 个节点和至少 3 个可编辑内容叶子。
 
@@ -170,6 +170,7 @@ npm run test:visual-regression
 ```
 
 专项测试同时覆盖 Runtime 动态 Step、第二个 Section 失败后继续、失败前置校验不污染 Revision、旧 Block ID 保持稳定、同 Block 重做、Block 插入/删除/重排、语义 Item Key、画板 Resize Reflow、自定义断点生命周期、断点 Override、批量 Token 单 Revision、差异节点 ID、fingerprint 稳定与变更检测、移动端 Sidebar/Table/Pagination、手工节点保留、Footer 编译、跨画板 ID 隔离和 Finalize Block 顺序。
+
 ## 视觉参考
 
 通用 UI 工作流同样先执行 `reference.prepare`。用户通过上传或 `@` 指定的图片会发送给 `ui.plan`，用于提取色彩、字体气质、圆角、材质和视觉语言；信息架构由用户目标、Pi 输出的 `designArchetype` 及 Block Registry 共同决定，不再默认补充后台模块。

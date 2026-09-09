@@ -18,8 +18,24 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes('node_modules')) return undefined
-          if (id.includes('react-moveable') || id.includes('framer-motion')) return 'canvas-vendor'
-          if (id.includes('react') || id.includes('zustand')) return 'react-vendor'
+          const packagePath = id.split('node_modules/').pop() || ''
+          const packageName = packagePath.startsWith('@')
+            ? packagePath.split('/').slice(0, 2).join('/')
+            : packagePath.split('/')[0]
+          if (
+            packageName === 'react' ||
+            packageName === 'react-dom' ||
+            packageName === 'scheduler' ||
+            packageName === 'zustand'
+          ) {
+            return 'react-vendor'
+          }
+          if (packageName === 'react-moveable' || packageName === 'framer-motion')
+            return 'canvas-vendor'
+          if (packageName.startsWith('@earendil-works/')) return 'runtime-vendor'
+          if (packageName === 'prismjs' || packageName === 'vue') return 'codegen-vendor'
+          if (packageName.startsWith('@dnd-kit/') || packageName === 'react-colorful') return 'ui-vendor'
+          if (packageName === 'lucide-react') return 'icon-vendor'
           return 'vendor'
         },
       },

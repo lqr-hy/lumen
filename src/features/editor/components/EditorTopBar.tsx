@@ -42,6 +42,8 @@ interface EditorTopBarProps {
   onNormalizeVisualStyle: (languageId: string, overrides: { cornerRadius?: number }) => number
   onCreateVisualVariant: (brief: VisualRedesignBrief) => void
   onCreateVisualDesign: (brief: VisualRedesignBrief) => void
+  saveStatus?: 'idle' | 'saving' | 'saved' | 'error'
+  onRetrySave?: () => void
   newDesignMode?: boolean
 }
 
@@ -57,6 +59,8 @@ export function EditorTopBar({
   onNormalizeVisualStyle,
   onCreateVisualVariant,
   onCreateVisualDesign,
+  saveStatus = 'idle',
+  onRetrySave,
   newDesignMode = false,
 }: EditorTopBarProps) {
   const document = useEditorStore((state) => state.document)
@@ -146,6 +150,21 @@ export function EditorTopBar({
           >
             {document.title}
             <ChevronDown size={16} />
+          </button>
+          <button
+            type="button"
+            className={`project-save-status project-save-status-${saveStatus}`}
+            disabled={saveStatus !== 'error'}
+            onClick={onRetrySave}
+            title={saveStatus === 'error' ? '重试保存' : undefined}
+          >
+            {saveStatus === 'saving'
+              ? '保存中…'
+              : saveStatus === 'error'
+                ? '保存失败'
+                : saveStatus === 'saved'
+                  ? '已保存'
+                  : ''}
           </button>
           {projectMenuOpen ? (
             <div className="project-dropdown">

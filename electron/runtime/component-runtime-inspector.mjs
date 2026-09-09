@@ -44,8 +44,8 @@ export async function inspectRuntimeDomSource(input, options = {}) {
   if (!process.versions.electron)
     return unsupported('Runtime DOM Inspect 仅在 Electron 应用中执行。')
 
-  const componentJs = assertPublicHttpsUrl(input.scriptUrl, 'scriptUrl')
-  const componentCss = assertPublicHttpsUrl(input.styleUrl, 'styleUrl')
+  const componentJs = assertAllowedRuntimeUrl(input.scriptUrl, 'scriptUrl')
+  const componentCss = assertAllowedRuntimeUrl(input.styleUrl, 'styleUrl')
   const timeoutMs = clamp(options.timeoutMs, DEFAULT_TIMEOUT_MS, 3_000, 30_000)
   try {
     const [bundle, style, frameworkRuntime] = await Promise.all([
@@ -119,12 +119,12 @@ export async function createRemoteComponentInspectorDocument(component, options 
   const timeoutMs = clamp(options.timeoutMs, DEFAULT_TIMEOUT_MS, 3_000, 30_000)
   const [bundle, style, frameworkRuntime] = await Promise.all([
     fetchTextAsset(
-      assertPublicHttpsUrl(component.componentJs, 'componentJs'),
+      assertAllowedRuntimeUrl(component.componentJs, 'componentJs'),
       MAX_SCRIPT_BYTES,
       timeoutMs,
     ),
     fetchTextAsset(
-      assertPublicHttpsUrl(component.componentCss, 'componentCss'),
+      assertAllowedRuntimeUrl(component.componentCss, 'componentCss'),
       MAX_STYLE_BYTES,
       timeoutMs,
     ),
@@ -149,7 +149,7 @@ export async function inlineRuntimeImageSources(designTree, options = {}) {
     new Set(
       designTree.nodes
         .map((node) => node.assetSource)
-        .filter((source) => typeof source === 'string' && isPublicHttpsUrl(source)),
+        .filter((source) => typeof source === 'string' && isAllowedRuntimeUrl(source)),
     ),
   ).slice(0, 24)
   const entries = await Promise.all(
@@ -206,7 +206,7 @@ async function renderRemoteComponent({
   const sandboxSession = session.fromPartition(partition, { cache: false })
   sandboxSession.webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (details, callback) => {
     const staticResource = ['image', 'media', 'font'].includes(details.resourceType)
-    callback({ cancel: !staticResource || !isPublicHttpsUrl(details.url) })
+    callback({ cancel: !staticResource || !isAllowedRuntimeUrl(details.url) })
   })
   const window = new BrowserWindow({
     show: false,
@@ -302,7 +302,7 @@ async function renderStaticInspector({
   const sandboxSession = session.fromPartition(partition, { cache: false })
   sandboxSession.webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (details, callback) => {
     const staticResource = ['image', 'media', 'font'].includes(details.resourceType)
-    callback({ cancel: !staticResource || !isPublicHttpsUrl(details.url) })
+    callback({ cancel: !staticResource || !isAllowedRuntimeUrl(details.url) })
   })
   const window = new BrowserWindow({
     show: false,
@@ -458,13 +458,13 @@ function createHtmlDocument(width, style, scripts) {
   const tags = scripts.map((source) => `<script>${escapeScript(source)}</script>`).join('')
   const remValue = resolveInspectorRemValue(width)
   const errorProbe = `<script>(()=>{const report=(value)=>{const message=String(value&&value.stack||value&&value.message||value||'Runtime error').slice(0,1000);if(!document.documentElement.dataset.runtimeError)document.documentElement.dataset.runtimeError=message;console.error(message)};addEventListener('error',(event)=>report(event.error||event.message));addEventListener('unhandledrejection',(event)=>report(event.reason))})()</script>`
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data: blob:; media-src https: data: blob:; font-src https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval'"><style>html{font-size:${remValue}px}html,body,#app{margin:0;width:${width}px;min-height:1px;background:transparent}*{box-sizing:border-box}${escapeStyle(style)}</style></head><body><div id="app" data-component-root></div>${errorProbe}${tags}</body></html>`
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src http: https: data: blob:; media-src http: https: data: blob:; font-src http: https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval'"><style>html{font-size:${remValue}px}html,body,#app{margin:0;width:${width}px;min-height:1px;background:transparent}*{box-sizing:border-box}${escapeStyle(style)}</style></head><body><div id="app" data-component-root></div>${errorProbe}${tags}</body></html>`
 }
 
 export function createStaticHtmlDocument(width, html, css) {
   const body = normalizeStaticBodyMarkup(html)
   const classAttribute = body.className ? ` class="${escapeHtmlAttribute(body.className)}"` : ''
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data: blob:; media-src https: data: blob:; font-src https: data:; style-src 'unsafe-inline'; script-src 'none'; connect-src 'none'; frame-src 'none'"><style>html,body,#app{margin:0;width:${width}px;min-height:1px;background:transparent}*{box-sizing:border-box}${escapeStyle(css)}</style></head><body><div id="app" data-component-root${classAttribute}>${body.html}</div></body></html>`
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src http: https: data: blob:; media-src http: https: data: blob:; font-src http: https: data:; style-src 'unsafe-inline'; script-src 'none'; connect-src 'none'; frame-src 'none'"><style>html,body,#app{margin:0;width:${width}px;min-height:1px;background:transparent}*{box-sizing:border-box}${escapeStyle(css)}</style></head><body><div id="app" data-component-root${classAttribute}>${body.html}</div></body></html>`
 }
 
 export function normalizeStaticBodyMarkup(html) {
@@ -673,7 +673,8 @@ async function fetchTextAsset(url, maxBytes, timeoutMs) {
   try {
     const response = await fetch(url, { signal: controller.signal, redirect: 'follow' })
     if (!response.ok) throw new Error(`下载组件资源失败：HTTP ${response.status}`)
-    if (!isPublicHttpsUrl(response.url)) throw new Error('组件资源重定向到了不可信地址。')
+    if (!isAllowedRuntimeUrl(response.url))
+      throw new Error('组件资源重定向到了无效的 HTTP/HTTPS 地址。')
     const declared = Number(response.headers.get('content-length'))
     if (Number.isFinite(declared) && declared > maxBytes)
       throw new Error(`组件资源超过 ${maxBytes} bytes。`)
@@ -693,8 +694,8 @@ async function fetchBinaryImageAsset(url, maxBytes, timeoutMs, fetchImpl) {
   try {
     const response = await fetchImpl(url, { signal: controller.signal, redirect: 'follow' })
     if (!response.ok) throw new Error(`下载 Runtime 图片失败：HTTP ${response.status}`)
-    if (response.url && !isPublicHttpsUrl(response.url))
-      throw new Error('Runtime 图片重定向到了不可信地址。')
+    if (response.url && !isAllowedRuntimeUrl(response.url))
+      throw new Error('Runtime 图片重定向到了无效的 HTTP/HTTPS 地址。')
     const mime = String(response.headers.get('content-type') || '')
       .split(';')[0]
       .trim()
@@ -720,19 +721,20 @@ function normalizeFramework(value) {
   return 'unknown'
 }
 
-function assertPublicHttpsUrl(value, field) {
-  if (!isPublicHttpsUrl(value)) throw new Error(`${field} 必须是公网 HTTPS URL。`)
+function assertAllowedRuntimeUrl(value, field) {
+  if (!isAllowedRuntimeUrl(value)) throw new Error(`${field} 必须是有效的 HTTP/HTTPS URL。`)
   return String(value)
 }
 
-function isPublicHttpsUrl(value) {
+/**
+ * Runtime 资源允许来自任意域名（包括 localhost、内网和 IP 地址）。
+ * 这里仅限制协议为 HTTP/HTTPS，避免把 file/javascript/data 等协议
+ * 作为远程脚本、样式或图片地址加载。
+ */
+export function isAllowedRuntimeUrl(value) {
   try {
     const url = new URL(value)
-    return (
-      url.protocol === 'https:' &&
-      !['localhost', '0.0.0.0', '127.0.0.1', '::1'].includes(url.hostname) &&
-      !/^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\./.test(url.hostname)
-    )
+    return url.protocol === 'http:' || url.protocol === 'https:'
   } catch {
     return false
   }

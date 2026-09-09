@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('aiCampaignProjects', {
   load: (projectId) => ipcRenderer.invoke('project:load', projectId),
   save: (snapshot) => ipcRenderer.invoke('project:save', snapshot),
   delete: (projectId) => ipcRenderer.invoke('project:delete', projectId),
+  export: (projectId) => ipcRenderer.invoke('project:export', projectId),
+  import: () => ipcRenderer.invoke('project:import'),
   listVersions: (projectId) => ipcRenderer.invoke('project:listVersions', projectId),
   loadVersion: (projectId, versionId) =>
     ipcRenderer.invoke('project:loadVersion', projectId, versionId),

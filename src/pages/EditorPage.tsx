@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from 'react'
-import { useParams } from 'react-router-dom'
+import { useLocation, useParams } from 'react-router-dom'
 import { ChatPanel } from '../features/editor/components/ChatPanel'
 import { EditorTopBar } from '../features/editor/components/EditorTopBar'
 import { InfiniteCanvas } from '../features/editor/components/InfiniteCanvas'
@@ -28,6 +28,7 @@ import {
 import type { CodeDocument, CodeFramework } from '../features/codegen/types'
 import { renderArtboardSnapshot } from '../features/editor/utils/artboard-snapshot'
 import { buildImageDownloadName } from '../features/editor/utils/image-file'
+import { useProjectPersistence } from '../features/editor/hooks/use-project-persistence'
 import {
   buildVisualNormalizationPatches,
   compileVisualDirectionPrompt,
@@ -47,6 +48,9 @@ type PanelWidths = Record<PanelSide, number>
 
 export function EditorPage() {
   const { projectId } = useParams()
+  const location = useLocation()
+  const initialPrompt =
+    typeof location.state?.initialPrompt === 'string' ? location.state.initialPrompt : undefined
   const document = useEditorStore((state) => state.document)
   const activeArtboardId = useEditorStore((state) => state.activeArtboardId)
   const selectedArtboardId = useEditorStore((state) => state.selectedArtboardId)
@@ -62,6 +66,10 @@ export function EditorPage() {
   const [codePreview, setCodePreview] = useState<CodeDocument | null>(null)
   const persistenceDocumentId = document?.id
   const workbenchRef = useRef<HTMLDivElement>(null)
+  const { status: saveStatus, retry: retrySave } = useProjectPersistence(
+    persistenceDocumentId,
+    workspaceReady,
+  )
 
   useEffect(() => {
     try {
@@ -117,34 +125,8 @@ export function EditorPage() {
   }, [hydrateWorkspace, projectId])
 
   useEffect(() => {
-    if (!workspaceReady || !persistenceDocumentId || !window.aiCampaignProjects) return undefined
-    const persistedDocumentId = persistenceDocumentId
-    let timer: number | undefined
-    const scheduleSave = () => {
-      if (timer !== undefined) window.clearTimeout(timer)
-      timer = window.setTimeout(() => {
-        const state = useEditorStore.getState()
-        const currentDocument = state.document
-        if (!currentDocument || currentDocument.id !== persistedDocumentId) return
-        void window.aiCampaignProjects?.save({
-          schemaVersion: 1,
-          projectId: currentDocument.id,
-          document: { ...currentDocument, viewport: state.viewport },
-          chatThreads: state.chatThreads,
-          activeChatThreadId: state.activeChatThreadId,
-          mutationLedger: state.mutationLedger,
-          createdAt: currentDocument.createdAt,
-          updatedAt: currentDocument.updatedAt,
-        })
-      }, 800)
-    }
-    scheduleSave()
-    const unsubscribe = useEditorStore.subscribe(scheduleSave)
-    return () => {
-      unsubscribe()
-      if (timer !== undefined) window.clearTimeout(timer)
-    }
-  }, [persistenceDocumentId, workspaceReady])
+    if (workspaceReady && initialPrompt?.trim()) setChatPanelOpen(true)
+  }, [initialPrompt, workspaceReady])
 
   async function exportPng(scale: 1 | 2) {
     if (!document) return
@@ -444,6 +426,8 @@ export function EditorPage() {
         onNormalizeVisualStyle={normalizeActiveArtboardVisualStyle}
         onCreateVisualVariant={prepareVisualVariant}
         onCreateVisualDesign={prepareVisualDesign}
+        saveStatus={saveStatus}
+        onRetrySave={retrySave}
         newDesignMode={
           !(
             selectedArtboardId ?? (selectedElementIds.length === 0 ? activeArtboardId : undefined)
@@ -492,7 +476,7 @@ export function EditorPage() {
           onOpenChatPanel={() => setChatPanelOpen(true)}
         />
         {chatPanelOpen ? (
-          <ChatPanel onClose={() => setChatPanelOpen(false)} />
+          <ChatPanel onClose={() => setChatPanelOpen(false)} initialPrompt={initialPrompt} />
         ) : shouldShowRightPanel ? (
           <PropertyPanel
             onExportPng={() => void exportPng(1)}

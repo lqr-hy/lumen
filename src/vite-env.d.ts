@@ -28,6 +28,24 @@ interface Window {
     >
     save: (snapshot: unknown) => Promise<unknown>
     delete: (projectId: string) => Promise<boolean>
+    export: (projectId: string) => Promise<
+      | {
+          projectId: string
+          title: string
+          artboardCount: number
+          updatedAt: string
+        }
+      | undefined
+    >
+    import: () => Promise<
+      | {
+          projectId: string
+          title: string
+          artboardCount: number
+          updatedAt: string
+        }
+      | undefined
+    >
     listVersions: (projectId: string) => Promise<
       Array<{
         id: string
